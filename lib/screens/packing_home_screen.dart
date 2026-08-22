@@ -224,7 +224,6 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
   bool _capabilityNoticeDialogShown = false;
   int _transientReturnTab = 1;
   DateTime? _exitArmedAt;
-  Timer? _watermarkClock;
 
   @override
   void initState() {
@@ -238,9 +237,6 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
     _backupHostDiscovery = LanBackupHostDiscoveryService(
       cache: LanBackupHostFileCache(),
     );
-    _watermarkClock = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && _selectedTab == 1) setState(() {});
-    });
     unawaited(_controller.initialize());
   }
 
@@ -262,7 +258,6 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller.removeListener(_handleControllerChanged);
-    _watermarkClock?.cancel();
     _controller.dispose();
     _backupHostDiscovery.dispose();
     super.dispose();
@@ -557,6 +552,7 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
                   nativePreviewSize: _controller.nativePreviewSize,
                   phase: _controller.phase,
                   elapsed: _controller.elapsed,
+                  elapsedListenable: _controller.elapsedListenable,
                   lastMarker: _controller.lastMarker,
                   candidateCode: _controller.candidateCode,
                   currentCode: _controller.currentCode,
@@ -806,6 +802,7 @@ class PackingHomeView extends StatelessWidget {
     this.onFinishOrder,
     this.previewOverride,
     this.watermarkTimestamp,
+    this.elapsedListenable,
     super.key,
   });
 
@@ -849,6 +846,7 @@ class PackingHomeView extends StatelessWidget {
   final VoidCallback onRetryPressed;
   final Widget? previewOverride;
   final DateTime? watermarkTimestamp;
+  final ValueListenable<Duration>? elapsedListenable;
 
   static const double workingBottomGap = 40;
 
@@ -1048,7 +1046,13 @@ class _CameraArea extends StatelessWidget {
               top: 20,
               child: Align(
                 alignment: Alignment.topCenter,
-                child: _RecordingDurationPill(elapsed: view.elapsed),
+                child: ValueListenableBuilder<Duration>(
+                  valueListenable:
+                      view.elapsedListenable ??
+                      AlwaysStoppedAnimation<Duration>(view.elapsed),
+                  builder: (BuildContext context, Duration elapsed, _) =>
+                      _RecordingDurationPill(elapsed: elapsed),
+                ),
               ),
             ),
           if (view._alternatingRecording)
@@ -1370,7 +1374,7 @@ class _CameraLensPill extends StatelessWidget {
   }
 }
 
-class _CameraWatermarkPreview extends StatelessWidget {
+class _CameraWatermarkPreview extends StatefulWidget {
   const _CameraWatermarkPreview({
     required this.timestamp,
     required this.trackingNumber,
@@ -1379,20 +1383,63 @@ class _CameraWatermarkPreview extends StatelessWidget {
     required this.strokeWidth,
   });
 
-  final DateTime timestamp;
+  final DateTime? timestamp;
   final String trackingNumber;
   final RecordingOrientation orientation;
   final double fontSize;
   final double strokeWidth;
 
   @override
+  State<_CameraWatermarkPreview> createState() =>
+      _CameraWatermarkPreviewState();
+}
+
+class _CameraWatermarkPreviewState extends State<_CameraWatermarkPreview> {
+  Timer? _clock;
+  late DateTime _timestamp;
+
+  @override
+  void initState() {
+    super.initState();
+    _timestamp = widget.timestamp ?? DateTime.now();
+    _startClockIfNeeded();
+  }
+
+  @override
+  void didUpdateWidget(covariant _CameraWatermarkPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.timestamp != null) {
+      _timestamp = widget.timestamp!;
+    }
+    _startClockIfNeeded();
+  }
+
+  void _startClockIfNeeded() {
+    if (widget.timestamp != null) {
+      _clock?.cancel();
+      _clock = null;
+      return;
+    }
+    if (_clock != null) return;
+    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _timestamp = DateTime.now());
+    });
+  }
+
+  @override
+  void dispose() {
+    _clock?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final String text = <String>[
-      _watermarkTimestamp(timestamp),
-      if (trackingNumber.isNotEmpty) trackingNumber,
+      _watermarkTimestamp(_timestamp),
+      if (widget.trackingNumber.isNotEmpty) widget.trackingNumber,
     ].join('\n');
     final TextStyle baseStyle = TextStyle(
-      fontSize: fontSize,
+      fontSize: widget.fontSize,
       height: 1.25,
       fontWeight: FontWeight.w700,
     );
@@ -1400,9 +1447,9 @@ class _CameraWatermarkPreview extends StatelessWidget {
     return Semantics(
       label: '录像水印',
       child: RotatedBox(
-        quarterTurns: orientation == RecordingOrientation.landscapeLeft
+        quarterTurns: widget.orientation == RecordingOrientation.landscapeLeft
             ? 3
-            : orientation == RecordingOrientation.landscapeRight
+            : widget.orientation == RecordingOrientation.landscapeRight
             ? 1
             : 0,
         child: SizedBox(
@@ -1419,7 +1466,7 @@ class _CameraWatermarkPreview extends StatelessWidget {
                 style: baseStyle.copyWith(
                   foreground: Paint()
                     ..style = PaintingStyle.stroke
-                    ..strokeWidth = strokeWidth
+                    ..strokeWidth = widget.strokeWidth
                     ..strokeJoin = StrokeJoin.round
                     ..color = Colors.black,
                 ),
@@ -1467,7 +1514,7 @@ class _CameraWatermarkPlacement extends StatelessWidget {
               left: geometry.sourceOffset.dx,
               top: geometry.sourceOffset.dy,
               child: _CameraWatermarkPreview(
-                timestamp: view.watermarkTimestamp ?? DateTime.now(),
+                timestamp: view.watermarkTimestamp,
                 trackingNumber: view.currentCode,
                 orientation: view.recordingOrientation,
                 fontSize: metrics.fontSize,

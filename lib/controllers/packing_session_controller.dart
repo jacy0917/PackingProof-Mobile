@@ -3,6 +3,7 @@ import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
@@ -195,6 +196,9 @@ class PackingSessionController extends ChangeNotifier
   Timer? _rejectedBarcodeTimer;
   Timer? _initialPromptTimer;
   Duration _elapsed = Duration.zero;
+  final ValueNotifier<Duration> _elapsedListenable = ValueNotifier<Duration>(
+    Duration.zero,
+  );
   BarcodeMarker? _lastMarker;
   @override
   UnbackedRetentionPolicy _unbackedRetention = UnbackedRetentionPolicy.days30;
@@ -227,6 +231,7 @@ class PackingSessionController extends ChangeNotifier
   LocalRecordingStatistics get localRecordingStatistics =>
       _localRecordingStatistics;
   Duration get elapsed => _elapsed;
+  ValueListenable<Duration> get elapsedListenable => _elapsedListenable;
   BarcodeMarker? get lastMarker => _lastMarker;
   String get candidateCode => _candidateCode;
   String get currentCode => _timeline.currentCode;
@@ -642,7 +647,7 @@ class PackingSessionController extends ChangeNotifier
       _workActive = true;
       _startStorageMonitor();
       await _orderInfoReceiver.setBackgroundKeepAlive(false);
-      _elapsed = Duration.zero;
+      _setElapsed(Duration.zero);
       _setPhase(PackingSessionPhase.waitingForBarcode);
       unawaited(
         _runtimeLog.log(
@@ -832,7 +837,7 @@ class PackingSessionController extends ChangeNotifier
       _alternatingNoCodeSince = null;
       _lastMarker = null;
       _candidateCode = '';
-      _elapsed = Duration.zero;
+      _setElapsed(Duration.zero);
       _setActiveOrderInfo(null, announce: false);
       _setPhase(PackingSessionPhase.waitingForBarcode);
       await _speechService.clear();
@@ -925,7 +930,7 @@ class PackingSessionController extends ChangeNotifier
 
     final DateTime startedAt = DateTime.now();
     _timeline.start(startedAt);
-    _elapsed = Duration.zero;
+    _setElapsed(Duration.zero);
     _setPhase(PackingSessionPhase.starting);
     await WidgetsBinding.instance.endOfFrame;
     await camera.lockCaptureOrientation(DeviceOrientation.portraitUp);
@@ -963,7 +968,7 @@ class PackingSessionController extends ChangeNotifier
     _activeSegmentId = recordingId;
     _segmentIndex = 1;
     _timeline.start(started.startedAt);
-    _elapsed = Duration.zero;
+    _setElapsed(Duration.zero);
     _setPhase(PackingSessionPhase.recording);
     _startElapsedTimer();
   }
@@ -998,7 +1003,7 @@ class PackingSessionController extends ChangeNotifier
         .toList(growable: false);
     _sessions = await _repository.addSessions(sessions);
     await _enqueueBackupIfNeeded(savedPath, sessions);
-    _elapsed = endedAt.difference(startedAt);
+    _setElapsed(endedAt.difference(startedAt));
     _timeline.reset();
     return sessions;
   }
@@ -1039,7 +1044,7 @@ class PackingSessionController extends ChangeNotifier
         _enqueueBackupIfNeeded(savedPath, <RecordingSession>[session]),
       );
     }
-    _elapsed = stopped.endedAt.difference(_timeline.recordingStartedAt!);
+    _setElapsed(stopped.endedAt.difference(_timeline.recordingStartedAt!));
     _timeline.reset();
     _recordingId = null;
     _activeSegmentId = null;
@@ -1053,9 +1058,13 @@ class PackingSessionController extends ChangeNotifier
       if (startedAt == null || _disposed) {
         return;
       }
-      _elapsed = DateTime.now().difference(startedAt);
-      notifyListeners();
+      _setElapsed(DateTime.now().difference(startedAt));
     });
+  }
+
+  void _setElapsed(Duration value) {
+    _elapsed = value;
+    _elapsedListenable.value = value;
   }
 
   Future<void> handleInactive() async {
@@ -1199,7 +1208,7 @@ class PackingSessionController extends ChangeNotifier
           ? await _finishNativeRecording()
           : await _finishRecording();
       _candidateCode = '';
-      _elapsed = Duration.zero;
+      _setElapsed(Duration.zero);
       await Future<void>.delayed(transitionSettleDelay);
       _setPhase(PackingSessionPhase.waitingForBarcode);
       await _speechService.clear();
@@ -1359,7 +1368,7 @@ class PackingSessionController extends ChangeNotifier
   }
 
   void _resetSegmentElapsed() {
-    _elapsed = Duration.zero;
+    _setElapsed(Duration.zero);
     notifyListeners();
   }
 
@@ -1719,7 +1728,7 @@ class PackingSessionController extends ChangeNotifier
 
   @override
   void dispose() {
-    unawaited(shutdown());
+    unawaited(shutdown().whenComplete(_elapsedListenable.dispose));
     super.dispose();
   }
 }

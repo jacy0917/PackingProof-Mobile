@@ -646,4 +646,75 @@ void main() {
     expect(find.byKey(const Key('recording-duration-pill')), findsOneWidget);
     expect(find.text('结束工作'), findsOneWidget);
   });
+
+  testWidgets('水印时钟只重建水印而不重建相机预览', (WidgetTester tester) async {
+    int previewBuilds = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PackingHomeView(
+          phase: PackingSessionPhase.ready,
+          elapsed: Duration.zero,
+          previewOverride: _BuildCounter(onBuild: () => previewBuilds++),
+          onPrimaryPressed: () {},
+          onRetryPressed: () {},
+        ),
+      ),
+    );
+
+    final Text initial = tester.widget<Text>(
+      find.byKey(const Key('camera-watermark-fill')),
+    );
+    expect(previewBuilds, 1);
+
+    await tester.pump(const Duration(seconds: 2));
+
+    final Text updated = tester.widget<Text>(
+      find.byKey(const Key('camera-watermark-fill')),
+    );
+    expect(identical(updated, initial), isFalse);
+    expect(previewBuilds, 1);
+  });
+
+  testWidgets('录制计时只重建计时胶囊而不重建相机预览', (WidgetTester tester) async {
+    final ValueNotifier<Duration> elapsed = ValueNotifier<Duration>(
+      const Duration(seconds: 8),
+    );
+    addTearDown(elapsed.dispose);
+    int previewBuilds = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PackingHomeView(
+          phase: PackingSessionPhase.recording,
+          elapsed: Duration.zero,
+          elapsedListenable: elapsed,
+          nativeLiveWatermark: true,
+          previewOverride: _BuildCounter(onBuild: () => previewBuilds++),
+          onPrimaryPressed: () {},
+          onRetryPressed: () {},
+        ),
+      ),
+    );
+
+    expect(find.text('00:08'), findsOneWidget);
+    expect(previewBuilds, 1);
+
+    elapsed.value = const Duration(seconds: 9);
+    await tester.pump();
+
+    expect(find.text('00:09'), findsOneWidget);
+    expect(previewBuilds, 1);
+    expect(find.byKey(const Key('camera-watermark-preview')), findsNothing);
+  });
+}
+
+class _BuildCounter extends StatelessWidget {
+  const _BuildCounter({required this.onBuild});
+
+  final VoidCallback onBuild;
+
+  @override
+  Widget build(BuildContext context) {
+    onBuild();
+    return const ColoredBox(color: Colors.black);
+  }
 }
