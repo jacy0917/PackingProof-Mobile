@@ -87,7 +87,7 @@ mixin _PackingSessionStorageCoordinator on _PackingSessionBackupCoordinator {
             _storageStopRequested = false;
           }
         }
-      } else if (!_disposed) {
+      } else if (!_disposed && (result.deletedCount > 0 || result.warning)) {
         notifyListeners();
       }
       return result;
@@ -143,6 +143,10 @@ mixin _PackingSessionStorageCoordinator on _PackingSessionBackupCoordinator {
     _storageNoticeRevision++;
     notifyListeners();
   }
+
+  @visibleForTesting
+  Future<StorageSpaceResult> checkStorageForTesting() =>
+      _checkAndHandleStorage(allowStop: false);
 
   static String _formatStorageBytes(int bytes) {
     final double gigabytes = bytes / (1024 * 1024 * 1024);

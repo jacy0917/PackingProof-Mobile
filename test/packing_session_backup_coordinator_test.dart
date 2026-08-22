@@ -187,6 +187,43 @@ void main() {
       WatermarkProcessingStatus.failed,
     );
   });
+
+  test('周期存储检查仅在用户可见状态变化时通知界面', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-storage-notification-',
+    );
+    final _RecordingLanBackupSink backup = _RecordingLanBackupSink();
+    final PackingSessionController controller = PackingSessionController(
+      repository: testRepository(root),
+      speechService: _NoopSpeechSink(),
+      lanBackupService: backup,
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+    addTearDown(() async {
+      await controller.shutdown();
+      controller.dispose();
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    int notifications = 0;
+    controller.addListener(() => notifications++);
+
+    await controller.checkStorageForTesting();
+
+    expect(notifications, 0);
+
+    backup.storageResult = const StorageSpaceResult(
+      availableBytes: 2 * 1024 * 1024 * 1024,
+      availableBytesBefore: 2 * 1024 * 1024 * 1024,
+      freedBytes: 0,
+      deletedCount: 0,
+      warning: true,
+      insufficient: false,
+    );
+    await controller.checkStorageForTesting();
+
+    expect(notifications, 1);
+  });
 }
 
 class _BackupCall {
@@ -204,6 +241,14 @@ class _RecordingLanBackupSink extends ChangeNotifier implements LanBackupSink {
       <List<RecordingSession>>[];
   int initializeCalls = 0;
   bool retryConnectionResult = false;
+  StorageSpaceResult storageResult = const StorageSpaceResult(
+    availableBytes: 4 * 1024 * 1024 * 1024,
+    availableBytesBefore: 4 * 1024 * 1024 * 1024,
+    freedBytes: 0,
+    deletedCount: 0,
+    warning: false,
+    insufficient: false,
+  );
 
   @override
   LanBackupSnapshot get snapshot => _snapshot;
@@ -285,15 +330,7 @@ class _RecordingLanBackupSink extends ChangeNotifier implements LanBackupSink {
   Future<void> cancel(String jobId) async {}
 
   @override
-  Future<StorageSpaceResult> checkAndReclaimStorage() async =>
-      const StorageSpaceResult(
-        availableBytes: 0,
-        availableBytesBefore: 0,
-        freedBytes: 0,
-        deletedCount: 0,
-        warning: false,
-        insufficient: false,
-      );
+  Future<StorageSpaceResult> checkAndReclaimStorage() async => storageResult;
 
   @override
   Future<NetworkDiagnostics?> getNetworkDiagnostics() async => null;
