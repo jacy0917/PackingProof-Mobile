@@ -294,6 +294,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
     label: "ios.backup.snapshot",
     qos: .utility
   )
+  private let enqueueQueue = DispatchQueue(
+    label: "ios.backup.enqueue",
+    qos: .utility
+  )
   private let uploadFailureLock = NSLock()
   private var uploadFailureOverrides: [String: (String, BackupTransferError)] = [:]
   private let keys = (
@@ -423,26 +427,30 @@ final class IosBackupHostApi: BackupNativeHostApi {
     request: [String?: Any?],
     completion: @escaping (Result<Void, Error>) -> Void
   ) {
-    var job = normalized(request)
-    let path = request["filePath"] as? String ?? ""
-    let id = request["id"] as? String ?? stableId(path)
-    let fileSize = (try? FileManager.default.attributesOfItem(
-      atPath: path
-    )[.size] as? Int64) ?? 0
-    job["id"] = id
-    job["generation"] = UUID().uuidString
-    job["state"] = "pending"
-    job["uploadedBytes"] = 0
-    job["totalBytes"] = fileSize
-    job.removeValue(forKey: "errorMessage")
-    job.removeValue(forKey: "failureKind")
-    do {
-      try upsert(job)
-      startUpload(job)
-      emitSnapshot()
-      completion(.success(()))
-    } catch {
-      completion(.failure(error))
+    enqueueQueue.async {
+      var job = self.normalized(request)
+      let path = request["filePath"] as? String ?? ""
+      let id = request["id"] as? String ?? self.stableId(path)
+      let startUploadRequested = request["startUpload"] as? Bool != false
+      let fileSize = (try? FileManager.default.attributesOfItem(
+        atPath: path
+      )[.size] as? Int64) ?? 0
+      job["id"] = id
+      job["generation"] = UUID().uuidString
+      job["state"] = startUploadRequested ? "pending" : "paused"
+      job["uploadedBytes"] = 0
+      job["totalBytes"] = fileSize
+      job.removeValue(forKey: "errorMessage")
+      job.removeValue(forKey: "failureKind")
+      do {
+        try self.upsert(job)
+        if startUploadRequested {
+          self.startUpload(job)
+        }
+        completion(.success(()))
+      } catch {
+        completion(.failure(error))
+      }
     }
   }
 

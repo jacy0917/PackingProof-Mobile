@@ -766,6 +766,31 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(current["state"] as? String, "pending")
   }
 
+  func testRetentionRegistrationDoesNotStartUploadOrEmitPerJobSnapshot() async throws {
+    let emitted = expectation(description: "批量登记期间不逐条推送快照")
+    emitted.isInverted = true
+    let fixture = try makeRetentionCleanupFixture(
+      id: "retention-registration",
+      onSnapshot: { _ in emitted.fulfill() }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    let request: [String?: Any?] = [
+      "id": "retention-registration",
+      "filePath": fixture.file.path,
+      "lastModified": fixture.job["lastModified"],
+      "sessions": fixture.job["sessions"],
+      "startUpload": false,
+    ]
+
+    try await awaitVoidResult { completion in
+      fixture.api.enqueueJob(request: request, completion: completion)
+    }
+
+    await fulfillment(of: [emitted], timeout: 0.5)
+    let current = try XCTUnwrap(fixture.store.allJobs().first)
+    XCTAssertEqual(current["state"] as? String, "paused")
+  }
+
   func testBackupSourceFailuresPersistStorageUnavailableState() throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
