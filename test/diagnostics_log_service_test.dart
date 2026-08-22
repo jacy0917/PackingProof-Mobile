@@ -40,7 +40,7 @@ void main() {
           jsonDecode(line) as Map<String, Object?>;
       expect(entry['kind'], 'event');
       return entry['index']! as int;
-    }).toList()..sort();
+    }).toList();
     expect(indexes, List<int>.generate(30, (int index) => index));
   });
 
@@ -62,6 +62,63 @@ void main() {
     final Map<String, Object?> last =
         jsonDecode(lines.last) as Map<String, Object?>;
     expect(last['index'], 4);
+  });
+
+  test('日志文件路径只解析一次且批量追加后仍保持有界', () async {
+    int rootProviderCalls = 0;
+    final DiagnosticsLogService service = DiagnosticsLogService(
+      rootProvider: () async {
+        rootProviderCalls++;
+        return temp;
+      },
+      maximumEntries: 100,
+    );
+
+    for (int index = 0; index < 125; index++) {
+      await service.log(
+        kind: 'event',
+        extra: <String, Object?>{'index': index},
+      );
+    }
+
+    final File file = File('${temp.path}/diagnostics/runtime.jsonl');
+    final List<String> lines = await file.readAsLines();
+    expect(rootProviderCalls, 1);
+    expect(lines.length, lessThanOrEqualTo(100));
+    expect(lines.length, greaterThanOrEqualTo(80));
+    expect((jsonDecode(lines.last) as Map<String, Object?>)['index'], 124);
+  });
+
+  test('多个服务实例跨压缩边界并发写入时不会竞争或写坏文件', () async {
+    final DiagnosticsLogService first = DiagnosticsLogService(
+      rootProvider: () async => temp,
+      maximumEntries: 20,
+    );
+    final DiagnosticsLogService second = DiagnosticsLogService(
+      rootProvider: () async => temp,
+      maximumEntries: 20,
+    );
+
+    for (int index = 0; index < 19; index++) {
+      await first.log(kind: 'seed', extra: <String, Object?>{'index': index});
+    }
+    await Future.wait(<Future<void>>[
+      first.log(kind: 'concurrent', extra: const <String, Object?>{'id': 'a'}),
+      second.log(kind: 'concurrent', extra: const <String, Object?>{'id': 'b'}),
+    ]);
+
+    final File file = File('${temp.path}/diagnostics/runtime.jsonl');
+    final List<String> lines = await file.readAsLines();
+    expect(lines.length, lessThanOrEqualTo(20));
+    final List<Map<String, Object?>> entries = lines
+        .map((String line) => jsonDecode(line) as Map<String, Object?>)
+        .toList();
+    expect(
+      entries
+          .where((Map<String, Object?> entry) => entry['kind'] == 'concurrent')
+          .map((Map<String, Object?> entry) => entry['id']),
+      <Object?>['a', 'b'],
+    );
   });
 
   test('运行时元数据只加载一次且缺失字段稳定为 null', () async {
@@ -110,5 +167,28 @@ void main() {
     expect(entry['appBuildNumber'], isNull);
     expect(entry['buildRevision'], isNull);
     expect(entry['buildTimestamp'], isNull);
+  });
+
+  test('首次日志路径解析失败后下一次写入会重试', () async {
+    int attempts = 0;
+    final DiagnosticsLogService service = DiagnosticsLogService(
+      rootProvider: () async {
+        attempts++;
+        if (attempts == 1) throw FileSystemException('temporary');
+        return temp;
+      },
+    );
+
+    await service.log(kind: 'first');
+    await service.log(kind: 'second');
+
+    expect(attempts, 2);
+    final File file = File('${temp.path}/diagnostics/runtime.jsonl');
+    final List<String> lines = await file.readAsLines();
+    expect(lines, hasLength(1));
+    expect(
+      (jsonDecode(lines.single) as Map<String, Object?>)['kind'],
+      'second',
+    );
   });
 }

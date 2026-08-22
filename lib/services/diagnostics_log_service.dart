@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
@@ -21,7 +22,11 @@ class DiagnosticsLogService {
   }) : _rootProvider = rootProvider ?? getApplicationDocumentsDirectory,
        // ignore: prefer_initializing_formals
        _runtimeMetadataLoader =
-           runtimeMetadataLoader ?? _defaultRuntimeMetadataLoader;
+           runtimeMetadataLoader ?? _defaultRuntimeMetadataLoader,
+       assert(maximumEntries > 0);
+
+  static final Map<String, _RuntimeLogCoordinator> _coordinators =
+      <String, _RuntimeLogCoordinator>{};
 
   final Future<Directory> Function() _rootProvider;
   final int maximumEntries;
@@ -29,8 +34,23 @@ class DiagnosticsLogService {
   Future<void>? _pending;
   int _pendingWrites = 0;
   Future<Map<String, Object?>>? _runtimeMetadata;
+  Future<File>? _logFile;
 
-  Future<File> logFile() async {
+  Future<File> logFile() {
+    final Future<File>? existing = _logFile;
+    if (existing != null) return existing;
+    late final Future<File> tracked;
+    tracked = _resolveLogFile().onError((Object error, StackTrace stackTrace) {
+      if (identical(_logFile, tracked)) {
+        _logFile = null;
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    });
+    _logFile = tracked;
+    return tracked;
+  }
+
+  Future<File> _resolveLogFile() async {
     final Directory root = await _rootProvider();
     final Directory directory = Directory(p.join(root.path, 'diagnostics'));
     await directory.create(recursive: true);
@@ -59,21 +79,26 @@ class DiagnosticsLogService {
     try {
       final File file = await logFile();
       final Map<String, Object?> metadata = await _loadRuntimeMetadata();
-      final List<String> lines = await file.exists()
-          ? await file.readAsLines()
-          : <String>[];
-      lines.add(
-        jsonEncode(<String, Object?>{
-          ...metadata,
-          'ts': DateTime.now().toIso8601String(),
-          'kind': kind,
-          ...extra,
-        }),
+      final String line = jsonEncode(<String, Object?>{
+        ...metadata,
+        'ts': DateTime.now().toIso8601String(),
+        'kind': kind,
+        ...extra,
+      });
+      final int maxEntries = maximumEntries;
+      final String filePath = file.path;
+      final int keepWhenFull = maxEntries <= 1
+          ? 0
+          : maxEntries - (maxEntries ~/ 5).clamp(1, maxEntries);
+      final _RuntimeLogCoordinator coordinator = _coordinators.putIfAbsent(
+        filePath,
+        () => _RuntimeLogCoordinator(filePath),
       );
-      final List<String> bounded = lines.length > maximumEntries
-          ? lines.sublist(lines.length - maximumEntries)
-          : lines;
-      await file.writeAsString('${bounded.join('\n')}\n');
+      await coordinator.append(
+        line,
+        maximumEntries: maxEntries,
+        keepWhenFull: keepWhenFull,
+      );
     } on Object {
       // 日志失败绝不影响业务。
     }
@@ -101,6 +126,94 @@ class DiagnosticsLogService {
     'buildRevision': null,
     'buildTimestamp': null,
   };
+}
+
+/// 同一日志文件可能被多个临时 service 实例同时使用，必须共享写入链和计数。
+class _RuntimeLogCoordinator {
+  _RuntimeLogCoordinator(this.path);
+
+  final String path;
+  Future<void>? _tail;
+  int? _entryCount;
+
+  Future<void> append(
+    String line, {
+    required int maximumEntries,
+    required int keepWhenFull,
+  }) {
+    final Future<void>? previous = _tail;
+    final Future<void> operation = previous == null
+        ? _append(
+            line,
+            maximumEntries: maximumEntries,
+            keepWhenFull: keepWhenFull,
+          )
+        : previous.then(
+            (_) => _append(
+              line,
+              maximumEntries: maximumEntries,
+              keepWhenFull: keepWhenFull,
+            ),
+          );
+    _tail = operation.catchError((Object _) {});
+    return operation;
+  }
+
+  Future<void> _append(
+    String line, {
+    required int maximumEntries,
+    required int keepWhenFull,
+  }) async {
+    final String filePath = path;
+    _entryCount ??= await Isolate.run(
+      () => _prepareRuntimeLogFile(
+        filePath,
+        maximumEntries: maximumEntries,
+        keepWhenFull: keepWhenFull,
+      ),
+    );
+    if (_entryCount! >= maximumEntries) {
+      _entryCount = await Isolate.run(
+        () => _compactRuntimeLogFile(filePath, keepWhenFull),
+      );
+    }
+    await File(filePath).writeAsString('$line\n', mode: FileMode.append);
+    _entryCount = _entryCount! + 1;
+  }
+}
+
+int _prepareRuntimeLogFile(
+  String path, {
+  required int maximumEntries,
+  required int keepWhenFull,
+}) {
+  final File file = File(path);
+  if (!file.existsSync()) return 0;
+  final List<String> lines = file.readAsLinesSync();
+  if (lines.length < maximumEntries) return lines.length;
+  final List<String> retained = keepWhenFull == 0
+      ? const <String>[]
+      : lines.sublist(lines.length - keepWhenFull);
+  file.writeAsStringSync(
+    retained.isEmpty ? '' : '${retained.join('\n')}\n',
+    mode: FileMode.write,
+  );
+  return retained.length;
+}
+
+int _compactRuntimeLogFile(String path, int keepCount) {
+  final File file = File(path);
+  if (!file.existsSync()) return 0;
+  final List<String> lines = file.readAsLinesSync();
+  final int retainedCount = keepCount.clamp(0, lines.length);
+  final List<String> retained = retainedCount == 0
+      ? const <String>[]
+      : lines.sublist(lines.length - retainedCount);
+  file.writeAsStringSync(
+    retained.isEmpty ? '' : '${retained.join('\n')}\n',
+    mode: FileMode.write,
+  );
+  return retained.length;
 }
 
 Future<Map<String, Object?>> _defaultRuntimeMetadataLoader() async {
