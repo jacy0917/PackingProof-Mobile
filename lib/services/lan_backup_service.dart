@@ -182,9 +182,6 @@ abstract interface class LanBackupSink implements Listenable {
 }
 
 class LanBackupService extends ChangeNotifier implements LanBackupSink {
-  /// 1 秒心跳轮询中，每 N tick 触发一次完整快照安全轮询。
-  static const int _safetyPollEveryTicks = 10;
-
   LanBackupService({
     MethodChannel? channel,
     BackupNativePlatform? platform,
@@ -230,8 +227,6 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   _logEvent;
   late final LanBackupHostLocator _hostLocator;
   late final bool _ownsHostLocator;
-  Timer? _pollTimer;
-  int _pollTickCount = 0;
   Timer? _heartbeatTimer;
   DateTime? _lastHeartbeatSentAt;
   DateTime? _lastHeartbeatStallLoggedAt;
@@ -252,6 +247,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   final Set<String> _loggedFailedJobIds = <String>{};
   String _lastSnapshotSignature = '';
   Future<Uri?>? _activeAddressRecovery;
+  bool _disposed = false;
 
   @override
   LanBackupSnapshot get snapshot => _snapshot;
@@ -290,14 +286,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     } on Object {
       // Version checks are optional and must never block recording or backup.
     }
-    _pollTimer ??= Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => _onPollTick(),
-    );
-    _heartbeatTimer ??= Timer.periodic(
-      const Duration(seconds: 15),
-      (_) => unawaited(_sendConnectionHeartbeat()),
-    );
+    _ensureHeartbeatTimer();
     unawaited(_sendConnectionHeartbeat());
     _log('heartbeat_timer', <String, Object?>{
       'event': 'created',
@@ -306,8 +295,8 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
       'deviceId': _snapshot.deviceId,
       'deviceName': _snapshot.deviceName,
     });
-    // 平台初始化失败不能让心跳永久停摆：先启动轮询与看门狗，
-    // 由 _ensureHeartbeatAlive 在后续周期重读凭据并补发心跳。
+    // 平台初始化失败不能让心跳永久停摆：先启动心跳定时器，
+    // 后续原生事件或显式刷新会重读凭据并补发心跳。
     try {
       final Map<Object?, Object?> values =
           await _platform.initialize(<String, Object?>{
@@ -323,21 +312,9 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         'error': error.toString(),
       });
     }
+    _ensureHeartbeatAlive();
     unawaited(_refreshHostFeatures());
   }
-
-  /// 1 秒轮询的每次触发：心跳看门狗每 tick 都检查（纯 Dart，无原生调用），
-  /// 完整快照刷新降低到每 10 tick 一次，作为事件推送之外的安全兜底。
-  void _onPollTick() {
-    _ensureHeartbeatAlive();
-    _pollTickCount++;
-    if (_pollTickCount % _safetyPollEveryTicks == 0) {
-      unawaited(refresh());
-    }
-  }
-
-  @visibleForTesting
-  void debugFirePollTick() => _onPollTick();
 
   static LanBackupEndpoint parsePairingQr(String value) {
     final Uri uri = Uri.parse(value.trim());
@@ -1093,10 +1070,17 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     _ensureHeartbeatAlive();
   }
 
-  /// 轻量看门狗：心跳定时器丢失或长时间未发出心跳时自动恢复。
-  ///
-  /// 复用现有 1 秒轮询，仅做整数时间比较，不新增唤醒或常驻开销。
+  void _ensureHeartbeatTimer() {
+    if (_disposed) return;
+    _heartbeatTimer ??= Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => unawaited(_sendConnectionHeartbeat()),
+    );
+  }
+
+  /// 轻量看门狗：在原生快照事件或显式刷新后检查心跳并按需补发。
   void _ensureHeartbeatAlive() {
+    if (_disposed) return;
     final DateTime now = DateTime.now();
     if (_snapshot.endpoint == null ||
         _snapshot.deviceId.isEmpty ||
@@ -1105,7 +1089,9 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     }
     final bool hasAccessKey = _accessKey.isNotEmpty;
     final DateTime? lastSent = _lastHeartbeatSentAt;
+    final bool timerMissing = _heartbeatTimer == null;
     final bool stalled =
+        timerMissing ||
         !hasAccessKey ||
         lastSent == null ||
         now.difference(lastSent) > const Duration(seconds: 60);
@@ -1119,17 +1105,14 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     }
     _lastHeartbeatStallLoggedAt = now;
     _log('heartbeat_stalled', <String, Object?>{
-      'timerAlive': _heartbeatTimer != null,
+      'timerAlive': !timerMissing,
       'lastSentSecondsAgo': lastSent == null
           ? -1
           : now.difference(lastSent).inSeconds,
       'hasAccessKey': hasAccessKey,
       'endpoint': _snapshot.endpoint?.baseUri.toString(),
     });
-    _heartbeatTimer ??= Timer.periodic(
-      const Duration(seconds: 15),
-      (_) => unawaited(_sendConnectionHeartbeat()),
-    );
+    _ensureHeartbeatTimer();
     if (hasAccessKey) {
       unawaited(_sendConnectionHeartbeat());
     } else {
@@ -1175,7 +1158,10 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   void _attachNativeHandler() {
     if (_nativeHandlerAttached) return;
     _nativeHandlerAttached = true;
-    _platform.setSnapshotListener(_applyNativeSnapshot);
+    _platform.setSnapshotListener((Map<Object?, Object?> values) {
+      _applyNativeSnapshot(values);
+      _ensureHeartbeatAlive();
+    });
   }
 
   Future<Uri?> _resolveCurrentBaseUri() {
@@ -1812,7 +1798,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   }
 
   /// 对快照中 Dart 实际消费的字段做紧凑签名；内容未变化时跳过 UI 通知，
-  /// 避免低频安全轮询与原生合并推送反复触发整页重建。
+  /// 避免显式刷新与原生合并推送反复触发整页重建。
   String _snapshotSignature(LanBackupSnapshot snapshot) {
     final StringBuffer buffer = StringBuffer()
       ..write(snapshot.deviceId)
@@ -1916,8 +1902,9 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
 
   @override
   Future<void> dispose() async {
-    _pollTimer?.cancel();
+    _disposed = true;
     _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     _log('heartbeat_timer', <String, Object?>{
       'event': 'cancelled',
       'endpoint': _snapshot.endpoint?.baseUri.toString(),

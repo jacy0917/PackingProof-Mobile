@@ -4,11 +4,14 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:packing_proof_mobile/models/barcode_marker.dart';
+import 'package:packing_proof_mobile/models/backup_retention_policy.dart';
 import 'package:packing_proof_mobile/models/lan_backup.dart';
 import 'package:packing_proof_mobile/models/order_info.dart';
 import 'package:packing_proof_mobile/models/recording_session.dart';
 import 'package:packing_proof_mobile/models/recording_operation_mode.dart';
+import 'package:packing_proof_mobile/platform/contracts/backup_platform.dart';
 import 'package:packing_proof_mobile/services/lan_backup_service.dart';
 import 'package:packing_proof_mobile/services/lan_backup_discovery_service.dart';
 
@@ -811,41 +814,68 @@ void main() {
     expect(job.destinationComputerId, '');
   });
 
-  test('轮询定时器每 10 tick 才刷新一次完整快照', () async {
-    final MethodChannel channel = const MethodChannel(
-      'app.packingproof.mobile/lan_backup_poll_test',
+  testWidgets('任意推进周期时钟都不会自动读取完整快照', (WidgetTester tester) async {
+    final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
+    final LanBackupService service = _testBackupService(platform);
+    await service.initialize(
+      autoEnabled: true,
+      unbackedRetention: UnbackedRetentionPolicy.days30,
+      backedRetention: BackedRetentionPolicy.days7,
     );
-    int snapshotCalls = 0;
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (MethodCall call) async {
-          if (call.method == 'snapshot') {
-            snapshotCalls++;
-            return <Object?, Object?>{
-              'deviceId': 'android-poll',
-              'deviceName': '手机1',
-              'connection': null,
-              'jobs': <Object?>[],
-              'migrationHost': null,
-            };
-          }
-          return null;
-        });
-    addTearDown(() {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, null);
-    });
-    final LanBackupService service = LanBackupService(channel: channel);
+    await tester.pump(const Duration(hours: 6));
+
+    expect(platform.snapshotCalls, 0);
+    await service.dispose();
+  });
+
+  test('原生事件更新与并发显式刷新仍可合并', () async {
+    final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
+    final LanBackupService service = _testBackupService(platform);
     addTearDown(service.dispose);
+    await service.initialize(
+      autoEnabled: true,
+      unbackedRetention: UnbackedRetentionPolicy.days30,
+      backedRetention: BackedRetentionPolicy.days7,
+    );
+    final Completer<Map<Object?, Object?>?> firstSnapshot =
+        Completer<Map<Object?, Object?>?>();
+    final Completer<Map<Object?, Object?>?> mergedSnapshot =
+        Completer<Map<Object?, Object?>?>();
+    platform.snapshotResults.addAll(<Completer<Map<Object?, Object?>?>>[
+      firstSnapshot,
+      mergedSnapshot,
+    ]);
 
-    for (int index = 0; index < 9; index++) {
-      service.debugFirePollTick();
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-    expect(snapshotCalls, 0);
+    final Future<void> firstRefresh = service.refresh();
+    final Future<void> secondRefresh = service.refresh();
+    platform.emitSnapshot(_backupSnapshot(deviceName: '原生事件'));
+    expect(service.snapshot.deviceName, '原生事件');
+    expect(platform.snapshotCalls, 1);
 
-    service.debugFirePollTick();
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-    expect(snapshotCalls, 1);
+    firstSnapshot.complete(_backupSnapshot(deviceName: '第一次刷新'));
+    await Future<void>.delayed(Duration.zero);
+    expect(platform.snapshotCalls, 2);
+    mergedSnapshot.complete(_backupSnapshot(deviceName: '合并刷新'));
+    await Future.wait(<Future<void>>[firstRefresh, secondRefresh]);
+
+    expect(platform.snapshotCalls, 2);
+    expect(service.snapshot.deviceName, '合并刷新');
+  });
+
+  testWidgets('dispose 后不会留下周期定时器或快照轮询', (WidgetTester tester) async {
+    final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
+    final LanBackupService service = _testBackupService(platform);
+    await service.initialize(
+      autoEnabled: true,
+      unbackedRetention: UnbackedRetentionPolicy.days30,
+      backedRetention: BackedRetentionPolicy.days7,
+    );
+
+    await service.dispose();
+    await tester.pump(const Duration(days: 1));
+
+    expect(platform.snapshotCalls, 0);
+    expect(platform.disposeCalls, 1);
   });
 
   test('自动备份关闭时入队仍留下决策日志', () async {
@@ -1601,6 +1631,73 @@ void main() {
     expect(saved?['computerId'], 'computer-2');
     expect(service.snapshot.message, '保存主机已允许连接');
   });
+}
+
+LanBackupService _testBackupService(_TrackingBackupPlatform platform) {
+  return LanBackupService(
+    platform: platform,
+    httpClient: _UnexpectedHttpClient(),
+    hostLocator: _FakeHostLocator(null),
+    packageInfoLoader: () async => PackageInfo(
+      appName: 'PackingProof',
+      packageName: 'app.packingproof.mobile',
+      version: '0.5.23',
+      buildNumber: '11036',
+    ),
+  );
+}
+
+Map<Object?, Object?> _backupSnapshot({required String deviceName}) {
+  return <Object?, Object?>{
+    'deviceId': 'snapshot-device',
+    'deviceName': deviceName,
+    'connection': null,
+    'jobs': <Object?>[],
+    'migrationHost': null,
+  };
+}
+
+class _TrackingBackupPlatform extends Fake implements BackupNativePlatform {
+  void Function(Map<Object?, Object?> snapshot)? _listener;
+  final List<Completer<Map<Object?, Object?>?>> snapshotResults =
+      <Completer<Map<Object?, Object?>?>>[];
+  int snapshotCalls = 0;
+  int disposeCalls = 0;
+
+  @override
+  void setSnapshotListener(
+    void Function(Map<Object?, Object?> snapshot)? listener,
+  ) {
+    _listener = listener;
+  }
+
+  void emitSnapshot(Map<Object?, Object?> snapshot) =>
+      _listener?.call(snapshot);
+
+  @override
+  Future<Map<Object?, Object?>?> snapshot() {
+    snapshotCalls++;
+    if (snapshotResults.isEmpty) {
+      return Future<Map<Object?, Object?>?>.value(
+        _backupSnapshot(deviceName: '显式刷新'),
+      );
+    }
+    return snapshotResults.removeAt(0).future;
+  }
+
+  @override
+  Future<Map<Object?, Object?>?> initialize(
+    Map<Object?, Object?> request,
+  ) async => _backupSnapshot(deviceName: '初始化');
+
+  @override
+  Future<String?> loadAccessKey() async => null;
+
+  @override
+  Future<void> dispose() async {
+    disposeCalls++;
+    _listener = null;
+  }
 }
 
 _StreamHttpResponse _nodeInfo(String id, String name) => _StreamHttpResponse(
