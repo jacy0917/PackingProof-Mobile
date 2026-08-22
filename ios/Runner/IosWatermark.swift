@@ -197,7 +197,15 @@ private struct IosLiveWatermarkRaster {
   let bgra: [UInt8]
 }
 
-/// 每秒只排版并栅格化一次水印，其余帧复用同一透明 BGRA 位图。
+private struct IosLiveWatermarkBlendPixel {
+  let destinationOffset: Int
+  let blue: UInt8
+  let green: UInt8
+  let red: UInt8
+  let alpha: UInt8
+}
+
+/// 每秒只排版并栅格化一次水印，同时缓存可见像素的写入位置；其余帧不再扫描透明区域。
 /// 位图先绘制黑色粗字，再绘制白色填充，白色会盖住描边的内半圈。
 final class IosLiveWatermarkRenderer {
   private let formatter: DateFormatter
@@ -205,6 +213,13 @@ final class IosLiveWatermarkRenderer {
   private var cachedTrackingNumber = ""
   private var cachedOutputSize = CGSize.zero
   private var cachedRaster: IosLiveWatermarkRaster?
+  private var cachedBlendOrientation = ""
+  private var cachedSourceWidth = 0
+  private var cachedSourceHeight = 0
+  private var cachedBytesPerRow = 0
+  private var cachedBlendPixels: [IosLiveWatermarkBlendPixel]?
+  private(set) var lastRasterPixelCount = 0
+  private(set) var lastBlendPixelCount = 0
 
   init(timeZone: TimeZone = .current) {
     formatter = DateFormatter()
@@ -241,16 +256,37 @@ final class IosLiveWatermarkRenderer {
       cachedSecond = second
       cachedTrackingNumber = trackingNumber
       cachedOutputSize = outputSize
+      cachedBlendPixels = nil
     }
     guard let raster = cachedRaster else {
       throw IosLiveWatermarkError.rasterizationFailed
     }
-    try blend(
-      raster,
-      into: pixelBuffer,
-      outputSize: outputSize,
-      orientation: orientation
-    )
+    let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    if cachedBlendPixels == nil ||
+      cachedBlendOrientation != orientation ||
+      cachedSourceWidth != sourceWidth ||
+      cachedSourceHeight != sourceHeight ||
+      cachedBytesPerRow != bytesPerRow
+    {
+      cachedBlendPixels = makeBlendPixels(
+        raster,
+        outputSize: outputSize,
+        sourceWidth: sourceWidth,
+        sourceHeight: sourceHeight,
+        bytesPerRow: bytesPerRow,
+        orientation: orientation
+      )
+      lastRasterPixelCount = raster.width * raster.height
+      lastBlendPixelCount = cachedBlendPixels?.count ?? 0
+      cachedBlendOrientation = orientation
+      cachedSourceWidth = sourceWidth
+      cachedSourceHeight = sourceHeight
+      cachedBytesPerRow = bytesPerRow
+    }
+    guard let blendPixels = cachedBlendPixels else {
+      throw IosLiveWatermarkError.rasterizationFailed
+    }
+    try blend(blendPixels, into: pixelBuffer)
   }
 
   func reset() {
@@ -258,6 +294,13 @@ final class IosLiveWatermarkRenderer {
     cachedTrackingNumber = ""
     cachedOutputSize = .zero
     cachedRaster = nil
+    cachedBlendOrientation = ""
+    cachedSourceWidth = 0
+    cachedSourceHeight = 0
+    cachedBytesPerRow = 0
+    cachedBlendPixels = nil
+    lastRasterPixelCount = 0
+    lastBlendPixelCount = 0
   }
 
   private func watermarkText(date: Date, trackingNumber: String) -> String {
@@ -361,14 +404,14 @@ final class IosLiveWatermarkRenderer {
     return IosLiveWatermarkRaster(width: width, height: height, bgra: pixels)
   }
 
-  private func blend(
+  private func makeBlendPixels(
     _ raster: IosLiveWatermarkRaster,
-    into pixelBuffer: CVPixelBuffer,
     outputSize: CGSize,
+    sourceWidth: Int,
+    sourceHeight: Int,
+    bytesPerRow: Int,
     orientation: String
-  ) throws {
-    let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
-    let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
+  ) -> [IosLiveWatermarkBlendPixel] {
     let outputWidth = Int(outputSize.width)
     let outputHeight = Int(outputSize.height)
     let origin = IosLiveWatermarkGeometry.outputOrigin(
@@ -377,16 +420,8 @@ final class IosLiveWatermarkRenderer {
     )
     let originX = Int(origin.x.rounded(.down))
     let originY = Int(origin.y.rounded(.down))
-    let lockResult = CVPixelBufferLockBaseAddress(pixelBuffer, [])
-    guard lockResult == kCVReturnSuccess else {
-      throw IosLiveWatermarkError.pixelBufferLockFailed(lockResult)
-    }
-    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
-    guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
-      throw IosLiveWatermarkError.missingBaseAddress
-    }
-    let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-    let destination = baseAddress.assumingMemoryBound(to: UInt8.self)
+    var pixels: [IosLiveWatermarkBlendPixel] = []
+    pixels.reserveCapacity(raster.width * raster.height / 2)
     raster.bgra.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
         return
@@ -398,7 +433,7 @@ final class IosLiveWatermarkRenderer {
           let outputX = originX + rasterX
           guard outputX >= 0, outputX < outputWidth else { continue }
           let sourceOffset = (rasterY * raster.width + rasterX) * 4
-          let alpha = Int(source[sourceOffset + 3])
+          let alpha = source[sourceOffset + 3]
           if alpha == 0 { continue }
           let mapped = IosLiveWatermarkGeometry.sourcePixel(
             outputX: outputX,
@@ -411,16 +446,56 @@ final class IosLiveWatermarkRenderer {
                 mapped.y >= 0, mapped.y < sourceHeight else {
             continue
           }
-          let destinationOffset = mapped.y * bytesPerRow + mapped.x * 4
-          let inverseAlpha = 255 - alpha
-          for channel in 0..<3 {
-            let blended = Int(source[sourceOffset + channel]) +
-              (Int(destination[destinationOffset + channel]) * inverseAlpha + 127) / 255
-            destination[destinationOffset + channel] = UInt8(min(255, blended))
-          }
-          destination[destinationOffset + 3] = 255
+          pixels.append(IosLiveWatermarkBlendPixel(
+            destinationOffset: mapped.y * bytesPerRow + mapped.x * 4,
+            blue: source[sourceOffset],
+            green: source[sourceOffset + 1],
+            red: source[sourceOffset + 2],
+            alpha: alpha
+          ))
         }
       }
+    }
+    return pixels
+  }
+
+  private func blend(
+    _ pixels: [IosLiveWatermarkBlendPixel],
+    into pixelBuffer: CVPixelBuffer
+  ) throws {
+    let lockResult = CVPixelBufferLockBaseAddress(pixelBuffer, [])
+    guard lockResult == kCVReturnSuccess else {
+      throw IosLiveWatermarkError.pixelBufferLockFailed(lockResult)
+    }
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+    guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+      throw IosLiveWatermarkError.missingBaseAddress
+    }
+    let destination = baseAddress.assumingMemoryBound(to: UInt8.self)
+    for pixel in pixels {
+      let offset = pixel.destinationOffset
+      if pixel.alpha == 255 {
+        destination[offset] = pixel.blue
+        destination[offset + 1] = pixel.green
+        destination[offset + 2] = pixel.red
+      } else {
+        let inverseAlpha = 255 - Int(pixel.alpha)
+        destination[offset] = UInt8(min(
+          255,
+          Int(pixel.blue) + (Int(destination[offset]) * inverseAlpha + 127) / 255
+        ))
+        destination[offset + 1] = UInt8(min(
+          255,
+          Int(pixel.green) +
+            (Int(destination[offset + 1]) * inverseAlpha + 127) / 255
+        ))
+        destination[offset + 2] = UInt8(min(
+          255,
+          Int(pixel.red) +
+            (Int(destination[offset + 2]) * inverseAlpha + 127) / 255
+        ))
+      }
+      destination[offset + 3] = 255
     }
   }
 }

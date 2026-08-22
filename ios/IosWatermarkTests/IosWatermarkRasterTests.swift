@@ -190,6 +190,39 @@ final class IosWatermarkRasterTests: XCTestCase {
     }
   }
 
+  func testLiveRendererReusesEquivalentOpaquePixelPlan() throws {
+    let date = Date(timeIntervalSince1970: 1_776_768_896)
+    let first = try makePixelBuffer(width: 1080, height: 1920)
+    let second = try makePixelBuffer(width: 1080, height: 1920)
+    fill(first, blue: 80, green: 96, red: 112)
+    fill(second, blue: 80, green: 96, red: 112)
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+
+    try renderer.apply(
+      to: first,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: date
+    )
+    let firstBytes = bytes(of: first)
+    try renderer.apply(
+      to: second,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: date
+    )
+
+    XCTAssertEqual(bytes(of: second), firstBytes)
+    XCTAssertGreaterThan(renderer.lastBlendPixelCount, 0)
+    XCTAssertLessThan(
+      renderer.lastBlendPixelCount,
+      renderer.lastRasterPixelCount / 2,
+      "帧内应只处理有可见 alpha 的水印像素"
+    )
+  }
+
   func testNativeRasterKeepsChangingWatermarkUncroppedInAllOrientations()
     throws
   {
@@ -361,6 +394,31 @@ final class IosWatermarkRasterTests: XCTestCase {
         bytes[offset + 3] = 255
       }
     }
+  }
+
+  private func makePixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
+    var pixelBuffer: CVPixelBuffer?
+    XCTAssertEqual(
+      CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        width,
+        height,
+        kCVPixelFormatType_32BGRA,
+        [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary,
+        &pixelBuffer
+      ),
+      kCVReturnSuccess
+    )
+    return try XCTUnwrap(pixelBuffer)
+  }
+
+  private func bytes(of pixelBuffer: CVPixelBuffer) -> [UInt8] {
+    CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+    let byteCount = CVPixelBufferGetBytesPerRow(pixelBuffer) *
+      CVPixelBufferGetHeight(pixelBuffer)
+    let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer)!
+    return Array(UnsafeRawBufferPointer(start: baseAddress, count: byteCount))
   }
 
   private func changedOutputBounds(
