@@ -517,6 +517,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
     var current = before
     var deletedCount = 0
     var freedBytes: Int64 = 0
+    var jobsChanged = false
     if current < minimumBytes {
       let recordingsRoot = recordingsDirectory().path + "/"
       for job in try jobs() where current < targetBytes {
@@ -540,8 +541,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
         guard FileManager.default.fileExists(atPath: path) else { continue }
         guard sha256(file: file) == expectedSha256 else {
           var updated = job
-          updated["errorMessage"] = "录像文件已被替换，已取消空间清理"
-          try upsert(updated)
+          let message = "录像文件已被替换，已取消空间清理"
+          if updated["errorMessage"] as? String != message {
+            updated["errorMessage"] = message
+            try upsert(updated)
+            jobsChanged = true
+          }
           continue
         }
 
@@ -552,8 +557,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
         )
         guard let receiptSignature = attestation else {
           var updated = job
-          updated["errorMessage"] = "暂时无法向电脑确认备份，已保留本地录像"
-          try upsert(updated)
+          let message = "暂时无法向电脑确认备份，已保留本地录像"
+          if updated["errorMessage"] as? String != message {
+            updated["errorMessage"] = message
+            try upsert(updated)
+            jobsChanged = true
+          }
           continue
         }
 
@@ -585,19 +594,30 @@ final class IosBackupHostApi: BackupNativeHostApi {
         case .missing:
           continue
         case .stale:
-          currentJob["errorMessage"] = "录像文件已被替换，已取消空间清理"
-          try upsert(currentJob)
+          let message = "录像文件已被替换，已取消空间清理"
+          if currentJob["errorMessage"] as? String != message {
+            currentJob["errorMessage"] = message
+            try upsert(currentJob)
+            jobsChanged = true
+          }
           continue
         case .failed:
-          currentJob["errorMessage"] = "空间清理失败，已保留本机录像"
-          try upsert(currentJob)
+          let message = "空间清理失败，已保留本机录像"
+          if currentJob["errorMessage"] as? String != message {
+            currentJob["errorMessage"] = message
+            try upsert(currentJob)
+            jobsChanged = true
+          }
           continue
         }
         try upsert(currentJob)
+        jobsChanged = true
         current = availableStorageBytes()
       }
     }
-    emitSnapshot()
+    if jobsChanged {
+      emitSnapshot()
+    }
     return [
       "availableBytes": current,
       "availableBytesBefore": before,

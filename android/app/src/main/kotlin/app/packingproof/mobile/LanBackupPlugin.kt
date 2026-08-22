@@ -188,8 +188,9 @@ internal class LanBackupPlugin(
                     result.success(null)
                 }
                 "checkAndReclaimStorage" -> {
-                    result.success(storageManager.checkAndReclaim())
-                    notifySnapshotChanged()
+                    val storageCheck = storageManager.checkAndReclaim()
+                    result.success(storageCheck.values)
+                    if (storageCheck.jobsChanged) notifySnapshotChanged()
                 }
                 "getNetworkDiagnostics" -> result.success(networkDiagnostics())
                 "retry" -> {

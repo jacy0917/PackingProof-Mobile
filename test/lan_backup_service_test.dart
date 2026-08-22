@@ -828,6 +828,23 @@ void main() {
     await service.dispose();
   });
 
+  test('存储检查依赖原生变更事件而不主动读取完整快照', () async {
+    final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
+    final LanBackupService service = _testBackupService(platform);
+    addTearDown(service.dispose);
+    await service.initialize(
+      autoEnabled: true,
+      unbackedRetention: UnbackedRetentionPolicy.days30,
+      backedRetention: BackedRetentionPolicy.days7,
+    );
+
+    final StorageSpaceResult result = await service.checkAndReclaimStorage();
+
+    expect(result.availableBytes, 4 * 1024 * 1024 * 1024);
+    expect(platform.reclaimCalls, 1);
+    expect(platform.snapshotCalls, 0);
+  });
+
   test('原生事件更新与并发显式刷新仍可合并', () async {
     final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
     final LanBackupService service = _testBackupService(platform);
@@ -1662,6 +1679,7 @@ class _TrackingBackupPlatform extends Fake implements BackupNativePlatform {
   final List<Completer<Map<Object?, Object?>?>> snapshotResults =
       <Completer<Map<Object?, Object?>?>>[];
   int snapshotCalls = 0;
+  int reclaimCalls = 0;
   int disposeCalls = 0;
 
   @override
@@ -1692,6 +1710,19 @@ class _TrackingBackupPlatform extends Fake implements BackupNativePlatform {
 
   @override
   Future<String?> loadAccessKey() async => null;
+
+  @override
+  Future<Map<Object?, Object?>?> reclaimStorageIfNeeded() async {
+    reclaimCalls++;
+    return <Object?, Object?>{
+      'availableBytes': 4 * 1024 * 1024 * 1024,
+      'availableBytesBefore': 4 * 1024 * 1024 * 1024,
+      'freedBytes': 0,
+      'deletedCount': 0,
+      'warning': false,
+      'insufficient': false,
+    };
+  }
 
   @override
   Future<void> dispose() async {

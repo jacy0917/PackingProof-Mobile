@@ -1023,7 +1023,6 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   Future<StorageSpaceResult> checkAndReclaimStorage() async {
     final Map<Object?, Object?> values =
         await _platform.reclaimStorageIfNeeded() ?? <Object?, Object?>{};
-    await refresh();
     return StorageSpaceResult.fromMap(values);
   }
 

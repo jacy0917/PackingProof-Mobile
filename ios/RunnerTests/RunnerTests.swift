@@ -575,6 +575,40 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(try fixture.store.allJobs().first?["localDeletedAt"])
   }
 
+  func testStorageReclaimDoesNotEmitSnapshotWhenJobsStayUnchanged() async throws {
+    let emitted = expectation(description: "未变更任务不推送快照")
+    emitted.isInverted = true
+    let fixture = try makeRetentionCleanupFixture(
+      id: "storage-reclaim-no-change",
+      availableStorageBytesOverride: { 4 * 1024 * 1024 * 1024 },
+      onSnapshot: { _ in emitted.fulfill() }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    try fixture.store.upsert(makeVerifiedStorageReclaimJob(fixture.job))
+
+    _ = try await awaitStorageReclaim(fixture.api)
+
+    await fulfillment(of: [emitted], timeout: 0.5)
+  }
+
+  func testStorageReclaimEmitsSnapshotWhenJobErrorChanges() async throws {
+    let emitted = expectation(description: "任务错误变化后推送快照")
+    let fixture = try makeRetentionCleanupFixture(
+      id: "storage-reclaim-error-change",
+      availableStorageBytesOverride: { 0 },
+      storageAttestationOverride: { _, _, _ in "unexpected-receipt" },
+      onSnapshot: { _ in emitted.fulfill() }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    var job = makeVerifiedStorageReclaimJob(fixture.job)
+    job["contentSha256"] = String(repeating: "f", count: 64)
+    try fixture.store.upsert(job)
+
+    _ = try await awaitStorageReclaim(fixture.api)
+
+    await fulfillment(of: [emitted], timeout: 2)
+  }
+
   func testStorageReclaimKeepsFileWhenContentSha256Mismatches() async throws {
     let fixture = try makeRetentionCleanupFixture(
       id: "storage-reclaim-sha-mismatch",
@@ -1153,7 +1187,8 @@ class RunnerTests: XCTestCase {
     id: String,
     availableStorageBytesOverride: (() -> Int64)? = nil,
     storageAttestationOverride:
-      (([String: Any], String, Int64) async -> String?)? = nil
+      (([String: Any], String, Int64) async -> String?)? = nil,
+    onSnapshot: (([String?: Any?]) -> Void)? = nil
   ) throws -> RetentionCleanupFixture {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent(
@@ -1180,7 +1215,7 @@ class RunnerTests: XCTestCase {
       account: "access-key"
     )
     let api = IosBackupHostApi(
-      eventApi: FakeBackupNativeEventApi(),
+      eventApi: FakeBackupNativeEventApi(onSnapshot: onSnapshot),
       defaults: defaults,
       credentialStore: credentialStore,
       jobStore: .success(store),
