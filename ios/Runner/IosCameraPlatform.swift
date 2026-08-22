@@ -75,6 +75,59 @@ enum IosCameraWriterFinishPolicy {
   }
 }
 
+/// 将高频事件限制为一个在途请求，并在忙碌或限速期间只保留最新值。
+/// 调用方必须在同一个串行队列上驱动所有状态转换。
+struct IosLatestPendingGate<Payload> {
+  enum Action {
+    case none
+    case send(Payload)
+    case schedule(TimeInterval)
+  }
+
+  private let minimumInterval: TimeInterval
+  private var inFlight = false
+  private var pending: Payload?
+  private var nextSendTime: TimeInterval = 0
+  private var wakeScheduled = false
+
+  init(minimumInterval: TimeInterval) {
+    self.minimumInterval = max(0, minimumInterval)
+  }
+
+  mutating func submit(_ payload: Payload, now: TimeInterval) -> Action {
+    pending = payload
+    return drain(now: now)
+  }
+
+  mutating func complete(now: TimeInterval) -> Action {
+    inFlight = false
+    return drain(now: now)
+  }
+
+  mutating func wake(now: TimeInterval) -> Action {
+    wakeScheduled = false
+    return drain(now: now)
+  }
+
+  mutating func discardPending() {
+    pending = nil
+  }
+
+  private mutating func drain(now: TimeInterval) -> Action {
+    guard !inFlight, pending != nil else { return .none }
+    if now < nextSendTime {
+      guard !wakeScheduled else { return .none }
+      wakeScheduled = true
+      return .schedule(nextSendTime - now)
+    }
+    let payload = pending!
+    pending = nil
+    inFlight = true
+    nextSendTime = now + minimumInterval
+    return .send(payload)
+  }
+}
+
 /// iOS 连续相机原生实现：
 /// 保持一个 `AVCaptureSession` 常开，用 `AVAssetWriter` 按单号轮换输出文件，
 /// 不重启预览，达到接近 Android 连续录像的体验。
@@ -94,6 +147,8 @@ final class IosCameraHostApi:
   private let bufferLock = NSLock()
   private let stateLock = NSLock()
   private let recordingLifecycle = IosCameraRecordingLifecycle()
+  private var barcodeBatchGate =
+    IosLatestPendingGate<[BarcodeCandidateDto]>(minimumInterval: 0.1)
 
   private var textureId: Int64 = -1
   private var latestPixelBuffer: CVPixelBuffer?
@@ -566,6 +621,9 @@ final class IosCameraHostApi:
         return
       }
       self.pairingScanEnabled = enabled
+      if !self.pairingScanEnabled && !self.workScanEnabled {
+        self.barcodeBatchGate.discardPending()
+      }
       completion(.success(()))
     }
   }
@@ -580,6 +638,9 @@ final class IosCameraHostApi:
         return
       }
       self.workScanEnabled = enabled
+      if !self.pairingScanEnabled && !self.workScanEnabled {
+        self.barcodeBatchGate.discardPending()
+      }
       completion(.success(()))
     }
   }
@@ -807,7 +868,52 @@ final class IosCameraHostApi:
       ))
     }
     if !candidates.isEmpty {
-      eventApi.barcodeBatch(candidates: candidates, completion: { _ in })
+      handleBarcodeBatchAction(barcodeBatchGate.submit(
+        candidates,
+        now: ProcessInfo.processInfo.systemUptime
+      ))
+    }
+  }
+
+  private func handleBarcodeBatchAction(
+    _ action: IosLatestPendingGate<[BarcodeCandidateDto]>.Action
+  ) {
+    switch action {
+    case .none:
+      return
+    case .send(let candidates):
+      eventApi.barcodeBatch(candidates: candidates) { [weak self] _ in
+        guard let self else { return }
+        self.metadataQueue.async { [weak self] in
+          guard let self else { return }
+          guard !self.isDisposed,
+                self.pairingScanEnabled || self.workScanEnabled else {
+            self.barcodeBatchGate.discardPending()
+            _ = self.barcodeBatchGate.complete(
+              now: ProcessInfo.processInfo.systemUptime
+            )
+            return
+          }
+          self.handleBarcodeBatchAction(self.barcodeBatchGate.complete(
+            now: ProcessInfo.processInfo.systemUptime
+          ))
+        }
+      }
+    case .schedule(let delay):
+      metadataQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+        guard let self else { return }
+        guard !self.isDisposed,
+              self.pairingScanEnabled || self.workScanEnabled else {
+          self.barcodeBatchGate.discardPending()
+          _ = self.barcodeBatchGate.wake(
+            now: ProcessInfo.processInfo.systemUptime
+          )
+          return
+        }
+        self.handleBarcodeBatchAction(self.barcodeBatchGate.wake(
+          now: ProcessInfo.processInfo.systemUptime
+        ))
+      }
     }
   }
 
