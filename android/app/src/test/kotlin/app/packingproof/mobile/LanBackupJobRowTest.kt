@@ -99,4 +99,45 @@ class LanBackupJobRowTest {
         val restored = lanBackupRowToJob(lanBackupJobToRow(job))
         assertTrue(restored.optBoolean("waitingCleanup"))
     }
+
+    @Test
+    fun snapshotColumnsExcludePrivateAndLargeFields() {
+        assertFalse(LAN_BACKUP_SNAPSHOT_COLUMNS.contains("generation"))
+        assertFalse(LAN_BACKUP_SNAPSHOT_COLUMNS.contains("sessions"))
+        assertFalse(LAN_BACKUP_SNAPSHOT_COLUMNS.contains("verification_receipt"))
+        assertEquals(17, LAN_BACKUP_SNAPSHOT_COLUMNS.size)
+    }
+
+    @Test
+    fun snapshotRowMapsOnlyDartConsumedFields() {
+        val row = mapOf<String, Any?>(
+            "id" to "job-4",
+            "file_path" to "/data/user/0/app.packingproof.mobile/recordings/d.mp4",
+            "state" to "uploading",
+            "uploaded_bytes" to 5L,
+            "total_bytes" to 10L,
+            "last_modified" to 1724000000000L,
+            "content_sha256" to null,
+            "error_message" to null,
+            "failure_kind" to null,
+            "file_created_at" to "2026-08-19T04:00:00Z",
+            "backup_completed_at" to null,
+            "scheduled_cleanup_at" to "2026-08-26T04:00:00Z",
+            "local_deleted_at" to null,
+            "waiting_cleanup" to 1L,
+            "remote_record_id" to 9L,
+            "destination_computer_id" to "host-1",
+            "cleanup_reason" to null,
+        )
+
+        val snapshot = lanBackupSnapshotRowToValue(row)
+
+        assertEquals(LAN_BACKUP_SNAPSHOT_COLUMNS.size, snapshot.size)
+        assertEquals("job-4", snapshot["id"])
+        assertEquals(5L, snapshot["uploadedBytes"])
+        assertEquals(true, snapshot["waitingCleanup"])
+        assertEquals(9L, snapshot["remoteRecordId"])
+        assertFalse(snapshot.containsKey("generation"))
+        assertFalse(snapshot.containsKey("sessions"))
+    }
 }

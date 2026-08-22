@@ -302,7 +302,7 @@ internal class LanBackupPlugin(
         "deviceId" to store.deviceId(),
         "deviceName" to store.deviceName(),
         "connection" to store.connection()?.toFlutterValue(),
-        "jobs" to store.jobs().map { it.toSnapshotValue() },
+        "jobs" to store.jobsForSnapshot(),
         "migrationHost" to store.migrationHint()?.toFlutterValue(),
     )
 
@@ -321,7 +321,6 @@ internal class LanBackupPlugin(
 
     private fun pushSnapshotNow() {
         val value = snapshot()
-        channel.invokeMethod("snapshotChanged", value)
         snapshotListeners.forEach { it(value) }
     }
 
@@ -342,30 +341,6 @@ internal class LanBackupPlugin(
         snapshotListeners.clear()
         channel.setMethodCallHandler(null)
     }
-}
-
-/** 快照瘦身：只下发 Dart 实际消费的字段，避免 sessions 等大字段每秒跨通道传输。 */
-private fun org.json.JSONObject.toSnapshotValue(): Map<String, Any?> {
-    fun nullable(key: String): Any? = LanBackupCleanupScheduler.nullableText(this, key)
-    return mapOf(
-        "id" to getString("id"),
-        "filePath" to getString("filePath"),
-        "state" to optString("state"),
-        "uploadedBytes" to optLong("uploadedBytes"),
-        "totalBytes" to optLong("totalBytes"),
-        "lastModified" to optLong("lastModified"),
-        "contentSha256" to nullable("contentSha256"),
-        "errorMessage" to nullable("errorMessage"),
-        "failureKind" to nullable("failureKind"),
-        "fileCreatedAt" to nullable("fileCreatedAt"),
-        "backupCompletedAt" to nullable("backupCompletedAt"),
-        "scheduledCleanupAt" to nullable("scheduledCleanupAt"),
-        "localDeletedAt" to nullable("localDeletedAt"),
-        "waitingCleanup" to optBoolean("waitingCleanup"),
-        "remoteRecordId" to optLong("remoteRecordId").takeIf { it > 0 },
-        "destinationComputerId" to optString("destinationComputerId"),
-        "cleanupReason" to nullable("cleanupReason"),
-    )
 }
 
 internal fun Any?.toFlutterValue(): Any? = when (this) {

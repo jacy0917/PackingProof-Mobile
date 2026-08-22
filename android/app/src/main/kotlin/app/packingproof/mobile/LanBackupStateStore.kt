@@ -260,6 +260,28 @@ internal class LanBackupStateStore(private val context: Context) {
 
     fun jobs(): List<JSONObject> = withJobLock { jobsUnlocked() }
 
+    fun jobsForSnapshot(): List<Map<String, Any?>> = withJobLock {
+        db.query(
+            LanBackupJobDatabase.TABLE,
+            LAN_BACKUP_SNAPSHOT_COLUMNS.toTypedArray(),
+            null,
+            null,
+            null,
+            null,
+            "last_modified DESC",
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        lanBackupSnapshotRowToValue(
+                            cursor.toRowMap(LAN_BACKUP_SNAPSHOT_COLUMNS),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
     fun discardUnavailableJobs() = withJobLock {
         jobsUnlocked()
             .filter { it.optString("state") != "completed" }

@@ -5,6 +5,47 @@ import android.database.Cursor
 import org.json.JSONArray
 import org.json.JSONObject
 
+internal val LAN_BACKUP_SNAPSHOT_COLUMNS = listOf(
+    "id",
+    "file_path",
+    "state",
+    "uploaded_bytes",
+    "total_bytes",
+    "last_modified",
+    "content_sha256",
+    "error_message",
+    "failure_kind",
+    "file_created_at",
+    "backup_completed_at",
+    "scheduled_cleanup_at",
+    "local_deleted_at",
+    "waiting_cleanup",
+    "remote_record_id",
+    "destination_computer_id",
+    "cleanup_reason",
+)
+
+/** 只映射 Dart `LanBackupJob` 消费的字段，避免快照读取并解析 sessions 等任务私有数据。 */
+internal fun lanBackupSnapshotRowToValue(row: Map<String, Any?>): Map<String, Any?> = mapOf(
+    "id" to (row["id"] as? String).orEmpty(),
+    "filePath" to (row["file_path"] as? String).orEmpty(),
+    "state" to (row["state"] as? String).orEmpty(),
+    "uploadedBytes" to ((row["uploaded_bytes"] as? Number)?.toLong() ?: 0L),
+    "totalBytes" to ((row["total_bytes"] as? Number)?.toLong() ?: 0L),
+    "lastModified" to ((row["last_modified"] as? Number)?.toLong() ?: 0L),
+    "contentSha256" to row["content_sha256"] as? String,
+    "errorMessage" to row["error_message"] as? String,
+    "failureKind" to row["failure_kind"] as? String,
+    "fileCreatedAt" to row["file_created_at"] as? String,
+    "backupCompletedAt" to row["backup_completed_at"] as? String,
+    "scheduledCleanupAt" to row["scheduled_cleanup_at"] as? String,
+    "localDeletedAt" to row["local_deleted_at"] as? String,
+    "waitingCleanup" to ((row["waiting_cleanup"] as? Number)?.toInt() != 0),
+    "remoteRecordId" to (row["remote_record_id"] as? Number)?.toLong()?.takeIf { it > 0 },
+    "destinationComputerId" to (row["destination_computer_id"] as? String).orEmpty(),
+    "cleanupReason" to row["cleanup_reason"] as? String,
+)
+
 /** 备份任务行（SQLite 列名 → 值）与任务 JSONObject 的双向映射，字段名与旧版任务文件一致。 */
 internal fun lanBackupJobToRow(job: JSONObject): Map<String, Any?> {
     fun text(key: String): String? = LanBackupCleanupScheduler.normalizeNullableText(job.opt(key))
