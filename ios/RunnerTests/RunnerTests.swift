@@ -1,5 +1,6 @@
 import Flutter
 import CryptoKit
+import SQLite3
 import UIKit
 import XCTest
 @testable import Runner
@@ -270,6 +271,27 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual((restored["sessions"] as? [Any])?.count, 1)
     try reopened.deleteJob(id: "job-1")
     XCTAssertTrue(try reopened.allJobs().isEmpty)
+  }
+
+  func testBackupSnapshotQuerySkipsMalformedSessions() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let id = "snapshot-with-corrupt-sessions"
+    try store.upsert(makeBackupJob(id: id))
+    try executeBackupStoreSql(
+      "UPDATE backup_jobs SET sessions = '{invalid-json' WHERE id = '\(id)'",
+      databaseURL: fixture.databaseURL
+    )
+
+    XCTAssertThrowsError(try store.allJobs())
+    let snapshotJob = try XCTUnwrap(store.snapshotJobs().first)
+    XCTAssertEqual(snapshotJob["id"] as? String, id)
+    XCTAssertEqual(snapshotJob["generation"] as? String, "generation-\(id)")
+    XCTAssertEqual(snapshotJob["filePath"] as? String, "/recordings/\(id).mp4")
+    XCTAssertNil(snapshotJob["sessions"])
   }
 
   func testBackupJobStoreAtomicallyRejectsStaleGenerationUpdate() throws {
@@ -838,6 +860,93 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testBackupSnapshotDoesNotReadCredentials() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    let keychain = FakeIosKeychainClient()
+    keychain.readError = IosBackupCredentialError(operation: "测试读取", status: -1)
+    let api = IosBackupHostApi(
+      eventApi: FakeBackupNativeEventApi(),
+      defaults: fixture.defaults,
+      credentialStore: IosBackupCredentialStore(
+        defaults: fixture.defaults,
+        keychain: keychain,
+        service: "RunnerTests.snapshot-no-credential.\(UUID().uuidString)",
+        account: "access-key"
+      ),
+      jobStore: .success(store),
+      recordingsRoot: FileManager.default.temporaryDirectory
+    )
+
+    _ = try await awaitSnapshotResult(api)
+    XCTAssertEqual(keychain.readCount, 0)
+  }
+
+  func testBackupSnapshotCompletesOffMainThread() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    let api = makeBackupApi(defaults: fixture.defaults, store: store)
+    let completed = expectation(description: "后台生成备份快照")
+
+    api.snapshot { result in
+      if case .failure(let error) = result {
+        XCTFail("生成备份快照失败：\(error)")
+      }
+      XCTAssertFalse(Thread.isMainThread)
+      completed.fulfill()
+    }
+
+    wait(for: [completed], timeout: 10)
+  }
+
+  func testBackupSnapshotEventIsBuiltAndSentOffMainThread() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    let id = "background-snapshot-event"
+    try store.upsert(makeBackupJob(id: id))
+    let emitted = expectation(description: "后台推送备份快照")
+    let eventApi = FakeBackupNativeEventApi { snapshot in
+      XCTAssertFalse(Thread.isMainThread)
+      let jobs = try? XCTUnwrap(snapshot["jobs"] as? [[String: Any]])
+      XCTAssertEqual(jobs?.first?["id"] as? String, id)
+      emitted.fulfill()
+    }
+    let api = IosBackupHostApi(
+      eventApi: eventApi,
+      defaults: fixture.defaults,
+      credentialStore: IosBackupCredentialStore(
+        defaults: fixture.defaults,
+        keychain: FakeIosKeychainClient(),
+        service: "RunnerTests.background-snapshot.\(UUID().uuidString)",
+        account: "access-key"
+      ),
+      jobStore: .success(store),
+      recordingsRoot: FileManager.default.temporaryDirectory
+    )
+
+    XCTAssertEqual(
+      api.handleUploadFailure(
+        jobId: id,
+        expectedGeneration: "generation-\(id)",
+        error: BackupSourceError(message: "测试失败")
+      ),
+      .persisted
+    )
+    wait(for: [emitted], timeout: 10)
+  }
+
   func testOldWorkerFailureCannotOverrideReplacementGeneration() async throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
@@ -988,6 +1097,29 @@ class RunnerTests: XCTestCase {
     try? FileManager.default.removeItem(at: fixture.root)
   }
 
+  private func executeBackupStoreSql(_ sql: String, databaseURL: URL) throws {
+    var database: OpaquePointer?
+    let openCode = sqlite3_open_v2(
+      databaseURL.path,
+      &database,
+      SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+      nil
+    )
+    guard openCode == SQLITE_OK else {
+      sqlite3_close(database)
+      throw IosBackupStoreError(
+        operation: "测试打开", code: openCode, message: "无法打开测试数据库"
+      )
+    }
+    defer { sqlite3_close(database) }
+    let executeCode = sqlite3_exec(database, sql, nil, nil, nil)
+    guard executeCode == SQLITE_OK else {
+      throw IosBackupStoreError(
+        operation: "测试写入", code: executeCode, message: "无法修改测试数据库"
+      )
+    }
+  }
+
   private func makeBackupApi(
     defaults: UserDefaults,
     store: IosBackupJobStore,
@@ -1128,21 +1260,30 @@ class RunnerTests: XCTestCase {
 }
 
 private final class FakeBackupNativeEventApi: BackupNativeEventApiProtocol {
+  private let onSnapshot: (([String?: Any?]) -> Void)?
+
+  init(onSnapshot: (([String?: Any?]) -> Void)? = nil) {
+    self.onSnapshot = onSnapshot
+  }
+
   func snapshotChanged(
     snapshot: [String?: Any?],
     completion: @escaping (Result<Void, PigeonError>) -> Void
   ) {
+    onSnapshot?(snapshot)
     completion(.success(()))
   }
 }
 
 private final class FakeIosKeychainClient: IosKeychainClient {
   var data: Data?
+  var readCount = 0
   var readError: Error?
   var saveError: Error?
   var deleteError: Error?
 
   func read(service: String, account: String) throws -> Data? {
+    readCount += 1
     if let readError { throw readError }
     return data
   }

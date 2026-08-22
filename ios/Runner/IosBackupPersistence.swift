@@ -229,6 +229,13 @@ final class IosBackupJobStore {
     return try queryJobsUnlocked()
   }
 
+  /// 只读取备份快照实际展示的字段，避免周期轮询加载并解码 sessions。
+  func snapshotJobs() throws -> [[String: Any]] {
+    lock.lock()
+    defer { lock.unlock() }
+    return try querySnapshotJobsUnlocked()
+  }
+
   func upsert(_ rawJob: [String: Any]) throws {
     lock.lock()
     defer { lock.unlock() }
@@ -373,6 +380,32 @@ final class IosBackupJobStore {
         throw databaseError(operation: "查询任务", code: stepCode)
       }
       jobs.append(try jobFromRow(stmt))
+    }
+    return jobs
+  }
+
+  private func querySnapshotJobsUnlocked() throws -> [[String: Any]] {
+    let sql = """
+      SELECT
+        id, generation, file_path, destination_computer_id, state,
+        uploaded_bytes, total_bytes, last_modified, file_created_at,
+        backup_completed_at, scheduled_cleanup_at, local_deleted_at,
+        waiting_cleanup, remote_record_ids, content_sha256, cleanup_reason,
+        error_message, failure_kind
+      FROM backup_jobs
+      ORDER BY last_modified DESC
+    """
+    var stmt: OpaquePointer?
+    try prepare(sql, statement: &stmt, operation: "查询快照任务")
+    defer { sqlite3_finalize(stmt) }
+    var jobs: [[String: Any]] = []
+    while true {
+      let stepCode = sqlite3_step(stmt)
+      if stepCode == SQLITE_DONE { break }
+      guard stepCode == SQLITE_ROW else {
+        throw databaseError(operation: "查询快照任务", code: stepCode)
+      }
+      jobs.append(snapshotJobFromRow(stmt))
     }
     return jobs
   }
@@ -531,6 +564,29 @@ final class IosBackupJobStore {
     job["errorMessage"] = text(stmt, 20)
     job["failureKind"] = text(stmt, 21)
     job["sessions"] = try Self.jsonArray(text(stmt, 22))
+    return job
+  }
+
+  private func snapshotJobFromRow(_ stmt: OpaquePointer?) -> [String: Any] {
+    var job: [String: Any] = [:]
+    job["id"] = text(stmt, 0) ?? ""
+    job["generation"] = text(stmt, 1) ?? ""
+    job["filePath"] = text(stmt, 2) ?? ""
+    job["destinationComputerId"] = text(stmt, 3)
+    job["state"] = text(stmt, 4) ?? ""
+    job["uploadedBytes"] = integer(stmt, 5)
+    job["totalBytes"] = integer(stmt, 6)
+    job["lastModified"] = integer(stmt, 7)
+    job["fileCreatedAt"] = text(stmt, 8)
+    job["backupCompletedAt"] = text(stmt, 9)
+    job["scheduledCleanupAt"] = text(stmt, 10)
+    job["localDeletedAt"] = text(stmt, 11)
+    job["waitingCleanup"] = integer(stmt, 12) != 0
+    job["remoteRecordId"] = Self.recordId(text(stmt, 13))
+    job["contentSha256"] = text(stmt, 14)
+    job["cleanupReason"] = text(stmt, 15)
+    job["errorMessage"] = text(stmt, 16)
+    job["failureKind"] = text(stmt, 17)
     return job
   }
 

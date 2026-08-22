@@ -290,6 +290,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private var lastCleanupAt = Date.distantPast
   private let emitLock = NSLock()
   private var emitScheduled = false
+  private let snapshotQueue = DispatchQueue(
+    label: "ios.backup.snapshot",
+    qos: .utility
+  )
   private let uploadFailureLock = NSLock()
   private var uploadFailureOverrides: [String: (String, BackupTransferError)] = [:]
   private let keys = (
@@ -356,20 +360,24 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   func snapshot(completion: @escaping (Result<[String?: Any?]?, Error>) -> Void) {
-    triggerCleanupIfDue()
-    completion(Result { try currentSnapshot() })
+    snapshotQueue.async {
+      self.triggerCleanupIfDue()
+      completion(Result { try self.currentSnapshot() })
+    }
   }
 
   func initialize(
     request: [String?: Any?],
     completion: @escaping (Result<[String?: Any?]?, Error>) -> Void
   ) {
-    saveRetentionDays(
-      unbacked: (request["unbackedRetentionDays"] as? Int) ?? -1,
-      backed: (request["backedRetentionDays"] as? Int) ?? -1
-    )
-    triggerCleanup()
-    completion(Result { try currentSnapshot() })
+    snapshotQueue.async {
+      self.saveRetentionDays(
+        unbacked: (request["unbackedRetentionDays"] as? Int) ?? -1,
+        backed: (request["backedRetentionDays"] as? Int) ?? -1
+      )
+      self.triggerCleanup()
+      completion(Result { try self.currentSnapshot() })
+    }
   }
 
   func loadAccessKey(completion: @escaping (Result<String?, Error>) -> Void) {
@@ -652,12 +660,11 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func currentSnapshot() throws -> [String?: Any?] {
-    _ = try credentialStore.load()
     return [
       "deviceId": deviceId(),
       "deviceName": deviceName(),
       "connection": defaults.dictionary(forKey: keys.connection),
-      "jobs": try jobs().map(slimJob),
+      "jobs": try snapshotJobs().map(slimJob),
     ]
   }
 
@@ -710,6 +717,17 @@ final class IosBackupHostApi: BackupNativeHostApi {
 
   private func jobs() throws -> [[String: Any]] {
     let stored = try jobStore.get().allJobs()
+    return jobsApplyingFailureOverrides(stored)
+  }
+
+  private func snapshotJobs() throws -> [[String: Any]] {
+    let stored = try jobStore.get().snapshotJobs()
+    return jobsApplyingFailureOverrides(stored)
+  }
+
+  private func jobsApplyingFailureOverrides(
+    _ stored: [[String: Any]]
+  ) -> [[String: Any]] {
     uploadFailureLock.lock()
     let overrides = uploadFailureOverrides
     uploadFailureLock.unlock()
@@ -814,7 +832,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
     if alreadyScheduled {
       return
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+    snapshotQueue.asyncAfter(deadline: .now() + 0.2) { [weak self] in
       guard let self else { return }
       self.emitLock.lock()
       self.emitScheduled = false
