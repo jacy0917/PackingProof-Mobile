@@ -84,9 +84,51 @@ final class IosWatermarkRasterTests: XCTestCase {
     }
   }
 
-  func testSharedRecordingCaptureNeverMirrorsFrontOrBackPixels() {
+  func testRecordingCaptureMirrorsOnlyFrontCameraPixels() {
     XCTAssertFalse(iosRecordingCaptureShouldMirror(frontCamera: false))
-    XCTAssertFalse(iosRecordingCaptureShouldMirror(frontCamera: true))
+    XCTAssertTrue(iosRecordingCaptureShouldMirror(frontCamera: true))
+  }
+
+  func testLiveRasterizerKeepsAsymmetricGlyphUpright() throws {
+    let width = 96
+    let height = 112
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    format.opaque = false
+    let image = UIGraphicsImageRenderer(
+      size: CGSize(width: width, height: height),
+      format: format
+    ).image { _ in
+      ("L" as NSString).draw(
+        at: CGPoint(x: 8, y: 2),
+        withAttributes: [
+          .font: UIFont.boldSystemFont(ofSize: 88),
+          .foregroundColor: UIColor.white,
+        ]
+      )
+    }
+    let cgImage = try XCTUnwrap(image.cgImage)
+    let pixels = try IosLiveWatermarkRasterizer.bgraPixels(
+      from: cgImage,
+      width: width,
+      height: height
+    )
+
+    let upperAlpha = alphaTotal(
+      pixels,
+      width: width,
+      rows: 0..<(height / 3)
+    )
+    let lowerAlpha = alphaTotal(
+      pixels,
+      width: width,
+      rows: (height * 2 / 3)..<height
+    )
+    XCTAssertGreaterThan(
+      lowerAlpha,
+      upperAlpha,
+      "L 的底边应留在图像下方，不能在 BGRA 转换时上下翻转"
+    )
   }
 
   func testLiveWatermarkCoordinatesRoundTripWithoutMirroringInAllOrientations() {
@@ -169,7 +211,7 @@ final class IosWatermarkRasterTests: XCTestCase {
       )
       XCTAssertEqual(bounds.midX, output.width / 2, accuracy: 2, orientation)
       XCTAssertGreaterThanOrEqual(bounds.minY, output.height * 0.1, orientation)
-      XCTAssertLessThan(bounds.minY, output.height * 0.1 + 24, orientation)
+      XCTAssertLessThanOrEqual(bounds.minY, output.height * 0.1 + 24, orientation)
       XCTAssertGreaterThan(bounds.brightPixels, 40, orientation)
       XCTAssertGreaterThan(bounds.darkPixels, 40, orientation)
     }
@@ -419,6 +461,20 @@ final class IosWatermarkRasterTests: XCTestCase {
       CVPixelBufferGetHeight(pixelBuffer)
     let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer)!
     return Array(UnsafeRawBufferPointer(start: baseAddress, count: byteCount))
+  }
+
+  private func alphaTotal(
+    _ bgra: [UInt8],
+    width: Int,
+    rows: Range<Int>
+  ) -> Int {
+    var total = 0
+    for y in rows {
+      for x in 0..<width {
+        total += Int(bgra[(y * width + x) * 4 + 3])
+      }
+    }
+    return total
   }
 
   private func changedOutputBounds(

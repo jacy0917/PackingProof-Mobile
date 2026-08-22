@@ -1082,8 +1082,7 @@ final class IosCameraHostApi:
         self.videoDeviceInput = input
         self.session.commitConfiguration()
         if let connection = self.videoOutput?.connection(with: .video) {
-          // 切换镜头后仍保持竖屏采集。Texture 与 writer 共用这个输出，
-          // 前摄也必须保持非镜像，避免标签文字在预览和成片中左右反向。
+          // 切换镜头后仍保持竖屏采集，并显式固定前摄镜像语义。
           connection.videoOrientation = .portrait
           connection.automaticallyAdjustsVideoMirroring = false
           connection.isVideoMirrored = iosRecordingCaptureShouldMirror(

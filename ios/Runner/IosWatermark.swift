@@ -14,10 +14,10 @@ func iosRecordingTransform(for recordingOrientation: String) -> CGAffineTransfor
   }
 }
 
-/// Texture 与 AVAssetWriter 共用 VideoDataOutput 的同一像素缓冲，因此采集输出
-/// 不能为前摄单独镜像；否则预览和成片中的标签文字都会左右反向。
+/// 固定相机画面语义：后摄不镜像，前摄保持自拍预览。水印在采集回调收到
+/// 已完成镜像的像素缓冲后才烧录，因此不应跟随前摄再做一次镜像。
 func iosRecordingCaptureShouldMirror(frontCamera: Bool) -> Bool {
-  false
+  frontCamera
 }
 
 struct IosWatermarkTimeline {
@@ -195,6 +195,38 @@ private struct IosLiveWatermarkRaster {
   let width: Int
   let height: Int
   let bgra: [UInt8]
+}
+
+struct IosLiveWatermarkRasterizer {
+  static func bgraPixels(
+    from cgImage: CGImage,
+    width: Int,
+    height: Int
+  ) throws -> [UInt8] {
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
+      guard let context = CGContext(
+        data: bytes.baseAddress,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width * 4,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue |
+          CGImageAlphaInfo.premultipliedFirst.rawValue
+      ) else {
+        return false
+      }
+      // CGImage 与 CVPixelBuffer 的内存行顺序都从首行开始；这里若再套用
+      // UIKit 的翻转 CTM，会让开始录像后烧录的文字上下颠倒。
+      context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+      return true
+    }
+    guard rendered else {
+      throw IosLiveWatermarkError.rasterizationFailed
+    }
+    return pixels
+  }
 }
 
 private struct IosLiveWatermarkBlendPixel {
@@ -379,28 +411,11 @@ final class IosLiveWatermarkRenderer {
     guard let cgImage = image.cgImage else {
       throw IosLiveWatermarkError.rasterizationFailed
     }
-    var pixels = [UInt8](repeating: 0, count: width * height * 4)
-    let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
-      guard let context = CGContext(
-        data: bytes.baseAddress,
-        width: width,
-        height: height,
-        bitsPerComponent: 8,
-        bytesPerRow: width * 4,
-        space: CGColorSpaceCreateDeviceRGB(),
-        bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue |
-          CGImageAlphaInfo.premultipliedFirst.rawValue
-      ) else {
-        return false
-      }
-      context.translateBy(x: 0, y: CGFloat(height))
-      context.scaleBy(x: 1, y: -1)
-      context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-      return true
-    }
-    guard rendered else {
-      throw IosLiveWatermarkError.rasterizationFailed
-    }
+    let pixels = try IosLiveWatermarkRasterizer.bgraPixels(
+      from: cgImage,
+      width: width,
+      height: height
+    )
     return IosLiveWatermarkRaster(width: width, height: height, bgra: pixels)
   }
 
