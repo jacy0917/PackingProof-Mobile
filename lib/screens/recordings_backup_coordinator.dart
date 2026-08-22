@@ -184,6 +184,9 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
     }
     LanBackupSnapshot next =
         widget.backupSnapshotProvider?.call() ?? widget.backupSnapshot;
+    if (identical(next, _backupSnapshot)) {
+      return;
+    }
     if (_approvalRequestInFlight &&
         (next.connectionStatus == LanConnectionStatus.disconnected ||
             next.connectionStatus == LanConnectionStatus.connecting)) {

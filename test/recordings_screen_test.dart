@@ -3801,6 +3801,39 @@ void main() {
     expect(find.text('NO-6'), findsOneWidget);
   });
 
+  testWidgets('隐藏页收到非备份通知时不触发重建', (WidgetTester tester) async {
+    final ChangeNotifier notifier = ChangeNotifier();
+    addTearDown(notifier.dispose);
+    const LanBackupSnapshot snapshot = LanBackupSnapshot();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingsScreen(
+          mode: RecordingsScreenMode.settings,
+          active: false,
+          sessions: const <RecordingSession>[],
+          workMode: WorkMode.continuousScan,
+          speechEnabled: true,
+          maxVolumeEnabled: true,
+          backupSnapshot: snapshot,
+          backupListenable: notifier,
+          backupSnapshotProvider: () => snapshot,
+          onWorkModeChanged: (_) async {},
+          onSpeechEnabledChanged: (_) async {},
+          onMaxVolumeEnabledChanged: (_) async {},
+          onSpeechPreview: () async {},
+          onSessionUpdated: (_) async {},
+          onDeleteSessions: (_) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.binding.hasScheduledFrame, isFalse);
+
+    notifier.notifyListeners();
+
+    expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
   testWidgets('电脑断开时才重置历史页', (WidgetTester tester) async {
     tester.view.physicalSize = const Size(800, 1600);
     tester.view.devicePixelRatio = 1.0;
