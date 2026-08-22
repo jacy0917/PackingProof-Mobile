@@ -142,7 +142,8 @@ class RunnerTests: XCTestCase {
       XCTAssertEqual(layout.textFrame.midX, layout.renderSize.width / 2)
       XCTAssertEqual(
         layout.renderSize.height - layout.textFrame.maxY,
-        layout.renderSize.height * 0.1
+        layout.renderSize.height * 0.04,
+        accuracy: 0.0001
       )
     }
     XCTAssertEqual(

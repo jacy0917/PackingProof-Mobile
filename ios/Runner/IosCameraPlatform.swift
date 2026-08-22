@@ -124,6 +124,7 @@ final class IosCameraHostApi:
   private var currentTrackingNumber = ""
   private var currentWatermarkFailed = false
   private var currentWatermarkError: String?
+  private var watermarkPreparationPending = false
   private var currentSegmentId = ""
   private var currentStartedAtMs: Int64 = 0
   private var currentSegmentSerial: Int64 = 0
@@ -747,6 +748,7 @@ final class IosCameraHostApi:
       guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
         return
       }
+      var shouldAppendVideo = true
       if writer != nil && !currentWatermarkFailed {
         do {
           try liveWatermarkRenderer.apply(
@@ -754,6 +756,9 @@ final class IosCameraHostApi:
             orientation: recordingOrientationName,
             trackingNumber: currentTrackingNumber
           )
+        } catch IosLiveWatermarkError.planNotReady {
+          shouldAppendVideo = false
+          prepareInitialWatermarkPlanIfNeeded(from: pixelBuffer)
         } catch {
           currentWatermarkFailed = true
           currentWatermarkError = String(describing: error)
@@ -770,7 +775,9 @@ final class IosCameraHostApi:
       if textureId >= 0 && !isDisposed {
         textures.textureFrameAvailable(textureId)
       }
-      appendVideo(sampleBuffer, pixelBuffer: pixelBuffer)
+      if shouldAppendVideo {
+        appendVideo(sampleBuffer, pixelBuffer: pixelBuffer)
+      }
     } else if output === audioOutput {
       appendAudio(sampleBuffer)
     }
@@ -1193,6 +1200,25 @@ final class IosCameraHostApi:
       writer.add(audioInput)
     }
 
+    bufferLock.lock()
+    let watermarkSourceBuffer = latestPixelBuffer
+    bufferLock.unlock()
+    liveWatermarkRenderer.reset()
+    watermarkPreparationPending = false
+    var initialWatermarkPreparationError: Error?
+    if let watermarkSourceBuffer {
+      do {
+        try liveWatermarkRenderer.prepare(
+          to: watermarkSourceBuffer,
+          orientation: recordingOrientationName,
+          trackingNumber: trackingNumber
+        )
+      } catch {
+        initialWatermarkPreparationError = error
+        liveWatermarkRenderer.reset()
+      }
+    }
+
     guard writer.startWriting() else {
       throw writer.error ?? pigeonError("开始录像失败")
     }
@@ -1202,9 +1228,8 @@ final class IosCameraHostApi:
     self.pixelBufferAdaptor = adaptor
     self.currentPath = path
     self.currentTrackingNumber = trackingNumber
-    self.currentWatermarkFailed = false
-    self.currentWatermarkError = nil
-    self.liveWatermarkRenderer.reset()
+    self.currentWatermarkFailed = initialWatermarkPreparationError != nil
+    self.currentWatermarkError = initialWatermarkPreparationError.map(String.init(describing:))
     self.currentSegmentId = UUID().uuidString
     self.currentStartedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
     self.currentSegmentSerial += 1
@@ -1213,6 +1238,43 @@ final class IosCameraHostApi:
     self.currentAudioSampleCount = 0
     self.currentAudioAppendFailedCount = 0
     self.currentAudioLastError = nil
+    if initialWatermarkPreparationError != nil {
+      eventApi.nativeError(
+        message: "录像继续保存，但实时水印准备失败",
+        completion: { _ in }
+      )
+    }
+  }
+
+  private func prepareInitialWatermarkPlanIfNeeded(from pixelBuffer: CVPixelBuffer) {
+    guard !watermarkPreparationPending, writer != nil, !currentWatermarkFailed else {
+      return
+    }
+    watermarkPreparationPending = true
+    let segmentSerial = currentSegmentSerial
+    let orientation = recordingOrientationName
+    let trackingNumber = currentTrackingNumber
+    liveWatermarkRenderer.prepareAsynchronously(
+      to: pixelBuffer,
+      orientation: orientation,
+      trackingNumber: trackingNumber
+    ) { [weak self] result in
+      guard let self else { return }
+      self.sessionQueue.async {
+        guard self.writer != nil, self.currentSegmentSerial == segmentSerial else {
+          return
+        }
+        self.watermarkPreparationPending = false
+        if case .failure(let error) = result {
+          self.currentWatermarkFailed = true
+          self.currentWatermarkError = String(describing: error)
+          self.eventApi.nativeError(
+            message: "录像继续保存，但实时水印准备失败",
+            completion: { _ in }
+          )
+        }
+      }
+    }
   }
 
   private func appendVideo(_ sampleBuffer: CMSampleBuffer, pixelBuffer: CVPixelBuffer) {
@@ -1269,6 +1331,7 @@ final class IosCameraHostApi:
     self.currentWatermarkFailed = false
     self.currentWatermarkError = nil
     self.liveWatermarkRenderer.reset()
+    self.watermarkPreparationPending = false
     writerSessionStarted = false
     lastAudioSampleCount = currentAudioSampleCount
     lastAudioAppendFailedCount = currentAudioAppendFailedCount

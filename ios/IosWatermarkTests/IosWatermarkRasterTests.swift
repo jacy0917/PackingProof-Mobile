@@ -191,7 +191,16 @@ final class IosWatermarkRasterTests: XCTestCase {
       )
       let buffer = try XCTUnwrap(pixelBuffer)
       fill(buffer, blue: 80, green: 96, red: 112)
-      try IosLiveWatermarkRenderer(timeZone: TimeZone(secondsFromGMT: 0)!).apply(
+      let renderer = IosLiveWatermarkRenderer(
+        timeZone: TimeZone(secondsFromGMT: 0)!
+      )
+      try renderer.prepare(
+        to: buffer,
+        orientation: orientation,
+        trackingNumber: "TRACK-001",
+        date: date
+      )
+      try renderer.apply(
         to: buffer,
         orientation: orientation,
         trackingNumber: "TRACK-001",
@@ -242,6 +251,12 @@ final class IosWatermarkRasterTests: XCTestCase {
       timeZone: TimeZone(secondsFromGMT: 0)!
     )
 
+    try renderer.prepare(
+      to: first,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: date
+    )
     try renderer.apply(
       to: first,
       orientation: "portrait",
@@ -263,6 +278,182 @@ final class IosWatermarkRasterTests: XCTestCase {
       renderer.lastRasterPixelCount / 2,
       "帧内应只处理有可见 alpha 的水印像素"
     )
+  }
+
+  func testLiveRendererReusesPreviousPlanUntilNextSecondIsReady() throws {
+    let second: Int64 = 1_776_768_896
+    let date = Date(timeIntervalSince1970: Double(second))
+    let first = try makePixelBuffer(width: 1080, height: 1920)
+    let boundary = try makePixelBuffer(width: 1080, height: 1920)
+    let ready = try makePixelBuffer(width: 1080, height: 1920)
+    for buffer in [first, boundary, ready] {
+      fill(buffer, blue: 80, green: 96, red: 112)
+    }
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    try renderer.prepare(
+      to: first,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: date,
+      prefetchNextSecond: false
+    )
+
+    try renderer.apply(
+      to: boundary,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: date.addingTimeInterval(1)
+    )
+    XCTAssertEqual(renderer.lastAppliedPlanSecondForTesting, second)
+    XCTAssertNotNil(
+      changedOutputBounds(
+        boundary,
+        background: (80, 96, 112),
+        orientation: "portrait"
+      ),
+      "下一秒计划未就绪时也不能漏水印"
+    )
+
+    renderer.waitForPendingPlansForTesting()
+    try renderer.apply(
+      to: ready,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: date.addingTimeInterval(1)
+    )
+    XCTAssertEqual(renderer.lastAppliedPlanSecondForTesting, second + 1)
+  }
+
+  func testLiveRendererResetRejectsOlderGenerationPlans() throws {
+    let second: Int64 = 1_776_768_896
+    let first = try makePixelBuffer(width: 1080, height: 1920)
+    let secondBuffer = try makePixelBuffer(width: 1080, height: 1920)
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    try renderer.prepare(
+      to: first,
+      orientation: "landscapeLeft",
+      trackingNumber: "OLD",
+      date: Date(timeIntervalSince1970: Double(second))
+    )
+    renderer.reset()
+    renderer.waitForPendingPlansForTesting()
+    XCTAssertTrue(renderer.preparedSecondsForTesting.isEmpty)
+    XCTAssertThrowsError(
+      try renderer.apply(
+        to: first,
+        orientation: "landscapeLeft",
+        trackingNumber: "OLD",
+        date: Date(timeIntervalSince1970: Double(second + 1))
+      )
+    )
+
+    try renderer.prepare(
+      to: secondBuffer,
+      orientation: "landscapeRight",
+      trackingNumber: "NEW",
+      date: Date(timeIntervalSince1970: Double(second + 10))
+    )
+    renderer.waitForPendingPlansForTesting()
+    XCTAssertEqual(renderer.preparedSecondsForTesting, [second + 10, second + 11])
+  }
+
+  func testLiveRendererCanPrepareFirstPlanAsynchronouslyWithoutPermanentFailure()
+    throws
+  {
+    let date = Date(timeIntervalSince1970: 1_776_768_896)
+    let buffer = try makePixelBuffer(width: 1080, height: 1920)
+    fill(buffer, blue: 80, green: 96, red: 112)
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    XCTAssertThrowsError(
+      try renderer.apply(
+        to: buffer,
+        orientation: "portrait",
+        trackingNumber: "TRACK-001",
+        date: date
+      )
+    ) { error in
+      guard case IosLiveWatermarkError.planNotReady = error else {
+        return XCTFail("首份计划未就绪必须返回可重试状态")
+      }
+    }
+
+    let completed = expectation(description: "异步首份水印计划完成")
+    var result: Result<Void, Error>?
+    renderer.prepareAsynchronously(
+      to: buffer,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: date
+    ) {
+      result = $0
+      completed.fulfill()
+    }
+    wait(for: [completed], timeout: 5)
+    try result?.get()
+    try renderer.apply(
+      to: buffer,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: date
+    )
+    XCTAssertEqual(
+      renderer.lastAppliedPlanSecondForTesting,
+      Int64(date.timeIntervalSince1970)
+    )
+  }
+
+  func testLiveRendererPreparedPlanSupportsConcurrentFrameBuffers() throws {
+    let date = Date(timeIntervalSince1970: 1_776_768_896)
+    let buffers = try (0..<8).map { _ in
+      try makePixelBuffer(width: 1080, height: 1920)
+    }
+    for buffer in buffers {
+      fill(buffer, blue: 80, green: 96, red: 112)
+    }
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    try renderer.prepare(
+      to: buffers[0],
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: date
+    )
+    renderer.waitForPendingPlansForTesting()
+    let errorLock = NSLock()
+    var errors: [Error] = []
+
+    DispatchQueue.concurrentPerform(iterations: buffers.count) { index in
+      do {
+        try renderer.apply(
+          to: buffers[index],
+          orientation: "portrait",
+          trackingNumber: "TRACK-001",
+          date: date
+        )
+      } catch {
+        errorLock.lock()
+        errors.append(error)
+        errorLock.unlock()
+      }
+    }
+
+    XCTAssertTrue(errors.isEmpty)
+    for buffer in buffers {
+      XCTAssertNotNil(
+        changedOutputBounds(
+          buffer,
+          background: (80, 96, 112),
+          orientation: "portrait"
+        )
+      )
+    }
   }
 
   func testNativeRasterKeepsChangingWatermarkUncroppedInAllOrientations()

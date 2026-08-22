@@ -151,6 +151,7 @@ enum IosLiveWatermarkError: Error {
   case pixelBufferLockFailed(CVReturn)
   case missingBaseAddress
   case rasterizationFailed
+  case planNotReady
 }
 
 struct IosLiveWatermarkGeometry {
@@ -239,27 +240,178 @@ private struct IosLiveWatermarkBlendPixel {
   let alpha: UInt8
 }
 
+private struct IosLiveWatermarkPlanConfiguration: Equatable {
+  let orientation: String
+  let trackingNumber: String
+  let sourceWidth: Int
+  let sourceHeight: Int
+  let bytesPerRow: Int
+  let outputSize: CGSize
+}
+
+private struct IosLiveWatermarkPlan {
+  let second: Int64
+  let generation: Int64
+  let configuration: IosLiveWatermarkPlanConfiguration
+  let rasterPixelCount: Int
+  let blendPixels: [IosLiveWatermarkBlendPixel]
+}
+
 /// 每秒只排版并栅格化一次水印，同时缓存可见像素的写入位置；其余帧不再扫描透明区域。
 /// 位图先绘制黑色粗字，再绘制白色填充，白色会盖住描边的内半圈。
 final class IosLiveWatermarkRenderer {
   private let formatter: DateFormatter
-  private var cachedSecond: Int64?
-  private var cachedTrackingNumber = ""
-  private var cachedOutputSize = CGSize.zero
-  private var cachedRaster: IosLiveWatermarkRaster?
-  private var cachedBlendOrientation = ""
-  private var cachedSourceWidth = 0
-  private var cachedSourceHeight = 0
-  private var cachedBytesPerRow = 0
-  private var cachedBlendPixels: [IosLiveWatermarkBlendPixel]?
-  private(set) var lastRasterPixelCount = 0
-  private(set) var lastBlendPixelCount = 0
+  private let watermarkQueue = DispatchQueue(label: "packingproof.camera.watermark")
+  private let planLock = NSLock()
+  private var generation: Int64 = 0
+  private var configuration: IosLiveWatermarkPlanConfiguration?
+  private var plans: [Int64: IosLiveWatermarkPlan] = [:]
+  private var scheduledSeconds: Set<Int64> = []
+  private var planFailure: IosLiveWatermarkError?
+  private var lastAppliedPlanSecond: Int64?
+
+  var lastRasterPixelCount: Int {
+    planLock.lock()
+    defer { planLock.unlock() }
+    return plans.values.max(by: { $0.second < $1.second })?.rasterPixelCount ?? 0
+  }
+
+  var lastBlendPixelCount: Int {
+    planLock.lock()
+    defer { planLock.unlock() }
+    return plans.values.max(by: { $0.second < $1.second })?.blendPixels.count ?? 0
+  }
 
   init(timeZone: TimeZone = .current) {
     formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.timeZone = timeZone
     formatter.dateFormat = "yyyy/MM/dd HH:mm:ss"
+  }
+
+  /// 在 writer 对外可见前同步准备首秒，并在专用队列提前生成下一秒。
+  /// 之后 capture 回调只读取已经发布的不可变计划，不执行文字排版或栅格化。
+  func prepare(
+    to pixelBuffer: CVPixelBuffer,
+    orientation: String,
+    trackingNumber: String,
+    date: Date = Date(),
+    prefetchNextSecond: Bool = true
+  ) throws {
+    guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else {
+      throw IosLiveWatermarkError.unsupportedPixelFormat
+    }
+    let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
+    let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
+    let outputSize = IosLiveWatermarkGeometry.outputSize(
+      sourceWidth: sourceWidth,
+      sourceHeight: sourceHeight,
+      orientation: orientation
+    )
+    let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    let newConfiguration = IosLiveWatermarkPlanConfiguration(
+      orientation: orientation,
+      trackingNumber: trackingNumber,
+      sourceWidth: sourceWidth,
+      sourceHeight: sourceHeight,
+      bytesPerRow: bytesPerRow,
+      outputSize: outputSize
+    )
+    let second = Int64(date.timeIntervalSince1970.rounded(.down))
+    planLock.lock()
+    generation += 1
+    let currentGeneration = generation
+    configuration = newConfiguration
+    plans.removeAll(keepingCapacity: true)
+    scheduledSeconds = prefetchNextSecond ? [second, second + 1] : [second]
+    planFailure = nil
+    lastAppliedPlanSecond = nil
+    planLock.unlock()
+
+    let firstPlan = try watermarkQueue.sync {
+      try makePlan(
+        second: second,
+        generation: currentGeneration,
+        configuration: newConfiguration
+      )
+    }
+    guard publish(firstPlan) else {
+      throw IosLiveWatermarkError.planNotReady
+    }
+    if prefetchNextSecond {
+      watermarkQueue.async { [weak self] in
+        self?.buildAndPublish(
+          second: second + 1,
+          generation: currentGeneration,
+          configuration: newConfiguration
+        )
+      }
+    }
+  }
+
+  /// 极端情况下 writer 启动前还没有预览帧时，由首个采集帧只提交格式信息，
+  /// 栅格化仍完全在 watermarkQueue 执行。计划发布前不写入视频，避免保存无水印帧。
+  func prepareAsynchronously(
+    to pixelBuffer: CVPixelBuffer,
+    orientation: String,
+    trackingNumber: String,
+    date: Date = Date(),
+    completion: @escaping (Result<Void, Error>) -> Void
+  ) {
+    guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else {
+      completion(.failure(IosLiveWatermarkError.unsupportedPixelFormat))
+      return
+    }
+    let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
+    let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
+    let newConfiguration = IosLiveWatermarkPlanConfiguration(
+      orientation: orientation,
+      trackingNumber: trackingNumber,
+      sourceWidth: sourceWidth,
+      sourceHeight: sourceHeight,
+      bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
+      outputSize: IosLiveWatermarkGeometry.outputSize(
+        sourceWidth: sourceWidth,
+        sourceHeight: sourceHeight,
+        orientation: orientation
+      )
+    )
+    let second = Int64(date.timeIntervalSince1970.rounded(.down))
+    planLock.lock()
+    generation += 1
+    let currentGeneration = generation
+    configuration = newConfiguration
+    plans.removeAll(keepingCapacity: true)
+    scheduledSeconds = [second, second + 1]
+    planFailure = nil
+    lastAppliedPlanSecond = nil
+    planLock.unlock()
+
+    watermarkQueue.async { [weak self] in
+      guard let self else {
+        completion(.failure(IosLiveWatermarkError.planNotReady))
+        return
+      }
+      do {
+        let firstPlan = try self.makePlan(
+          second: second,
+          generation: currentGeneration,
+          configuration: newConfiguration
+        )
+        guard self.publish(firstPlan) else {
+          completion(.failure(IosLiveWatermarkError.planNotReady))
+          return
+        }
+        completion(.success(()))
+        self.buildAndPublish(
+          second: second + 1,
+          generation: currentGeneration,
+          configuration: newConfiguration
+        )
+      } catch {
+        completion(.failure(error))
+      }
+    }
   }
 
   func apply(
@@ -273,68 +425,153 @@ final class IosLiveWatermarkRenderer {
     }
     let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
     let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
-    let outputSize = IosLiveWatermarkGeometry.outputSize(
+    let currentConfiguration = IosLiveWatermarkPlanConfiguration(
+      orientation: orientation,
+      trackingNumber: trackingNumber,
       sourceWidth: sourceWidth,
       sourceHeight: sourceHeight,
-      orientation: orientation
-    )
-    let second = Int64(date.timeIntervalSince1970.rounded(.down))
-    if cachedSecond != second ||
-      cachedTrackingNumber != trackingNumber ||
-      cachedOutputSize != outputSize
-    {
-      cachedRaster = try makeRaster(
-        text: watermarkText(date: date, trackingNumber: trackingNumber),
-        outputSize: outputSize
-      )
-      cachedSecond = second
-      cachedTrackingNumber = trackingNumber
-      cachedOutputSize = outputSize
-      cachedBlendPixels = nil
-    }
-    guard let raster = cachedRaster else {
-      throw IosLiveWatermarkError.rasterizationFailed
-    }
-    let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-    if cachedBlendPixels == nil ||
-      cachedBlendOrientation != orientation ||
-      cachedSourceWidth != sourceWidth ||
-      cachedSourceHeight != sourceHeight ||
-      cachedBytesPerRow != bytesPerRow
-    {
-      cachedBlendPixels = makeBlendPixels(
-        raster,
-        outputSize: outputSize,
+      bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
+      outputSize: IosLiveWatermarkGeometry.outputSize(
         sourceWidth: sourceWidth,
         sourceHeight: sourceHeight,
-        bytesPerRow: bytesPerRow,
         orientation: orientation
       )
-      lastRasterPixelCount = raster.width * raster.height
-      lastBlendPixelCount = cachedBlendPixels?.count ?? 0
-      cachedBlendOrientation = orientation
-      cachedSourceWidth = sourceWidth
-      cachedSourceHeight = sourceHeight
-      cachedBytesPerRow = bytesPerRow
+    )
+    let second = Int64(date.timeIntervalSince1970.rounded(.down))
+    var plan: IosLiveWatermarkPlan?
+    var failure: IosLiveWatermarkError?
+    var work: [(Int64, Int64, IosLiveWatermarkPlanConfiguration)] = []
+    planLock.lock()
+    if configuration == currentConfiguration {
+      failure = planFailure
+      plan = plans[second]
+      if plan == nil {
+        for candidate in plans.values where candidate.second <= second {
+          if plan == nil || candidate.second > (plan?.second ?? Int64.min) {
+            plan = candidate
+          }
+        }
+      }
+      if let plan {
+        lastAppliedPlanSecond = plan.second
+      }
+      if failure == nil {
+        let currentGeneration = generation
+        for requestedSecond in [second, second + 1]
+          where plans[requestedSecond] == nil && !scheduledSeconds.contains(requestedSecond)
+        {
+          scheduledSeconds.insert(requestedSecond)
+          work.append((requestedSecond, currentGeneration, currentConfiguration))
+        }
+      }
     }
-    guard let blendPixels = cachedBlendPixels else {
-      throw IosLiveWatermarkError.rasterizationFailed
+    planLock.unlock()
+
+    for item in work {
+      watermarkQueue.async { [weak self] in
+        self?.buildAndPublish(
+          second: item.0,
+          generation: item.1,
+          configuration: item.2
+        )
+      }
     }
-    try blend(blendPixels, into: pixelBuffer)
+    if let failure {
+      throw failure
+    }
+    guard let plan else {
+      throw IosLiveWatermarkError.planNotReady
+    }
+    try blend(plan.blendPixels, into: pixelBuffer)
   }
 
   func reset() {
-    cachedSecond = nil
-    cachedTrackingNumber = ""
-    cachedOutputSize = .zero
-    cachedRaster = nil
-    cachedBlendOrientation = ""
-    cachedSourceWidth = 0
-    cachedSourceHeight = 0
-    cachedBytesPerRow = 0
-    cachedBlendPixels = nil
-    lastRasterPixelCount = 0
-    lastBlendPixelCount = 0
+    planLock.lock()
+    generation += 1
+    configuration = nil
+    plans.removeAll(keepingCapacity: false)
+    scheduledSeconds.removeAll(keepingCapacity: false)
+    planFailure = nil
+    lastAppliedPlanSecond = nil
+    planLock.unlock()
+  }
+
+  private func makePlan(
+    second: Int64,
+    generation: Int64,
+    configuration: IosLiveWatermarkPlanConfiguration
+  ) throws -> IosLiveWatermarkPlan {
+    dispatchPrecondition(condition: .onQueue(watermarkQueue))
+    let date = Date(timeIntervalSince1970: Double(second))
+    let raster = try makeRaster(
+      text: watermarkText(date: date, trackingNumber: configuration.trackingNumber),
+      outputSize: configuration.outputSize
+    )
+    return IosLiveWatermarkPlan(
+      second: second,
+      generation: generation,
+      configuration: configuration,
+      rasterPixelCount: raster.width * raster.height,
+      blendPixels: makeBlendPixels(
+        raster,
+        outputSize: configuration.outputSize,
+        sourceWidth: configuration.sourceWidth,
+        sourceHeight: configuration.sourceHeight,
+        bytesPerRow: configuration.bytesPerRow,
+        orientation: configuration.orientation
+      )
+    )
+  }
+
+  private func buildAndPublish(
+    second: Int64,
+    generation: Int64,
+    configuration: IosLiveWatermarkPlanConfiguration
+  ) {
+    do {
+      let plan = try makePlan(
+        second: second,
+        generation: generation,
+        configuration: configuration
+      )
+      publish(plan)
+    } catch {
+      planLock.lock()
+      if self.generation == generation, self.configuration == configuration {
+        planFailure = error as? IosLiveWatermarkError ?? .rasterizationFailed
+        scheduledSeconds.remove(second)
+      }
+      planLock.unlock()
+    }
+  }
+
+  @discardableResult
+  private func publish(_ plan: IosLiveWatermarkPlan) -> Bool {
+    planLock.lock()
+    defer { planLock.unlock() }
+    guard generation == plan.generation, configuration == plan.configuration else {
+      return false
+    }
+    plans[plan.second] = plan
+    scheduledSeconds.remove(plan.second)
+    plans = plans.filter { $0.key >= plan.second - 1 }
+    return true
+  }
+
+  func waitForPendingPlansForTesting() {
+    watermarkQueue.sync {}
+  }
+
+  var preparedSecondsForTesting: [Int64] {
+    planLock.lock()
+    defer { planLock.unlock() }
+    return plans.keys.sorted()
+  }
+
+  var lastAppliedPlanSecondForTesting: Int64? {
+    planLock.lock()
+    defer { planLock.unlock() }
+    return lastAppliedPlanSecond
   }
 
   private func watermarkText(date: Date, trackingNumber: String) -> String {
