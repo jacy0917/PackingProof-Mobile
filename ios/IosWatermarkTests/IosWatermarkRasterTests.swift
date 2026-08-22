@@ -210,14 +210,14 @@ final class IosWatermarkRasterTests: XCTestCase {
         orientation: orientation
       )
       XCTAssertEqual(bounds.midX, output.width / 2, accuracy: 2, orientation)
-      XCTAssertGreaterThanOrEqual(bounds.minY, output.height * 0.1, orientation)
-      XCTAssertLessThanOrEqual(bounds.minY, output.height * 0.1 + 24, orientation)
+      XCTAssertGreaterThanOrEqual(bounds.minY, output.height * 0.04, orientation)
+      XCTAssertLessThanOrEqual(bounds.minY, output.height * 0.04 + 24, orientation)
       XCTAssertGreaterThan(bounds.brightPixels, 40, orientation)
       XCTAssertGreaterThan(bounds.darkPixels, 40, orientation)
     }
   }
 
-  func testLiveWatermarkRasterOriginIsExactlyTopTenPercentAndCentered() {
+  func testLiveWatermarkRasterOriginIsExactlyTopFourPercentAndCentered() {
     for output in [
       CGSize(width: 1080, height: 1920),
       CGSize(width: 1920, height: 1080),
@@ -228,7 +228,7 @@ final class IosWatermarkRasterTests: XCTestCase {
         rasterSize: raster
       )
       XCTAssertEqual(origin.x + raster.width / 2, output.width / 2)
-      XCTAssertEqual(origin.y, output.height * 0.1)
+      XCTAssertEqual(origin.y, output.height * 0.04)
     }
   }
 
@@ -300,6 +300,12 @@ final class IosWatermarkRasterTests: XCTestCase {
         textSize: measuredSize(of: firstText)
       )
       XCTAssertEqual(layout.renderSize, fixture.expected, fixture.name)
+      XCTAssertEqual(
+        layout.renderSize.height - layout.textFrame.maxY,
+        fixture.expected.height * 0.04,
+        accuracy: 0.0001,
+        fixture.name
+      )
 
       let firstPixels = try render(
         text: firstText,

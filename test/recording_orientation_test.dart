@@ -25,7 +25,7 @@ void main() {
           ? const Size(1080, 1920)
           : const Size(1920, 1080);
       expect(geometry.outputRect.center.dx, output.width / 2);
-      expect(geometry.outputRect.top, output.height * 0.1);
+      expect(geometry.outputRect.top, output.height * watermarkTopFraction);
     }
   });
 

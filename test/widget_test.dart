@@ -442,7 +442,7 @@ void main() {
     final Positioned watermarkPosition = tester.widget<Positioned>(
       find.byKey(const Key('camera-watermark-position')),
     );
-    expect(watermarkPosition.top, closeTo(69.333, 0.01));
+    expect(watermarkPosition.top, closeTo(27.733, 0.01));
     expect(watermarkPosition.left, 70);
     expect(watermarkPosition.right, isNull);
 

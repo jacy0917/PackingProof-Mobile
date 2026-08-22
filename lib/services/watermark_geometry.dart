@@ -2,6 +2,8 @@ import 'dart:math' as math;
 import 'package:flutter/widgets.dart';
 import '../models/recording_orientation.dart';
 
+const double watermarkTopFraction = 0.04;
+
 /// 以录像变换为唯一真相的水印几何结果。
 class WatermarkGeometry {
   const WatermarkGeometry({
@@ -74,7 +76,10 @@ WatermarkGeometry watermarkGeometry({
   final double height = math.min(watermarkSize.height, output.height);
   final Rect target = Rect.fromLTWH(
     math.max(0, (output.width - width) / 2),
-    math.min(output.height * 0.1, math.max(0, output.height - height)),
+    math.min(
+      output.height * watermarkTopFraction,
+      math.max(0, output.height - height),
+    ),
     width,
     height,
   );

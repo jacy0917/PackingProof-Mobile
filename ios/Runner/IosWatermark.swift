@@ -2,6 +2,8 @@ import Foundation
 import QuartzCore
 import UIKit
 
+private let iosWatermarkTopFraction: CGFloat = 0.04
+
 /// 保持固定 1080x1920 竖屏采集缓冲不变，仅用 MP4 轨道元数据表达最终录像方向。
 func iosRecordingTransform(for recordingOrientation: String) -> CGAffineTransform {
   switch recordingOrientation {
@@ -68,7 +70,7 @@ struct IosWatermarkLayout {
     naturalSize: CGSize,
     preferredTransform: CGAffineTransform,
     textSize: CGSize,
-    topFraction: CGFloat = 0.1
+    topFraction: CGFloat = iosWatermarkTopFraction
   ) -> IosWatermarkLayout {
     let renderSize = resolvedRenderSize(
       naturalSize: naturalSize,
@@ -184,7 +186,7 @@ struct IosLiveWatermarkGeometry {
     CGPoint(
       x: max(0, (outputSize.width - rasterSize.width) / 2),
       y: min(
-        max(0, outputSize.height * 0.1),
+        max(0, outputSize.height * iosWatermarkTopFraction),
         max(0, outputSize.height - rasterSize.height)
       )
     )
