@@ -1240,7 +1240,15 @@ class ContinuousSegmentCamera(
 
     private fun analyzeImage(reader: ImageReader) {
         val image = reader.acquireLatestImage() ?: return
-        if (!previewActive || scannerBusy || SystemClock.elapsedRealtime() - lastAnalysisElapsedMs < ANALYSIS_INTERVAL_MS) {
+        if (!shouldAnalyzeBarcodeFrame(
+                previewActive = previewActive,
+                pairingScanEnabled = pairingScanEnabled,
+                workScanEnabled = workScanEnabled,
+                scannerBusy = scannerBusy,
+                elapsedSinceLastAnalysisMs = SystemClock.elapsedRealtime() - lastAnalysisElapsedMs,
+                analysisIntervalMs = ANALYSIS_INTERVAL_MS,
+            )
+        ) {
             image.close()
             return
         }
@@ -2522,6 +2530,18 @@ class ContinuousSegmentCamera(
     }
 
 }
+
+internal fun shouldAnalyzeBarcodeFrame(
+    previewActive: Boolean,
+    pairingScanEnabled: Boolean,
+    workScanEnabled: Boolean,
+    scannerBusy: Boolean,
+    elapsedSinceLastAnalysisMs: Long,
+    analysisIntervalMs: Long,
+): Boolean = previewActive &&
+    (pairingScanEnabled || workScanEnabled) &&
+    !scannerBusy &&
+    elapsedSinceLastAnalysisMs >= analysisIntervalMs
 
 internal fun barcodeFormatName(format: Int): String? = when (format) {
     Barcode.FORMAT_EAN_13 -> "ean13"

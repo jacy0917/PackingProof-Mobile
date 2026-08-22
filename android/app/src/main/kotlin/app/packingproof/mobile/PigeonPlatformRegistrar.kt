@@ -57,6 +57,9 @@ internal fun registerPigeonPlatformApis(
         orderReceiverEventApi.orderInfoReceived(items.map { it.toOrderInfoDto() }) { }
     }
     val cameraEventApi = CameraEventApi(messenger)
+    val barcodeBatchDispatcher = LatestBarcodeBatchDispatcher<BarcodeCandidateDto> { candidates, callback ->
+        cameraEventApi.barcodeBatch(candidates, callback)
+    }
     CameraHostApi.setUp(
         messenger,
         PigeonCameraHostApi(continuousCameraPlugin),
@@ -67,7 +70,7 @@ internal fun registerPigeonPlatformApis(
                 val candidates = (arguments as? List<*>).orEmpty().map {
                     (it as Map<*, *>).toBarcodeCandidateDto()
                 }
-                cameraEventApi.barcodeBatch(candidates) { }
+                barcodeBatchDispatcher.dispatch(candidates)
             }
             "nativeError" ->
                 cameraEventApi.nativeError(arguments?.toString().orEmpty()) { }
@@ -87,6 +90,34 @@ internal fun registerPigeonPlatformApis(
         backupEventApi.snapshotChanged(
             snapshot.entries.associate { (it.key as String?) to it.value },
         ) { }
+    }
+}
+
+/** Pigeon 尚未确认上一批时只保留最新条码结果，避免 Dart 卡顿时继续堆积过期帧。 */
+internal class LatestBarcodeBatchDispatcher<T>(
+    private val send: (List<T>, (Result<Unit>) -> Unit) -> Unit,
+) {
+    private var inFlight = false
+    private var pending: List<T>? = null
+
+    fun dispatch(candidates: List<T>) {
+        if (inFlight) {
+            pending = candidates
+            return
+        }
+        sendNow(candidates)
+    }
+
+    private fun sendNow(candidates: List<T>) {
+        inFlight = true
+        send(candidates) {
+            inFlight = false
+            val next = pending
+            pending = null
+            if (next != null) {
+                sendNow(next)
+            }
+        }
     }
 }
 

@@ -231,8 +231,26 @@ class ContinuousCameraPlugin(
             preferredCameraId,
         ) { method, arguments ->
             handler.post {
-                channel.invokeMethod(method, arguments)
-                eventListeners.forEach { it(method, arguments) }
+                dispatchCameraEvent(
+                    method = method,
+                    arguments = arguments,
+                    eventListeners = eventListeners,
+                    legacyDispatch = channel::invokeMethod,
+                )
             }
         }
+}
+
+/** 当前 App 使用 Pigeon 事件；仅在没有 Pigeon 监听者时回退到旧 MethodChannel。 */
+internal fun dispatchCameraEvent(
+    method: String,
+    arguments: Any?,
+    eventListeners: List<(String, Any?) -> Unit>,
+    legacyDispatch: (String, Any?) -> Unit,
+) {
+    if (eventListeners.isEmpty()) {
+        legacyDispatch(method, arguments)
+        return
+    }
+    eventListeners.forEach { it(method, arguments) }
 }
