@@ -14,6 +14,12 @@ func iosRecordingTransform(for recordingOrientation: String) -> CGAffineTransfor
   }
 }
 
+/// Texture 与 AVAssetWriter 共用 VideoDataOutput 的同一像素缓冲，因此采集输出
+/// 不能为前摄单独镜像；否则预览和成片中的标签文字都会左右反向。
+func iosRecordingCaptureShouldMirror(frontCamera: Bool) -> Bool {
+  false
+}
+
 struct IosWatermarkTimeline {
   let startedAtMs: Int64
   let trackingNumber: String

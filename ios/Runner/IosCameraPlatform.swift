@@ -840,7 +840,10 @@ final class IosCameraHostApi:
           // Flutter 纹理和写入器都使用固定 1080x1920 缓冲；最终方向只写入
           // AVAssetWriterInput.transform，避免横屏设置物理旋转采集帧。
           connection.videoOrientation = .portrait
-          connection.isVideoMirrored = false
+          connection.automaticallyAdjustsVideoMirroring = false
+          connection.isVideoMirrored = iosRecordingCaptureShouldMirror(
+            frontCamera: self.videoDeviceInput?.device.position == .front
+          )
         }
         self.videoOutput = videoOutput
       }
@@ -1079,10 +1082,13 @@ final class IosCameraHostApi:
         self.videoDeviceInput = input
         self.session.commitConfiguration()
         if let connection = self.videoOutput?.connection(with: .video) {
-          // 切换镜头后仍保持竖屏采集，前置镜头同时开启镜像，避免预览
-          // 尺寸随录像方向变化或切换后未镜像。
+          // 切换镜头后仍保持竖屏采集。Texture 与 writer 共用这个输出，
+          // 前摄也必须保持非镜像，避免标签文字在预览和成片中左右反向。
           connection.videoOrientation = .portrait
-          connection.isVideoMirrored = device.position == .front
+          connection.automaticallyAdjustsVideoMirroring = false
+          connection.isVideoMirrored = iosRecordingCaptureShouldMirror(
+            frontCamera: device.position == .front
+          )
         }
         completion(.success(self.initializationDto()))
       } catch {

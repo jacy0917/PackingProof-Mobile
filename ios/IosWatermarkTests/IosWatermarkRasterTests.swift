@@ -84,6 +84,50 @@ final class IosWatermarkRasterTests: XCTestCase {
     }
   }
 
+  func testSharedRecordingCaptureNeverMirrorsFrontOrBackPixels() {
+    XCTAssertFalse(iosRecordingCaptureShouldMirror(frontCamera: false))
+    XCTAssertFalse(iosRecordingCaptureShouldMirror(frontCamera: true))
+  }
+
+  func testLiveWatermarkCoordinatesRoundTripWithoutMirroringInAllOrientations() {
+    let sourceWidth = 1080
+    let sourceHeight = 1920
+    let asymmetricOutputPixels = [
+      (x: 73, y: 101),
+      (x: 319, y: 227),
+      (x: 811, y: 1_503),
+    ]
+
+    for orientation in ["portrait", "landscapeLeft", "landscapeRight"] {
+      let outputSize = IosLiveWatermarkGeometry.outputSize(
+        sourceWidth: sourceWidth,
+        sourceHeight: sourceHeight,
+        orientation: orientation
+      )
+      for output in asymmetricOutputPixels where
+        output.x < Int(outputSize.width) && output.y < Int(outputSize.height)
+      {
+        let source = IosLiveWatermarkGeometry.sourcePixel(
+          outputX: output.x,
+          outputY: output.y,
+          sourceWidth: sourceWidth,
+          sourceHeight: sourceHeight,
+          orientation: orientation
+        )
+        let roundTrip: (x: Int, y: Int) = switch orientation {
+        case "landscapeLeft":
+          (sourceHeight - 1 - source.y, source.x)
+        case "landscapeRight":
+          (source.y, sourceWidth - 1 - source.x)
+        default:
+          (source.x, source.y)
+        }
+        XCTAssertEqual(roundTrip.x, output.x, orientation)
+        XCTAssertEqual(roundTrip.y, output.y, orientation)
+      }
+    }
+  }
+
   func testLiveRendererPlacesSamePixelsAtOutputTopCenterInAllOrientations()
     throws
   {
