@@ -172,6 +172,11 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
               },
             ),
           );
+          if (_preferredVideoCodec == RecordingVideoCodec.hevc) {
+            _preferredVideoCodec = RecordingVideoCodec.h264;
+            await _repository.savePreferredVideoCodec(RecordingVideoCodec.h264);
+            notifyListeners();
+          }
         }
         await _measureCameraPreparationStage(
           stageDurationsMs,

@@ -67,6 +67,8 @@ class PigeonSystemMediaPresenter implements SystemMediaPresenter {
       release: value.release,
       hasHevcDecoder: value.hasHevcDecoder,
       hasAvcDecoder: value.hasAvcDecoder,
+      hasHevcEncoder: value.hasHevcEncoder,
+      hasAvcEncoder: value.hasAvcEncoder,
       forceSoftwareDecode: value.forceSoftwareDecode,
     );
   }

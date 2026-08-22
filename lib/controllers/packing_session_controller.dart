@@ -68,7 +68,14 @@ enum PackingSessionPhase {
 
 String _codecFallbackMessage(String reason) => switch (reason) {
   'no_hevc_decoder' => '本机不支持 H.265 解码，新录像已改用 H.264',
+  'hevc_encoder_unavailable' => '本机 H.265 编码器不可用，新录像已改用 H.264',
   _ => '录像编码自动回退：$reason',
+};
+
+String _videoCodecFromMime(String? mime) => switch (mime?.toLowerCase()) {
+  'video/hevc' || 'video/h265' => 'h265',
+  'video/avc' || 'video/h264' => 'h264',
+  _ => '',
 };
 
 class PackingSessionController extends ChangeNotifier
@@ -974,6 +981,7 @@ class PackingSessionController extends ChangeNotifier
       filePath: captured.path,
       recordingId: sessionId,
       operationMode: _operationMode,
+      videoCodec: _videoCodecFromMime(_nativeInitialization?.videoMime),
     );
     final String savedPath = await _repository.finalizeVideo(
       sourcePath: captured.path,
@@ -1370,6 +1378,7 @@ class PackingSessionController extends ChangeNotifier
       orderInfo: orderInfo ?? _activeOrderInfo,
       operationMode: _operationMode,
       recordingOrientation: _recordingOrientation,
+      videoCodec: _videoCodecFromMime(_nativeInitialization?.videoMime),
       watermarkStatus: WatermarkProcessingStatus.pending,
     );
   }
@@ -1399,6 +1408,7 @@ class PackingSessionController extends ChangeNotifier
     orderInfo: orderInfo ?? session.orderInfo,
     operationMode: session.operationMode,
     recordingOrientation: session.recordingOrientation,
+    videoCodec: session.videoCodec,
     watermarkStatus: session.watermarkStatus,
     watermarkAttemptCount: session.watermarkAttemptCount,
   );

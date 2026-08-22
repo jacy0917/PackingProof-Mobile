@@ -13,6 +13,7 @@ class RecordingVideoEncoderTest {
     fun `HEVC 可解码时按首选编码再回退 AVC 两种 profile`() {
         val plan = VideoEncoderPlanPolicy.create(
             MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hevcEncodable = true,
             hevcDecodable = true,
         )
 
@@ -40,6 +41,7 @@ class RecordingVideoEncoderTest {
     fun `缺少 HEVC 解码器时直接回退 AVC 并保留原因`() {
         val plan = VideoEncoderPlanPolicy.create(
             MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hevcEncodable = true,
             hevcDecodable = false,
         )
 
@@ -55,6 +57,7 @@ class RecordingVideoEncoderTest {
     fun `AVC 首选仍先尝试 Main profile 再尝试默认 profile`() {
         val plan = VideoEncoderPlanPolicy.create(
             MediaFormat.MIMETYPE_VIDEO_AVC,
+            hevcEncodable = true,
             hevcDecodable = true,
         )
 
@@ -63,6 +66,21 @@ class RecordingVideoEncoderTest {
         assertTrue(plan.candidates[0].useAvcMainProfile)
         assertFalse(plan.candidates[1].useAvcMainProfile)
         assertEquals(MediaFormat.MIMETYPE_VIDEO_HEVC, plan.candidates[2].mime)
+    }
+
+    @Test
+    fun `缺少 HEVC 编码器时直接回退 AVC 并保留原因`() {
+        val plan = VideoEncoderPlanPolicy.create(
+            MediaFormat.MIMETYPE_VIDEO_HEVC,
+            hevcEncodable = false,
+            hevcDecodable = true,
+        )
+
+        assertEquals(
+            RecordingCodecPolicy.FALLBACK_HEVC_ENCODER_UNAVAILABLE,
+            plan.fallbackReason,
+        )
+        assertTrue(plan.candidates.all { it.mime == MediaFormat.MIMETYPE_VIDEO_AVC })
     }
 
     @Test

@@ -297,6 +297,8 @@ class VideoDecodeSupportDto {
     required this.release,
     required this.hasHevcDecoder,
     required this.hasAvcDecoder,
+    required this.hasHevcEncoder,
+    required this.hasAvcEncoder,
     required this.forceSoftwareDecode,
   });
 
@@ -314,6 +316,10 @@ class VideoDecodeSupportDto {
 
   bool hasAvcDecoder;
 
+  bool hasHevcEncoder;
+
+  bool hasAvcEncoder;
+
   bool forceSoftwareDecode;
 
   List<Object?> _toList() {
@@ -325,6 +331,8 @@ class VideoDecodeSupportDto {
       release,
       hasHevcDecoder,
       hasAvcDecoder,
+      hasHevcEncoder,
+      hasAvcEncoder,
       forceSoftwareDecode,
     ];
   }
@@ -342,7 +350,9 @@ class VideoDecodeSupportDto {
       release: result[4]! as String,
       hasHevcDecoder: result[5]! as bool,
       hasAvcDecoder: result[6]! as bool,
-      forceSoftwareDecode: result[7]! as bool,
+      hasHevcEncoder: result[7]! as bool,
+      hasAvcEncoder: result[8]! as bool,
+      forceSoftwareDecode: result[9]! as bool,
     );
   }
 
@@ -355,7 +365,7 @@ class VideoDecodeSupportDto {
     if (identical(this, other)) {
       return true;
     }
-    return _deepEquals(manufacturer, other.manufacturer) && _deepEquals(brand, other.brand) && _deepEquals(model, other.model) && _deepEquals(sdkInt, other.sdkInt) && _deepEquals(release, other.release) && _deepEquals(hasHevcDecoder, other.hasHevcDecoder) && _deepEquals(hasAvcDecoder, other.hasAvcDecoder) && _deepEquals(forceSoftwareDecode, other.forceSoftwareDecode);
+    return _deepEquals(manufacturer, other.manufacturer) && _deepEquals(brand, other.brand) && _deepEquals(model, other.model) && _deepEquals(sdkInt, other.sdkInt) && _deepEquals(release, other.release) && _deepEquals(hasHevcDecoder, other.hasHevcDecoder) && _deepEquals(hasAvcDecoder, other.hasAvcDecoder) && _deepEquals(hasHevcEncoder, other.hasHevcEncoder) && _deepEquals(hasAvcEncoder, other.hasAvcEncoder) && _deepEquals(forceSoftwareDecode, other.forceSoftwareDecode);
   }
 
   @override
@@ -364,7 +374,7 @@ class VideoDecodeSupportDto {
 
   @override
   String toString() {
-    return 'VideoDecodeSupportDto(manufacturer: $manufacturer, brand: $brand, model: $model, sdkInt: $sdkInt, release: $release, hasHevcDecoder: $hasHevcDecoder, hasAvcDecoder: $hasAvcDecoder, forceSoftwareDecode: $forceSoftwareDecode)';
+    return 'VideoDecodeSupportDto(manufacturer: $manufacturer, brand: $brand, model: $model, sdkInt: $sdkInt, release: $release, hasHevcDecoder: $hasHevcDecoder, hasAvcDecoder: $hasAvcDecoder, hasHevcEncoder: $hasHevcEncoder, hasAvcEncoder: $hasAvcEncoder, forceSoftwareDecode: $forceSoftwareDecode)';
   }
 }
 

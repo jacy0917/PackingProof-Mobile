@@ -66,6 +66,15 @@ class LanBackupCompletionContractTest {
     }
 
     @Test
+    fun uploadedVideoCodecAcceptsDocumentedValuesAndNormalizesAliases() {
+        assertEquals("h264", normalizeUploadedVideoCodec("AVC"))
+        assertEquals("h265", normalizeUploadedVideoCodec("hevc"))
+        assertEquals("av1", normalizeUploadedVideoCodec("av1"))
+        assertNull(normalizeUploadedVideoCodec("vp9"))
+        assertNull(normalizeUploadedVideoCodec(""))
+    }
+
+    @Test
     fun sharedFixtureMatchesAndroidCompletionContract() {
         val fixtureFile = findRepositoryFile(
             "protocol-fixtures/mobile-backup-v2-complete.json",
@@ -77,6 +86,7 @@ class LanBackupCompletionContractTest {
         val response = fixture.getJSONObject("response")
 
         assertEquals(1, actualSessions.length())
+        assertEquals("h265", request.getString("videoCodec"))
         assertEquals(expectedSessions.toString(), actualSessions.toString())
         assertEquals(
             42L,

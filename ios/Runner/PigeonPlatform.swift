@@ -9,6 +9,24 @@ import UIKit
 import UniformTypeIdentifiers
 import VideoToolbox
 
+enum IosVideoCodecCapabilities {
+  static let hasHevcDecoder = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)
+  static let hasAvcDecoder = VTIsHardwareDecodeSupported(kCMVideoCodecType_H264)
+  static let hasHevcEncoder = supportsEncoder(kCMVideoCodecType_HEVC)
+  static let hasAvcEncoder = supportsEncoder(kCMVideoCodecType_H264)
+
+  private static func supportsEncoder(_ codecType: CMVideoCodecType) -> Bool {
+    VTCopySupportedPropertyDictionaryForEncoder(
+      width: 1920,
+      height: 1080,
+      codecType: codecType,
+      encoderSpecification: nil,
+      encoderIDOut: nil,
+      supportedPropertiesOut: nil
+    ) == noErr
+  }
+}
+
 final class PigeonPlatform {
   private static var cameraHost: IosCameraHostApi?
   private static var promptAudioHost: IosPromptAudioHost?
@@ -343,8 +361,10 @@ private final class IosSystemMediaPresenterHostApi: SystemMediaPresenterHostApi 
   func getVideoDecodeSupport(
     completion: @escaping (Result<VideoDecodeSupportDto?, Error>) -> Void
   ) {
-    let hasHevc = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)
-    let hasAvc = VTIsHardwareDecodeSupported(kCMVideoCodecType_H264)
+    let hasHevc = IosVideoCodecCapabilities.hasHevcDecoder
+    let hasAvc = IosVideoCodecCapabilities.hasAvcDecoder
+    let hasHevcEncoder = IosVideoCodecCapabilities.hasHevcEncoder
+    let hasAvcEncoder = IosVideoCodecCapabilities.hasAvcEncoder
     completion(
       .success(
         VideoDecodeSupportDto(
@@ -355,6 +375,8 @@ private final class IosSystemMediaPresenterHostApi: SystemMediaPresenterHostApi 
           release: UIDevice.current.systemVersion,
           hasHevcDecoder: hasHevc,
           hasAvcDecoder: hasAvc,
+          hasHevcEncoder: hasHevcEncoder,
+          hasAvcEncoder: hasAvcEncoder,
           forceSoftwareDecode: false
         )
       )

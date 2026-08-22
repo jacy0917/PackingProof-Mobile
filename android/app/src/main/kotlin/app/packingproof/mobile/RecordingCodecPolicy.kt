@@ -21,5 +21,6 @@ internal class RecordingCodecPolicy(
 
     companion object {
         const val FALLBACK_NO_HEVC_DECODER = "no_hevc_decoder"
+        const val FALLBACK_HEVC_ENCODER_UNAVAILABLE = "hevc_encoder_unavailable"
     }
 }

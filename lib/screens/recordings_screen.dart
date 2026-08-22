@@ -426,6 +426,12 @@ class _RecordingsScreenState extends State<RecordingsScreen>
         .getVideoDecodeSupport();
     if (!mounted) return;
     setState(() => _deviceDecodeSupport = support);
+    if (support != null &&
+        !support.supportsHevcRecording &&
+        _preferredVideoCodec == RecordingVideoCodec.hevc) {
+      setState(() => _preferredVideoCodec = RecordingVideoCodec.h264);
+      await widget.onPreferredVideoCodecChanged?.call(RecordingVideoCodec.h264);
+    }
   }
 
   @override
@@ -1032,10 +1038,12 @@ class _RecordingsScreenState extends State<RecordingsScreen>
                   ),
                   _VideoCodecSettings(
                     codec: _preferredVideoCodec,
+                    hevcEnabled:
+                        _deviceDecodeSupport?.supportsHevcRecording ?? false,
                     hevcWarning: _deviceDecodeSupport == null
                         ? null
-                        : (!_deviceDecodeSupport!.hasHevcDecoder
-                              ? '当前设备不支持播放 H.265，新录像将自动使用 H.264'
+                        : (!_deviceDecodeSupport!.supportsHevcRecording
+                              ? '当前设备不支持完整的 H.265 录制与播放能力，已使用 H.264'
                               : null),
                     onChanged: _setPreferredVideoCodec,
                   ),

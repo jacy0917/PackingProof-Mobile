@@ -59,6 +59,7 @@ void main() {
       ],
       mediaStart: const Duration(seconds: 10),
       mediaEnd: const Duration(seconds: 130),
+      videoCodec: 'h265',
     );
 
     await repository.addSession(session);
@@ -69,6 +70,7 @@ void main() {
     expect(loaded.single.markers.single.offset, const Duration(seconds: 12));
     expect(loaded.single.mediaStart, const Duration(seconds: 10));
     expect(loaded.single.playbackEnd, const Duration(seconds: 130));
+    expect(loaded.single.videoCodec, 'h265');
     expect(File(videoPath).existsSync(), isTrue);
     expect(
       videoPath,
@@ -94,6 +96,7 @@ void main() {
     expect(session.mediaStart, Duration.zero);
     expect(session.playbackEnd, const Duration(seconds: 30));
     expect(session.operationMode, RecordingOperationMode.shipping);
+    expect(session.videoCodec, isEmpty);
   });
 
   test('退货录像模式可持久化并写入文件名', () async {

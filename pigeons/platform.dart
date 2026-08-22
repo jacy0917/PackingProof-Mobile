@@ -42,6 +42,8 @@ class VideoDecodeSupportDto {
   String release;
   bool hasHevcDecoder;
   bool hasAvcDecoder;
+  bool hasHevcEncoder;
+  bool hasAvcEncoder;
   bool forceSoftwareDecode;
 }
 

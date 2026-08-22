@@ -484,6 +484,7 @@ Map<String, Object?> recordingSessionBackupMap(RecordingSession session) {
     'mediaStartMs': session.mediaStart.inMilliseconds,
     'mediaEndMs': session.playbackEnd.inMilliseconds,
     'mode': session.operationMode.storageValue,
+    if (session.videoCodec.isNotEmpty) 'videoCodec': session.videoCodec,
     'markers': session.markers
         .map(
           (marker) => <String, Object?>{

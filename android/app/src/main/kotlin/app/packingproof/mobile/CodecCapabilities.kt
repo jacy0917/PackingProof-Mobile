@@ -9,16 +9,38 @@ import android.media.MediaCodecList
  * 这类机型录出的 H.265 本机无法播放，需要在录像前自动回退到 H.264。
  */
 object CodecCapabilities {
-    fun hasDecoder(mime: String): Boolean {
-        return try {
-            val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
-            codecList.codecInfos.any { info ->
-                !info.isEncoder &&
-                    info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
-            }
+    @Volatile
+    private var hevcEncoderDisabledForProcess = false
+
+    private val codecInfos by lazy {
+        try {
+            MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.toList()
         } catch (_: Throwable) {
-            // 查询失败时不阻断现有录像流程，按“支持解码”处理。
-            true
+            emptyList()
         }
+    }
+
+    fun hasDecoder(mime: String): Boolean {
+        return codecInfos.any { info ->
+            !info.isEncoder &&
+                info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+        }
+    }
+
+    fun hasEncoder(mime: String): Boolean {
+        if (
+            mime.equals(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true) &&
+            hevcEncoderDisabledForProcess
+        ) {
+            return false
+        }
+        return codecInfos.any { info ->
+            info.isEncoder &&
+                info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+        }
+    }
+
+    fun disableHevcEncoderForProcess() {
+        hevcEncoderDisabledForProcess = true
     }
 }

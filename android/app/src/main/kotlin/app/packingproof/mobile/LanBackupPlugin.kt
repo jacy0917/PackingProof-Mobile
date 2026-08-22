@@ -97,6 +97,7 @@ internal class LanBackupPlugin(
                         computerId,
                         call.argument<String>("computerName") ?: "已连接电脑",
                         call.argument<String>("deviceName") ?: "",
+                        call.argument<Boolean>("supportsUploadVideoCodec") ?: false,
                     )
                     credentials.save(accessKey)
                     store.retargetJobs(computerId)

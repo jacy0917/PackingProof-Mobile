@@ -66,6 +66,7 @@ APP 不上传订单留言、卖家备注、商品、退款信息或手机本地�
   "features": {
     "videoLibrary": true,
     "rangePlayback": true,
+    "uploadVideoCodec": true,
     "multipleSessionsPerFile": false
   },
   "retryPolicy": {
@@ -132,7 +133,19 @@ X-Chunk-SHA256: <当前分块 SHA256>
 
 `POST /api/mobile-backup/uploads/{uploadId}/complete`
 
-请求使用“最小录像元数据”中的 JSON。电脑重新计算完整文件 SHA256，校验通过后原子保存物理文件并写入对应的录像记录，返回：
+主机在能力响应中声明 `features.uploadVideoCodec=true` 时，手机会从当前录像记录读取实际编码并在完成请求顶层增加 `videoCodec`。允许值为 `h264`、`h265`、`av1`，`hevc` 会规范化为 `h265`；历史记录为空或主机未声明能力时省略该字段，不扫描视频文件，也不影响上传成功
+
+```json
+{
+  "fileSha256": "完整 MP4 文件 SHA256",
+  "videoCodec": "h265",
+  "sourceDeviceId": "稳定设备 ID",
+  "sourceDeviceName": "设备显示名称",
+  "sessions": []
+}
+```
+
+电脑重新计算完整文件 SHA256，校验通过后原子保存物理文件并写入对应的录像记录，返回：
 
 ```json
 {

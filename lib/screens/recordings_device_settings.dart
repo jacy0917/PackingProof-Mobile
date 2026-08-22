@@ -267,11 +267,13 @@ class _WorkModeSettings extends StatelessWidget {
 class _VideoCodecSettings extends StatelessWidget {
   const _VideoCodecSettings({
     required this.codec,
+    required this.hevcEnabled,
     this.hevcWarning,
     required this.onChanged,
   });
 
   final RecordingVideoCodec codec;
+  final bool hevcEnabled;
   final String? hevcWarning;
   final ValueChanged<RecordingVideoCodec> onChanged;
 
@@ -298,6 +300,8 @@ class _VideoCodecSettings extends StatelessWidget {
                     (RecordingVideoCodec value) =>
                         ButtonSegment<RecordingVideoCodec>(
                           value: value,
+                          enabled:
+                              value != RecordingVideoCodec.hevc || hevcEnabled,
                           label: Text(value.label),
                         ),
                   )

@@ -66,9 +66,18 @@ class RunnerTests: XCTestCase {
     let response = try XCTUnwrap(fixture["response"] as? [String: Any])
 
     XCTAssertEqual(expectedSessions.count, 1)
+    XCTAssertEqual(request["videoCodec"] as? String, "h265")
     XCTAssertEqual(actualSession as NSDictionary, expectedSession as NSDictionary)
     XCTAssertEqual((response["recordId"] as? NSNumber)?.int64Value, 42)
     XCTAssertNil(response["recordIds"])
+  }
+
+  func testUploadedVideoCodecAcceptsDocumentedValuesAndNormalizesAliases() {
+    XCTAssertEqual(IosBackupHostApi.normalizedVideoCodec("AVC"), "h264")
+    XCTAssertEqual(IosBackupHostApi.normalizedVideoCodec("hevc"), "h265")
+    XCTAssertEqual(IosBackupHostApi.normalizedVideoCodec("av1"), "av1")
+    XCTAssertNil(IosBackupHostApi.normalizedVideoCodec("vp9"))
+    XCTAssertNil(IosBackupHostApi.normalizedVideoCodec(nil))
   }
 
   func testRequiredUsageDescriptionsPresent() {

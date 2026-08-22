@@ -7,6 +7,8 @@ class SystemVideoDecodeSupport {
     required this.release,
     required this.hasHevcDecoder,
     required this.hasAvcDecoder,
+    required this.hasHevcEncoder,
+    required this.hasAvcEncoder,
     required this.forceSoftwareDecode,
   });
 
@@ -17,6 +19,8 @@ class SystemVideoDecodeSupport {
   final String release;
   final bool hasHevcDecoder;
   final bool hasAvcDecoder;
+  final bool hasHevcEncoder;
+  final bool hasAvcEncoder;
   final bool forceSoftwareDecode;
 }
 

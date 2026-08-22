@@ -190,6 +190,7 @@ class RecordingHistoryItem {
             ],
       orderInfo: value.orderInfo,
       operationMode: value.operationMode,
+      videoCodec: value.videoCodec,
     );
   }
 }

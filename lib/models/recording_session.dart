@@ -29,6 +29,7 @@ class RecordingSession {
     this.orderInfo,
     this.operationMode = RecordingOperationMode.shipping,
     this.recordingOrientation = RecordingOrientation.portrait,
+    this.videoCodec = '',
     this.watermarkStatus = WatermarkProcessingStatus.completed,
     this.watermarkAttemptCount = 0,
   });
@@ -45,6 +46,7 @@ class RecordingSession {
   final OrderInfo? orderInfo;
   final RecordingOperationMode operationMode;
   final RecordingOrientation recordingOrientation;
+  final String videoCodec;
   final WatermarkProcessingStatus watermarkStatus;
   final int watermarkAttemptCount;
 
@@ -59,6 +61,7 @@ class RecordingSession {
 
   RecordingSession copyWith({
     String? filePath,
+    String? videoCodec,
     WatermarkProcessingStatus? watermarkStatus,
     int? watermarkAttemptCount,
   }) => RecordingSession(
@@ -72,6 +75,7 @@ class RecordingSession {
     orderInfo: orderInfo,
     operationMode: operationMode,
     recordingOrientation: recordingOrientation,
+    videoCodec: videoCodec ?? this.videoCodec,
     watermarkStatus: watermarkStatus ?? this.watermarkStatus,
     watermarkAttemptCount: watermarkAttemptCount ?? this.watermarkAttemptCount,
   );
@@ -119,6 +123,7 @@ class RecordingSession {
       orderInfo: orderInfo,
       operationMode: operationMode,
       recordingOrientation: recordingOrientation,
+      videoCodec: videoCodec,
       watermarkStatus: watermarkStatus,
       watermarkAttemptCount: watermarkAttemptCount,
     );
@@ -135,6 +140,7 @@ class RecordingSession {
     if (orderInfo != null) 'orderInfo': orderInfo!.toJson(),
     'operationMode': operationMode.storageValue,
     'recordingOrientation': recordingOrientation.storageValue,
+    if (videoCodec.isNotEmpty) 'videoCodec': videoCodec,
     'watermarkStatus': watermarkStatus.storageValue,
     'watermarkAttemptCount': watermarkAttemptCount,
   };
@@ -170,6 +176,7 @@ class RecordingSession {
       recordingOrientation: recordingOrientationFromStorage(
         json['recordingOrientation'],
       ),
+      videoCodec: (json['videoCodec'] as String?)?.trim().toLowerCase() ?? '',
       watermarkStatus: watermarkProcessingStatusFromStorage(
         json['watermarkStatus'],
       ),

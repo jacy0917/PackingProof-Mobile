@@ -248,6 +248,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   String _appVersion = currentMobileCompatibilityVersion;
   int _appBuildNumber = currentMobileCompatibilityBuildNumber;
   bool _deviceVideoClippingEnabled = false;
+  bool _uploadVideoCodecEnabled = false;
   final Set<String> _loggedFailedJobIds = <String>{};
   String _lastSnapshotSignature = '';
   Future<Uri?>? _activeAddressRecovery;
@@ -548,21 +549,25 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
           candidateEndpoint: connectedEndpoint,
         );
       }
+      final _HostBackupFeatures hostFeatures = await _readHostFeatures(
+        connectedEndpoint.baseUri,
+        accessKey: deviceToken,
+      );
+      _deviceVideoClippingEnabled = hostFeatures.deviceVideoClipping;
+      _uploadVideoCodecEnabled = hostFeatures.uploadVideoCodec;
       await _platform.saveConnection(<String, Object?>{
         'baseUrl': baseUri.toString(),
         'accessKey': deviceToken,
         'computerId': connectedEndpoint.computerId,
         'computerName': connectedEndpoint.computerName,
         'deviceName': assignedDeviceName,
+        'supportsUploadVideoCodec': _uploadVideoCodecEnabled,
       });
       if (revision != _pairingRevision) {
         await _restorePersistedConnection(restoreSnapshot);
         return;
       }
       _accessKey = deviceToken;
-      _deviceVideoClippingEnabled = await _readDeviceVideoClippingFeature(
-        connectedEndpoint.baseUri,
-      );
       _snapshot = _snapshot.copyWith(
         deviceName: assignedDeviceName,
         endpoint: connectedEndpoint,
@@ -741,6 +746,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
       'computerId': endpoint.computerId,
       'computerName': endpoint.computerName,
       'deviceName': restoreSnapshot.deviceName,
+      'supportsUploadVideoCodec': _uploadVideoCodecEnabled,
     });
   }
 
@@ -754,6 +760,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     );
     _accessKey = '';
     _deviceVideoClippingEnabled = false;
+    _uploadVideoCodecEnabled = false;
     notifyListeners();
   }
 
@@ -762,6 +769,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     LanBackupEndpoint? endpoint = _snapshot.endpoint;
     if (endpoint == null || _accessKey.isEmpty) return false;
     _deviceVideoClippingEnabled = false;
+    _uploadVideoCodecEnabled = false;
     if (_snapshot.connectionStatus == LanConnectionStatus.notBackupHost) {
       _snapshot = _snapshot.copyWith(message: '电脑用途改变后需要重新搜索，或扫码选择另一台录像备份主机');
       notifyListeners();
@@ -828,6 +836,15 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
       _deviceVideoClippingEnabled = parseDeviceVideoClippingFeature(
         responseBody,
       );
+      _uploadVideoCodecEnabled = parseUploadVideoCodecFeature(responseBody);
+      await _platform.saveConnection(<String, Object?>{
+        'baseUrl': endpoint.baseUri.toString(),
+        'accessKey': _accessKey,
+        'computerId': endpoint.computerId,
+        'computerName': endpoint.computerName,
+        'deviceName': _snapshot.deviceName,
+        'supportsUploadVideoCodec': _uploadVideoCodecEnabled,
+      });
       _snapshot = _snapshot.copyWith(
         connectionStatus: LanConnectionStatus.connected,
         message: '电脑已重新连接',
@@ -1207,6 +1224,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
       'computerId': updated.computerId,
       'computerName': updated.computerName,
       'deviceName': _snapshot.deviceName,
+      'supportsUploadVideoCodec': _uploadVideoCodecEnabled,
     });
     _snapshot = _snapshot.copyWith(
       endpoint: updated,
@@ -1427,14 +1445,28 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     final LanBackupEndpoint? endpoint = _snapshot.endpoint;
     if (endpoint == null || _accessKey.isEmpty) {
       _deviceVideoClippingEnabled = false;
+      _uploadVideoCodecEnabled = false;
       return;
     }
-    _deviceVideoClippingEnabled = await _readDeviceVideoClippingFeature(
+    final _HostBackupFeatures features = await _readHostFeatures(
       endpoint.baseUri,
     );
+    _deviceVideoClippingEnabled = features.deviceVideoClipping;
+    _uploadVideoCodecEnabled = features.uploadVideoCodec;
+    await _platform.saveConnection(<String, Object?>{
+      'baseUrl': endpoint.baseUri.toString(),
+      'accessKey': _accessKey,
+      'computerId': endpoint.computerId,
+      'computerName': endpoint.computerName,
+      'deviceName': _snapshot.deviceName,
+      'supportsUploadVideoCodec': _uploadVideoCodecEnabled,
+    });
   }
 
-  Future<bool> _readDeviceVideoClippingFeature(Uri baseUri) async {
+  Future<_HostBackupFeatures> _readHostFeatures(
+    Uri baseUri, {
+    String? accessKey,
+  }) async {
     try {
       final Uri uri = baseUri.replace(path: '/api/mobile-backup/capabilities');
       final HttpClientRequest request = await _httpClient
@@ -1442,7 +1474,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
           .timeout(const Duration(seconds: 5));
       _setSignedBackupHeaders(
         request,
-        _accessKey,
+        accessKey ?? _accessKey,
         const <int>[],
         method: 'GET',
         path: uri.path,
@@ -1451,10 +1483,15 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         const Duration(seconds: 8),
       );
       final String body = await utf8.decoder.bind(response).join();
-      return response.statusCode == HttpStatus.ok &&
-          parseDeviceVideoClippingFeature(body);
+      if (response.statusCode != HttpStatus.ok) {
+        return const _HostBackupFeatures();
+      }
+      return _HostBackupFeatures(
+        deviceVideoClipping: parseDeviceVideoClippingFeature(body),
+        uploadVideoCodec: parseUploadVideoCodecFeature(body),
+      );
     } on Object {
-      return false;
+      return const _HostBackupFeatures();
     }
   }
 
@@ -1677,6 +1714,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
           'computerId': endpoint.computerId,
           'computerName': endpoint.computerName,
           'deviceName': assignedDisplayName,
+          'supportsUploadVideoCodec': _uploadVideoCodecEnabled,
         });
         _snapshot = _snapshot.copyWith(deviceName: assignedDisplayName);
         notifyListeners();
@@ -1972,6 +2010,30 @@ bool parseDeviceVideoClippingFeature(String responseBody) {
   } on Object {
     return false;
   }
+}
+
+@visibleForTesting
+bool parseUploadVideoCodecFeature(String responseBody) {
+  try {
+    final Object? decoded = jsonDecode(responseBody);
+    if (decoded is! Map || decoded['features'] is! Map) return false;
+    final Map<Object?, Object?> features = Map<Object?, Object?>.from(
+      decoded['features']! as Map,
+    );
+    return features['uploadVideoCodec'] == true;
+  } on Object {
+    return false;
+  }
+}
+
+class _HostBackupFeatures {
+  const _HostBackupFeatures({
+    this.deviceVideoClipping = false,
+    this.uploadVideoCodec = false,
+  });
+
+  final bool deviceVideoClipping;
+  final bool uploadVideoCodec;
 }
 
 @visibleForTesting

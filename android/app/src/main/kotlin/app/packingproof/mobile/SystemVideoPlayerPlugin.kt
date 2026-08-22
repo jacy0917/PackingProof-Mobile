@@ -47,6 +47,12 @@ class SystemVideoPlayerPlugin(
                     "hasAvcDecoder" to CodecCapabilities.hasDecoder(
                         MediaFormat.MIMETYPE_VIDEO_AVC,
                     ),
+                    "hasHevcEncoder" to CodecCapabilities.hasEncoder(
+                        MediaFormat.MIMETYPE_VIDEO_HEVC,
+                    ),
+                    "hasAvcEncoder" to CodecCapabilities.hasEncoder(
+                        MediaFormat.MIMETYPE_VIDEO_AVC,
+                    ),
                     "forceSoftwareDecode" to RecordingCodecPolicy(
                         Build.MANUFACTURER,
                         Build.VERSION.SDK_INT,

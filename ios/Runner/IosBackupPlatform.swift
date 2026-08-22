@@ -1036,12 +1036,17 @@ final class IosBackupHostApi: BackupNativeHostApi {
       try Task.checkCancellation()
       try reader.assertUnchanged()
       let completePath = "/api/mobile-backup/uploads/\(uploadIdEncoded)/complete"
-      let completeBody: [String: Any] = [
+      var completeBody: [String: Any] = [
         "fileSha256": fileSha256,
         "sourceDeviceId": deviceId(),
         "sourceDeviceName": deviceName(),
         "sessions": [completionSession],
       ]
+      if connection["supportsUploadVideoCodec"] as? Bool == true,
+         let sourceSession = rawSessions[0] as? [String: Any],
+         let videoCodec = Self.normalizedVideoCodec(sourceSession["videoCodec"]) {
+        completeBody["videoCodec"] = videoCodec
+      }
       let complete: [String: Any]
       do {
         complete = try await uploadJson(
@@ -1234,6 +1239,15 @@ final class IosBackupHostApi: BackupNativeHostApi {
       "mode": source["mode"] as? String ?? "shipping",
       "markers": source["markers"] as? [Any] ?? [],
     ]
+  }
+
+  static func normalizedVideoCodec(_ value: Any?) -> String? {
+    switch (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "h264", "avc": return "h264"
+    case "h265", "hevc": return "h265"
+    case "av1": return "av1"
+    default: return nil
+    }
   }
 
   private static func int64Value(_ value: Any?) -> Int64 {

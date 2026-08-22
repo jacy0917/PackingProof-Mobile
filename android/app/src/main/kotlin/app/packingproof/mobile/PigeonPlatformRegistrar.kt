@@ -239,6 +239,8 @@ private fun videoDecodeSupportDto(value: Map<*, *>): VideoDecodeSupportDto =
         release = value["release"] as? String ?: "",
         hasHevcDecoder = value["hasHevcDecoder"] as? Boolean ?: false,
         hasAvcDecoder = value["hasAvcDecoder"] as? Boolean ?: false,
+        hasHevcEncoder = value["hasHevcEncoder"] as? Boolean ?: false,
+        hasAvcEncoder = value["hasAvcEncoder"] as? Boolean ?: false,
         forceSoftwareDecode = value["forceSoftwareDecode"] as? Boolean ?: false,
     )
 

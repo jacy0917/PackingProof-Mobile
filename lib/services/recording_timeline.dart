@@ -58,6 +58,7 @@ class RecordingTimeline {
     required String filePath,
     required String recordingId,
     RecordingOperationMode operationMode = RecordingOperationMode.shipping,
+    String videoCodec = '',
   }) {
     final DateTime? recordingStartedAt = _recordingStartedAt;
     if (recordingStartedAt == null || _segmentStartedAt == null) {
@@ -84,6 +85,7 @@ class RecordingTimeline {
         mediaStart: _difference(draft.startedAt, recordingStartedAt),
         mediaEnd: _difference(draft.endedAt, recordingStartedAt),
         operationMode: operationMode,
+        videoCodec: videoCodec,
       );
     }, growable: false);
   }

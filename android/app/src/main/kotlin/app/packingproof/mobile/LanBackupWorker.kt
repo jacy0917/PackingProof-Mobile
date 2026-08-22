@@ -4,7 +4,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
-import android.media.MediaExtractor
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -220,11 +219,17 @@ internal class LanBackupWorker(
             val completionSessions = canonicalCompletionSessions(
                 job.getJSONArray("sessions"),
             )
+            val sourceVideoCodec = normalizeUploadedVideoCodec(
+                job.getJSONArray("sessions").getJSONObject(0).optString("videoCodec"),
+            )
             val completionBody = JSONObject()
                 .put("fileSha256", sha256)
                 .put("sourceDeviceId", store.deviceId())
                 .put("sourceDeviceName", store.deviceName())
                 .put("sessions", completionSessions)
+            if (connection.optBoolean("supportsUploadVideoCodec") && sourceVideoCodec != null) {
+                completionBody.put("videoCodec", sourceVideoCodec)
+            }
             val completion = try {
                 postJson(
                     "$baseUrl/api/mobile-backup/uploads/$encodedUploadId/complete",
@@ -628,20 +633,11 @@ private fun ByteArray.sha256(): String = MessageDigest.getInstance("SHA-256")
     .digest(this)
     .joinToString("") { "%02x".format(it) }
 
-private fun File.videoCodec(): String {
-    val extractor = MediaExtractor()
-    return try {
-        extractor.setDataSource(path)
-        for (index in 0 until extractor.trackCount) {
-            val mime = extractor.getTrackFormat(index)
-                .getString(android.media.MediaFormat.KEY_MIME)
-                .orEmpty()
-            if (mime.startsWith("video/")) {
-                return if (mime == "video/hevc") "h265" else "h264"
-            }
-        }
-        "h265"
-    } finally {
-        extractor.release()
-    }
+internal fun normalizeUploadedVideoCodec(value: String?): String? = when (
+    value.orEmpty().trim().lowercase()
+) {
+    "h264", "avc" -> "h264"
+    "h265", "hevc" -> "h265"
+    "av1" -> "av1"
+    else -> null
 }

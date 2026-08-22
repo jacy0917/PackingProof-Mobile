@@ -348,6 +348,8 @@ struct VideoDecodeSupportDto: Hashable, CustomStringConvertible {
   var release: String
   var hasHevcDecoder: Bool
   var hasAvcDecoder: Bool
+  var hasHevcEncoder: Bool
+  var hasAvcEncoder: Bool
   var forceSoftwareDecode: Bool
 
 
@@ -360,7 +362,9 @@ struct VideoDecodeSupportDto: Hashable, CustomStringConvertible {
     let release = pigeonVar_list[4] as! String
     let hasHevcDecoder = pigeonVar_list[5] as! Bool
     let hasAvcDecoder = pigeonVar_list[6] as! Bool
-    let forceSoftwareDecode = pigeonVar_list[7] as! Bool
+    let hasHevcEncoder = pigeonVar_list[7] as! Bool
+    let hasAvcEncoder = pigeonVar_list[8] as! Bool
+    let forceSoftwareDecode = pigeonVar_list[9] as! Bool
 
     return VideoDecodeSupportDto(
       manufacturer: manufacturer,
@@ -370,6 +374,8 @@ struct VideoDecodeSupportDto: Hashable, CustomStringConvertible {
       release: release,
       hasHevcDecoder: hasHevcDecoder,
       hasAvcDecoder: hasAvcDecoder,
+      hasHevcEncoder: hasHevcEncoder,
+      hasAvcEncoder: hasAvcEncoder,
       forceSoftwareDecode: forceSoftwareDecode
     )
   }
@@ -382,6 +388,8 @@ struct VideoDecodeSupportDto: Hashable, CustomStringConvertible {
       release,
       hasHevcDecoder,
       hasAvcDecoder,
+      hasHevcEncoder,
+      hasAvcEncoder,
       forceSoftwareDecode,
     ]
   }
@@ -389,7 +397,7 @@ struct VideoDecodeSupportDto: Hashable, CustomStringConvertible {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return PlatformApiPigeonInternal.deepEquals(lhs.manufacturer, rhs.manufacturer) && PlatformApiPigeonInternal.deepEquals(lhs.brand, rhs.brand) && PlatformApiPigeonInternal.deepEquals(lhs.model, rhs.model) && PlatformApiPigeonInternal.deepEquals(lhs.sdkInt, rhs.sdkInt) && PlatformApiPigeonInternal.deepEquals(lhs.release, rhs.release) && PlatformApiPigeonInternal.deepEquals(lhs.hasHevcDecoder, rhs.hasHevcDecoder) && PlatformApiPigeonInternal.deepEquals(lhs.hasAvcDecoder, rhs.hasAvcDecoder) && PlatformApiPigeonInternal.deepEquals(lhs.forceSoftwareDecode, rhs.forceSoftwareDecode)
+    return PlatformApiPigeonInternal.deepEquals(lhs.manufacturer, rhs.manufacturer) && PlatformApiPigeonInternal.deepEquals(lhs.brand, rhs.brand) && PlatformApiPigeonInternal.deepEquals(lhs.model, rhs.model) && PlatformApiPigeonInternal.deepEquals(lhs.sdkInt, rhs.sdkInt) && PlatformApiPigeonInternal.deepEquals(lhs.release, rhs.release) && PlatformApiPigeonInternal.deepEquals(lhs.hasHevcDecoder, rhs.hasHevcDecoder) && PlatformApiPigeonInternal.deepEquals(lhs.hasAvcDecoder, rhs.hasAvcDecoder) && PlatformApiPigeonInternal.deepEquals(lhs.hasHevcEncoder, rhs.hasHevcEncoder) && PlatformApiPigeonInternal.deepEquals(lhs.hasAvcEncoder, rhs.hasAvcEncoder) && PlatformApiPigeonInternal.deepEquals(lhs.forceSoftwareDecode, rhs.forceSoftwareDecode)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -401,11 +409,13 @@ struct VideoDecodeSupportDto: Hashable, CustomStringConvertible {
     PlatformApiPigeonInternal.deepHash(value: release, hasher: &hasher)
     PlatformApiPigeonInternal.deepHash(value: hasHevcDecoder, hasher: &hasher)
     PlatformApiPigeonInternal.deepHash(value: hasAvcDecoder, hasher: &hasher)
+    PlatformApiPigeonInternal.deepHash(value: hasHevcEncoder, hasher: &hasher)
+    PlatformApiPigeonInternal.deepHash(value: hasAvcEncoder, hasher: &hasher)
     PlatformApiPigeonInternal.deepHash(value: forceSoftwareDecode, hasher: &hasher)
   }
 
   public var description: String {
-    return "VideoDecodeSupportDto(manufacturer: \(String(describing: manufacturer)), brand: \(String(describing: brand)), model: \(String(describing: model)), sdkInt: \(String(describing: sdkInt)), release: \(String(describing: release)), hasHevcDecoder: \(String(describing: hasHevcDecoder)), hasAvcDecoder: \(String(describing: hasAvcDecoder)), forceSoftwareDecode: \(String(describing: forceSoftwareDecode)))"
+    return "VideoDecodeSupportDto(manufacturer: \(String(describing: manufacturer)), brand: \(String(describing: brand)), model: \(String(describing: model)), sdkInt: \(String(describing: sdkInt)), release: \(String(describing: release)), hasHevcDecoder: \(String(describing: hasHevcDecoder)), hasAvcDecoder: \(String(describing: hasAvcDecoder)), hasHevcEncoder: \(String(describing: hasHevcEncoder)), hasAvcEncoder: \(String(describing: hasAvcEncoder)), forceSoftwareDecode: \(String(describing: forceSoftwareDecode)))"
   }
 }
 

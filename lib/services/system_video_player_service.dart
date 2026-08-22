@@ -13,6 +13,8 @@ class VideoDecodeSupport {
     required this.release,
     required this.hasHevcDecoder,
     required this.hasAvcDecoder,
+    this.hasHevcEncoder = false,
+    this.hasAvcEncoder = false,
     this.forceSoftwareDecode = false,
   });
 
@@ -23,6 +25,10 @@ class VideoDecodeSupport {
   final String release;
   final bool hasHevcDecoder;
   final bool hasAvcDecoder;
+  final bool hasHevcEncoder;
+  final bool hasAvcEncoder;
+
+  bool get supportsHevcRecording => hasHevcEncoder && hasHevcDecoder;
 
   /// 本机 ExoPlayer 是否已配置为优先软件解码（鸿蒙/华为 API 30+）。
   final bool forceSoftwareDecode;
@@ -36,6 +42,8 @@ class VideoDecodeSupport {
       release: '${map['release'] ?? ''}',
       hasHevcDecoder: map['hasHevcDecoder'] == true,
       hasAvcDecoder: map['hasAvcDecoder'] == true,
+      hasHevcEncoder: map['hasHevcEncoder'] == true,
+      hasAvcEncoder: map['hasAvcEncoder'] == true,
       forceSoftwareDecode: map['forceSoftwareDecode'] == true,
     );
   }
@@ -77,6 +85,8 @@ class SystemVideoPlayerService {
         release: values.release,
         hasHevcDecoder: values.hasHevcDecoder,
         hasAvcDecoder: values.hasAvcDecoder,
+        hasHevcEncoder: values.hasHevcEncoder,
+        hasAvcEncoder: values.hasAvcEncoder,
         forceSoftwareDecode: values.forceSoftwareDecode,
       );
     } on Object {
@@ -120,6 +130,8 @@ class _LegacySystemMediaPresenter implements SystemMediaPresenter {
       release: '${values['release'] ?? ''}',
       hasHevcDecoder: values['hasHevcDecoder'] == true,
       hasAvcDecoder: values['hasAvcDecoder'] == true,
+      hasHevcEncoder: values['hasHevcEncoder'] == true,
+      hasAvcEncoder: values['hasAvcEncoder'] == true,
       forceSoftwareDecode: values['forceSoftwareDecode'] == true,
     );
   }

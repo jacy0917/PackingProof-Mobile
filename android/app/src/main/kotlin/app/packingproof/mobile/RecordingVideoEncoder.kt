@@ -43,7 +43,11 @@ internal object VideoEncoderFormatPolicy {
 }
 
 internal object VideoEncoderPlanPolicy {
-    fun create(preferredMime: String, hevcDecodable: Boolean): VideoEncoderPlan {
+    fun create(
+        preferredMime: String,
+        hevcEncodable: Boolean,
+        hevcDecodable: Boolean,
+    ): VideoEncoderPlan {
         val normalizedPreferred = if (preferredMime == MediaFormat.MIMETYPE_VIDEO_AVC) {
             MediaFormat.MIMETYPE_VIDEO_AVC
         } else {
@@ -54,15 +58,16 @@ internal object VideoEncoderPlanPolicy {
         } else {
             MediaFormat.MIMETYPE_VIDEO_AVC
         }
-        val fallbackReason = if (
-            normalizedPreferred == MediaFormat.MIMETYPE_VIDEO_HEVC && !hevcDecodable
-        ) {
-            RecordingCodecPolicy.FALLBACK_NO_HEVC_DECODER
-        } else {
-            null
+        val fallbackReason = when {
+            normalizedPreferred != MediaFormat.MIMETYPE_VIDEO_HEVC -> null
+            !hevcEncodable -> RecordingCodecPolicy.FALLBACK_HEVC_ENCODER_UNAVAILABLE
+            !hevcDecodable -> RecordingCodecPolicy.FALLBACK_NO_HEVC_DECODER
+            else -> null
         }
         val candidates = listOf(normalizedPreferred, fallback)
-            .filter { it != MediaFormat.MIMETYPE_VIDEO_HEVC || hevcDecodable }
+            .filter {
+                it != MediaFormat.MIMETYPE_VIDEO_HEVC || (hevcEncodable && hevcDecodable)
+            }
             .flatMap { mime ->
                 if (mime == MediaFormat.MIMETYPE_VIDEO_AVC) {
                     listOf(
@@ -132,6 +137,7 @@ internal class RecordingVideoEncoder(
         fallbackReason = null
         val plan = VideoEncoderPlanPolicy.create(
             preferredMime,
+            CodecCapabilities.hasEncoder(MediaFormat.MIMETYPE_VIDEO_HEVC),
             CodecCapabilities.hasDecoder(MediaFormat.MIMETYPE_VIDEO_HEVC),
         )
         fallbackReason = plan.fallbackReason
@@ -163,6 +169,10 @@ internal class RecordingVideoEncoder(
             } catch (error: Throwable) {
                 // broad-catch: Each vendor codec/profile candidate is retried deterministically.
                 lastError = error
+                if (candidate.mime == MediaFormat.MIMETYPE_VIDEO_HEVC) {
+                    fallbackReason = RecordingCodecPolicy.FALLBACK_HEVC_ENCODER_UNAVAILABLE
+                    CodecCapabilities.disableHevcEncoderForProcess()
+                }
                 try {
                     candidateCodec?.release()
                 } catch (_: Throwable) {

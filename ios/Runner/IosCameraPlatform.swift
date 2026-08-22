@@ -105,6 +105,7 @@ final class IosCameraHostApi:
 
   private var recordingSpecName = "hd1080p30"
   private var preferredVideoCodec = "hevc"
+  private var codecFallbackReason: String?
   private var recordingOrientationName = "portrait"
   private var recordAudio = true
   private var pairingScanEnabled = false
@@ -192,7 +193,17 @@ final class IosCameraHostApi:
       completion(.failure(error))
       return
     }
-    preferredVideoCodec = request.videoCodec
+    let requestedCodec = request.videoCodec.lowercased()
+    let hasHevcEncoder = IosVideoCodecCapabilities.hasHevcEncoder
+    let hasHevcDecoder = IosVideoCodecCapabilities.hasHevcDecoder
+    if requestedCodec == "hevc" && (!hasHevcEncoder || !hasHevcDecoder) {
+      preferredVideoCodec = "h264"
+      codecFallbackReason = hasHevcEncoder
+        ? "no_hevc_decoder" : "hevc_encoder_unavailable"
+    } else {
+      preferredVideoCodec = requestedCodec
+      codecFallbackReason = nil
+    }
     recordingSpecName = request.recordingSpec
     recordingOrientationName = ["landscapeLeft", "landscapeRight"].contains(request.recordingOrientation)
       ? request.recordingOrientation : "portrait"
@@ -1102,7 +1113,7 @@ final class IosCameraHostApi:
       sensorOrientation: 0,
       fps: 30,
       videoMime: usesHevc ? "video/hevc" : "video/avc",
-      codecFallbackReason: nil,
+      codecFallbackReason: codecFallbackReason,
       flashAvailable: device?.hasTorch == true,
       lensDirection: device?.position == .front ? "front" : "back",
       canSwitchCamera: Self.hasFrontCamera && Self.hasBackCamera,

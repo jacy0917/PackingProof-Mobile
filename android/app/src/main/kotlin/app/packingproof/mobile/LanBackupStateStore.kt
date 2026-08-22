@@ -73,12 +73,14 @@ internal class LanBackupStateStore(private val context: Context) {
         computerId: String,
         computerName: String,
         deviceName: String = "",
+        supportsUploadVideoCodec: Boolean = false,
     ) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putInt("schemaVersion", CONNECTION_SCHEMA_VERSION)
             .putString("baseUrl", baseUrl)
             .putString("computerId", computerId)
             .putString("computerName", computerName)
+            .putBoolean("supportsUploadVideoCodec", supportsUploadVideoCodec)
             .putString("lastConnectedAt", Instant.now().toString())
             .apply()
         if (deviceName.isNotBlank()) {
@@ -95,6 +97,7 @@ internal class LanBackupStateStore(private val context: Context) {
             .put("baseUrl", baseUrl)
             .put("computerId", prefs.getString("computerId", "") ?: "")
             .put("computerName", prefs.getString("computerName", "已连接电脑") ?: "已连接电脑")
+            .put("supportsUploadVideoCodec", prefs.getBoolean("supportsUploadVideoCodec", false))
             .put("lastConnectedAt", prefs.getString("lastConnectedAt", "") ?: "")
     }
 

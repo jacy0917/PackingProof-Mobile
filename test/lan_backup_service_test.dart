@@ -29,6 +29,17 @@ void main() {
     expect(parseDeviceVideoClippingFeature('not-json'), isFalse);
   });
 
+  test('主机显式声明录像编码上传能力时才启用协议字段', () {
+    expect(
+      parseUploadVideoCodecFeature(
+        '{"features":{"uploadVideoCodec":true}}',
+      ),
+      isTrue,
+    );
+    expect(parseUploadVideoCodecFeature('{"features":{}}'), isFalse);
+    expect(parseUploadVideoCodecFeature('not-json'), isFalse);
+  });
+
   test('播放前按 NodeId 更新主机地址并保留令牌与路径参数', () async {
     final MethodChannel channel = const MethodChannel(
       'app.packingproof.mobile/lan_backup_address_recovery_test',
@@ -437,6 +448,7 @@ void main() {
         trackingNumber: 'SF1234567890',
         buyerMessage: 'private-message',
       ),
+      videoCodec: 'h265',
     );
 
     final Map<String, Object?> value = recordingSessionBackupMap(session);
@@ -445,6 +457,7 @@ void main() {
     expect(value['mediaEndMs'], 10000);
     expect(value['markers'], hasLength(1));
     expect(value['mode'], 'return');
+    expect(value['videoCodec'], 'h265');
     expect(value, isNot(contains('orderInfo')));
   });
 

@@ -359,6 +359,8 @@ data class VideoDecodeSupportDto (
   val release: String,
   val hasHevcDecoder: Boolean,
   val hasAvcDecoder: Boolean,
+  val hasHevcEncoder: Boolean,
+  val hasAvcEncoder: Boolean,
   val forceSoftwareDecode: Boolean
 )
  {
@@ -371,8 +373,10 @@ data class VideoDecodeSupportDto (
       val release = pigeonVar_list[4] as String
       val hasHevcDecoder = pigeonVar_list[5] as Boolean
       val hasAvcDecoder = pigeonVar_list[6] as Boolean
-      val forceSoftwareDecode = pigeonVar_list[7] as Boolean
-      return VideoDecodeSupportDto(manufacturer, brand, model, sdkInt, release, hasHevcDecoder, hasAvcDecoder, forceSoftwareDecode)
+      val hasHevcEncoder = pigeonVar_list[7] as Boolean
+      val hasAvcEncoder = pigeonVar_list[8] as Boolean
+      val forceSoftwareDecode = pigeonVar_list[9] as Boolean
+      return VideoDecodeSupportDto(manufacturer, brand, model, sdkInt, release, hasHevcDecoder, hasAvcDecoder, hasHevcEncoder, hasAvcEncoder, forceSoftwareDecode)
     }
   }
   fun toList(): List<Any?> {
@@ -384,6 +388,8 @@ data class VideoDecodeSupportDto (
       release,
       hasHevcDecoder,
       hasAvcDecoder,
+      hasHevcEncoder,
+      hasAvcEncoder,
       forceSoftwareDecode,
     )
   }
@@ -395,7 +401,7 @@ data class VideoDecodeSupportDto (
       return true
     }
     val other = other as VideoDecodeSupportDto
-    return PlatformApiPigeonUtils.deepEquals(this.manufacturer, other.manufacturer) && PlatformApiPigeonUtils.deepEquals(this.brand, other.brand) && PlatformApiPigeonUtils.deepEquals(this.model, other.model) && PlatformApiPigeonUtils.deepEquals(this.sdkInt, other.sdkInt) && PlatformApiPigeonUtils.deepEquals(this.release, other.release) && PlatformApiPigeonUtils.deepEquals(this.hasHevcDecoder, other.hasHevcDecoder) && PlatformApiPigeonUtils.deepEquals(this.hasAvcDecoder, other.hasAvcDecoder) && PlatformApiPigeonUtils.deepEquals(this.forceSoftwareDecode, other.forceSoftwareDecode)
+    return PlatformApiPigeonUtils.deepEquals(this.manufacturer, other.manufacturer) && PlatformApiPigeonUtils.deepEquals(this.brand, other.brand) && PlatformApiPigeonUtils.deepEquals(this.model, other.model) && PlatformApiPigeonUtils.deepEquals(this.sdkInt, other.sdkInt) && PlatformApiPigeonUtils.deepEquals(this.release, other.release) && PlatformApiPigeonUtils.deepEquals(this.hasHevcDecoder, other.hasHevcDecoder) && PlatformApiPigeonUtils.deepEquals(this.hasAvcDecoder, other.hasAvcDecoder) && PlatformApiPigeonUtils.deepEquals(this.hasHevcEncoder, other.hasHevcEncoder) && PlatformApiPigeonUtils.deepEquals(this.hasAvcEncoder, other.hasAvcEncoder) && PlatformApiPigeonUtils.deepEquals(this.forceSoftwareDecode, other.forceSoftwareDecode)
   }
 
   override fun hashCode(): Int {
@@ -407,11 +413,13 @@ data class VideoDecodeSupportDto (
     result = 31 * result + PlatformApiPigeonUtils.deepHash(this.release)
     result = 31 * result + PlatformApiPigeonUtils.deepHash(this.hasHevcDecoder)
     result = 31 * result + PlatformApiPigeonUtils.deepHash(this.hasAvcDecoder)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.hasHevcEncoder)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.hasAvcEncoder)
     result = 31 * result + PlatformApiPigeonUtils.deepHash(this.forceSoftwareDecode)
     return result
   }
   override fun toString(): String {
-    return "VideoDecodeSupportDto(manufacturer=$manufacturer, brand=$brand, model=$model, sdkInt=$sdkInt, release=$release, hasHevcDecoder=$hasHevcDecoder, hasAvcDecoder=$hasAvcDecoder, forceSoftwareDecode=$forceSoftwareDecode)"
+    return "VideoDecodeSupportDto(manufacturer=$manufacturer, brand=$brand, model=$model, sdkInt=$sdkInt, release=$release, hasHevcDecoder=$hasHevcDecoder, hasAvcDecoder=$hasAvcDecoder, hasHevcEncoder=$hasHevcEncoder, hasAvcEncoder=$hasAvcEncoder, forceSoftwareDecode=$forceSoftwareDecode)"
   }
 }
 
