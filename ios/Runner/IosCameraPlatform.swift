@@ -1454,6 +1454,13 @@ final class IosCameraHostApi:
     markDisposed()
     recordingLifecycle.dispose()
     firstWrittenFrameTiming.cancelIfNeeded()
+    // A settings change rebuilds this host in place. If a Flutter barcode
+    // callback is still outstanding, leaving the gate in-flight would block
+    // every metadata batch after initialize() recovers the camera.
+    metadataQueue.sync {
+      barcodeGeneration &+= 1
+      barcodeBatchGate.reset()
+    }
     // 先移除采样回调，避免 App 终止时 AVCaptureSession 再回调到已释放的
     // self，触发 use-after-free（SIGSEGV）。
     clearOutputDelegates()
