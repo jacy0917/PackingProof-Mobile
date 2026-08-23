@@ -128,6 +128,7 @@ internal fun ContinuousSegmentCamera.runOneProbe(
                                 try {
                                     session.close()
                                 } catch (_: Throwable) {
+                                    // broad-catch: 探针会继续返回原始配置失败结果
                                 }
                                 finish(
                                     mapOf(
@@ -142,6 +143,7 @@ internal fun ContinuousSegmentCamera.runOneProbe(
                                 try {
                                     session.close()
                                 } catch (_: Throwable) {
+                                    // broad-catch: 探针会继续返回原始配置失败结果
                                 }
                                 finish(
                                     mapOf(
@@ -155,6 +157,7 @@ internal fun ContinuousSegmentCamera.runOneProbe(
                         handler,
                     )
                 } catch (error: Throwable) {
+                    // broad-catch: 任意相机会话初始化异常都转换为探针失败结果
                     finish(
                         mapOf(
                             "name" to config.name,
@@ -190,6 +193,7 @@ internal fun ContinuousSegmentCamera.runOneProbe(
             }
         }, handler)
     } catch (error: Throwable) {
+        // broad-catch: 任意相机会话创建异常都转换为探针失败结果
         finish(
             mapOf(
                 "name" to config.name,
@@ -205,12 +209,14 @@ internal fun ContinuousSegmentCamera.closeProbeCameraAndReaders() {
     try {
         cameraDevice?.close()
     } catch (_: Throwable) {
+        // broad-catch: 探针资源清理不得遮蔽原始检测结果
     }
     cameraDevice = null
     probeReaders.forEach { reader ->
         try {
             reader.close()
         } catch (_: Throwable) {
+            // broad-catch: 探针资源清理不得遮蔽原始检测结果
         }
     }
     probeReaders.clear()

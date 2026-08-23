@@ -161,7 +161,7 @@ mixin _PackingSessionAppSupport on ChangeNotifier {
       appVersion = info.version;
       appBuildNumber = int.tryParse(info.buildNumber);
     } on Object {
-      // 版本信息失败时仍返回稳定的空字段，不能阻塞相机初始化。
+      // broad-catch: 版本信息失败时仍返回稳定的空字段，不能阻塞相机初始化
     }
     return <String, Object?>{
       'appVersion': appVersion,

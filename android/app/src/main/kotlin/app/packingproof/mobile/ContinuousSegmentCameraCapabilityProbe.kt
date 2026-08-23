@@ -142,6 +142,7 @@ internal fun ContinuousSegmentCamera.finishCapabilityProbe(
                 )
                 recordingVideoEncoder.setSuspended(true)
             } catch (error: Throwable) {
+                // broad-catch: 编码器恢复错误统一上报，不中断能力探针收尾
                 notifyNativeError("摄像头能力检测后编码器恢复失败", error)
             }
         }
