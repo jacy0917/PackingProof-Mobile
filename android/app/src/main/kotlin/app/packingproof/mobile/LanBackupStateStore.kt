@@ -251,6 +251,47 @@ internal class LanBackupStateStore(
         } while (page.size == 100)
     }
 
+    fun recoverIncompatibleFailures(computerId: String): Int = withJobLock {
+        val destination = computerId.trim()
+        if (destination.isEmpty()) return@withJobLock 0
+        val selection =
+            "destination_computer_id = ? AND state = 'failed' AND failure_kind = ?"
+        val arguments = arrayOf(
+            destination,
+            LanBackupFailureKind.INCOMPATIBLE_VERSION.wireValue,
+        )
+        val count = db.rawQuery(
+            "SELECT COUNT(*) FROM ${LanBackupJobDatabase.TABLE} WHERE $selection",
+            arguments,
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+        if (count == 0) return@withJobLock 0
+
+        var revision = 0L
+        db.beginTransaction()
+        try {
+            revision = nextRevisionUnlocked()
+            db.execSQL(
+                "UPDATE ${LanBackupJobDatabase.TABLE} " +
+                    "SET state = 'pending', error_message = NULL, failure_kind = NULL, " +
+                    "updated_revision = ? WHERE $selection",
+                arrayOf<Any?>(revision, *arguments),
+            )
+            setMetaValueUnlocked(
+                "summary_pending_count",
+                metaValueUnlocked("summary_pending_count") + count,
+            )
+            setMetaValueUnlocked(
+                "summary_failed_count",
+                metaValueUnlocked("summary_failed_count") - count,
+            )
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        LanBackupRevisionNotifier.publish(revision)
+        count
+    }
+
     private fun retargetJob(id: String, computerId: String) = withJobLock {
             val job = readJobUnlocked(id) ?: return@withJobLock
             if (job.optString("state") == "completed") return@withJobLock

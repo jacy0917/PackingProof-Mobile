@@ -107,9 +107,7 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
     if (!host.compatible) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(host.compatibilityMessage ?? '保存主机版本过低，请更新电脑端'),
-          ),
+          SnackBar(content: Text(host.compatibilityMessage ?? '当前备份协议暂不兼容')),
         );
       }
       return;

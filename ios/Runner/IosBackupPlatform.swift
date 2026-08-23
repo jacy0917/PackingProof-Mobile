@@ -553,8 +553,16 @@ final class IosBackupHostApi: BackupNativeHostApi {
       try credentialStore.save(accessKey)
       var stored = normalized(connection)
       stored.removeValue(forKey: "accessKey")
+      stored.removeValue(forKey: "recoverIncompatibleFailuresOnly")
       defaults.set(stored, forKey: keys.connection)
       defaults.set(connection["deviceName"] as? String, forKey: keys.deviceName)
+      if connection["recoverIncompatibleFailuresOnly"] as? Bool == true,
+         let computerId = connection["computerId"] as? String,
+         try jobStore.get().recoverIncompatibleFailures(
+           destinationComputerId: computerId
+         ) > 0 {
+        requestUploadDispatch()
+      }
       emitSummary()
       completion(.success(()))
     } catch {
@@ -2263,7 +2271,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
 
 /// iOS 后台上传无法依赖 Dart isolate，因此在原生侧按稳定 NodeId 重新定位主机。
 final class IosLanBackupHostResolver: @unchecked Sendable {
-  private static let minimumHostVersion = "0.0.32"
+  private static let minimumHostVersion = "0.0.55"
   private static let backupProtocol = "mobile-backup-v2"
   private static let enrollmentVersion = 2
   private static let authenticationVersion = 3

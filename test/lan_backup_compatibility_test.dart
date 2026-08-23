@@ -49,4 +49,49 @@ void main() {
       isFalse,
     );
   });
+
+  test('兼容失败返回可操作的类型原因', () {
+    LanBackupCompatibilityResult evaluate(Map<String, Object?> value) =>
+        parseLanBackupCompatibilityResult(value);
+
+    expect(
+      evaluate(<String, Object?>{
+        'hostVersion': '0.0.55',
+        'protocol': 'mobile-backup-v2',
+        'enrollmentVersion': 2,
+        'authVersion': 3,
+        'minimumMobileVersion': '0.5.23',
+        'minimumMobileBuildNumber': 11036,
+      }).isCompatible,
+      isTrue,
+    );
+    expect(
+      evaluate(<String, Object?>{
+        'hostVersion': '0.0.55',
+        'protocol': 'mobile-backup-v2',
+        'enrollmentVersion': 2,
+        'authVersion': 3,
+        'minimumMobileVersion': '0.5.24',
+        'minimumMobileBuildNumber': 11037,
+      }).failure,
+      LanBackupCompatibilityFailure.mobileTooOld,
+    );
+    expect(
+      evaluate(<String, Object?>{
+        'hostVersion': '0.0.55',
+        'protocol': 'mobile-backup-v1',
+        'enrollmentVersion': 2,
+        'authVersion': 3,
+        'minimumMobileVersion': '0.5.23',
+        'minimumMobileBuildNumber': 11036,
+      }).failure,
+      LanBackupCompatibilityFailure.protocolMismatch,
+    );
+    expect(
+      parseLanBackupCompatibilityResult(<String, Object?>{
+        'hostVersion': '0.0.55',
+      }).failure,
+      LanBackupCompatibilityFailure.malformed,
+    );
+  });
 }

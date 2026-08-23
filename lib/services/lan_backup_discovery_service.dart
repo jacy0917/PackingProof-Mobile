@@ -202,9 +202,9 @@ LanBackupDiscoveredHost? parseLanBackupDiscoveredHost(Uri uri, String body) {
   final int port = advertisedPort > 0 && advertisedPort <= 65535
       ? advertisedPort
       : uri.port;
-  final LanBackupHostCompatibility? compatibility =
-      parseLanBackupHostCompatibility(decoded['backupCompatibility']);
-  final bool compatible = compatibility?.supportsCurrentMobile == true;
+  final LanBackupCompatibilityResult compatibility =
+      parseLanBackupCompatibilityResult(decoded['backupCompatibility']);
+  final bool compatible = compatibility.isCompatible;
   return LanBackupDiscoveredHost(
     nodeId: nodeId,
     name: '${decoded['nodeName'] ?? ''}'.trim().isEmpty
@@ -212,7 +212,7 @@ LanBackupDiscoveredHost? parseLanBackupDiscoveredHost(Uri uri, String body) {
         : '${decoded['nodeName']}'.trim(),
     address: '${uri.host}:$port',
     compatible: compatible,
-    compatibilityMessage: compatible ? null : '保存主机版本过低，请在电脑端更新 PackingProof',
+    compatibilityMessage: compatible ? null : compatibility.message,
   );
 }
 
@@ -388,6 +388,14 @@ class LanBackupHostDiscoveryService extends ChangeNotifier
     final List<LanBackupDiscoveredHost> reachableHosts = hosts
         .where((LanBackupDiscoveredHost host) => host.reachable)
         .toList(growable: false);
+    final Set<String> incompatibilityMessages = reachableHosts
+        .where((LanBackupDiscoveredHost host) => !host.compatible)
+        .map(
+          (LanBackupDiscoveredHost host) => host.compatibilityMessage?.trim(),
+        )
+        .whereType<String>()
+        .where((String message) => message.isNotEmpty)
+        .toSet();
     _snapshot = LanBackupDiscoverySnapshot(
       completed: completed,
       total: candidates.length,
@@ -399,7 +407,9 @@ class LanBackupHostDiscoveryService extends ChangeNotifier
           : reachableHosts.every(
               (LanBackupDiscoveredHost host) => !host.compatible,
             )
-          ? '找到保存主机，但电脑端版本过低，请先更新 PackingProof'
+          ? incompatibilityMessages.length == 1
+                ? incompatibilityMessages.single
+                : '找到保存主机，但当前备份协议不兼容'
           : reachableHosts.length == 1
           ? '已找到保存主机，正在请求电脑允许连接'
           : '找到 ${reachableHosts.length} 台保存主机，请选择一台连接',

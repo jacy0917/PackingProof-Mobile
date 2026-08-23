@@ -163,6 +163,55 @@ class LanBackupStateStoreSummaryTest {
     }
 
     @Test
+    fun compatibleHostRecoveryOnlyRequeuesItsOwnIncompatibleFailures() {
+        store.saveConnection("http://192.168.1.20:5280", "computer-1", "仓库电脑")
+        val incompatible = store.upsertJob(
+            source("failure-incompatible.mp4").path,
+            sessions("session-incompatible"),
+        ).job
+        store.updateJob(incompatible.getString("id"), incompatible.getString("generation")) {
+            it.put("state", "failed")
+                .put("failureKind", "incompatible_version")
+                .put("errorMessage", "电脑端版本不兼容")
+            true
+        }
+        val otherFailure = store.upsertJob(
+            source("failure-storage.mp4").path,
+            sessions("session-storage"),
+        ).job
+        store.updateJob(otherFailure.getString("id"), otherFailure.getString("generation")) {
+            it.put("state", "failed").put("failureKind", "storage_unavailable")
+            true
+        }
+        val otherDestination = store.upsertJob(
+            source("failure-other-destination.mp4").path,
+            sessions("session-other-destination"),
+        ).job
+        store.updateJob(
+            otherDestination.getString("id"),
+            otherDestination.getString("generation"),
+        ) {
+            it.put("state", "failed")
+                .put("failureKind", "incompatible_version")
+                .put("destinationComputerId", "computer-2")
+            true
+        }
+
+        assertEquals(1, store.recoverIncompatibleFailures("computer-1"))
+
+        val recovered = store.readJob(incompatible.getString("id"))!!
+        assertEquals("pending", recovered.getString("state"))
+        assertFalse(recovered.has("failureKind") && !recovered.isNull("failureKind"))
+        assertEquals("failed", store.readJob(otherFailure.getString("id"))!!.getString("state"))
+        assertEquals(
+            "failed",
+            store.readJob(otherDestination.getString("id"))!!.getString("state"),
+        )
+        assertEquals(1L, store.summary().pendingCount)
+        assertEquals(2L, store.summary().failedCount)
+    }
+
+    @Test
     fun tenThousandProgressRevisionsAreCoalescedLatestWins() {
         val notices = mutableListOf<LanBackupRevisionNotifier.Notice>()
         val listener: (LanBackupRevisionNotifier.Notice) -> Unit = { notice ->

@@ -21,7 +21,7 @@ internal class LanBackupHostResolver(private val context: Context) {
     companion object {
         private const val HTTP_PORT = 5280
         private const val UDP_PORT = 5281
-        private const val MINIMUM_HOST_VERSION = "0.0.32"
+        private const val MINIMUM_HOST_VERSION = "0.0.55"
         private const val BACKUP_PROTOCOL = "mobile-backup-v2"
         private const val ENROLLMENT_VERSION = 2
         private const val AUTH_VERSION = 3

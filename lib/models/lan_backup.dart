@@ -47,7 +47,7 @@ extension LanBackupFailureRecovery on LanBackupFailureKind {
     LanBackupFailureKind.offlineOrTimeout =>
       LanBackupRecoveryAction.retryConnection,
     LanBackupFailureKind.incompatibleVersion =>
-      LanBackupRecoveryAction.updateComputer,
+      LanBackupRecoveryAction.retryConnection,
     _ => LanBackupRecoveryAction.retryBackup,
   };
 
@@ -59,7 +59,7 @@ extension LanBackupFailureRecovery on LanBackupFailureKind {
     LanBackupFailureKind.verificationFailed => '重新校验并备份',
     LanBackupFailureKind.storageUnavailable => '检查电脑后重试',
     LanBackupFailureKind.notBackupHost => '重新申请',
-    LanBackupFailureKind.incompatibleVersion => '请更新电脑端',
+    LanBackupFailureKind.incompatibleVersion => '重新检查兼容性',
     LanBackupFailureKind.unknown => '重试备份',
   };
 }

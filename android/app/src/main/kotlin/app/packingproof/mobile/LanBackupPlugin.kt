@@ -85,7 +85,11 @@ internal class LanBackupPlugin(
             connection["supportsUploadVideoCodec"] as? Boolean ?: false,
         )
         credentials.save(accessKey)
-        store.retargetJobs(computerId)
+        if (connection["recoverIncompatibleFailuresOnly"] as? Boolean == true) {
+            store.recoverIncompatibleFailures(computerId)
+        } else {
+            store.retargetJobs(computerId)
+        }
         store.clearMigrationHint()
         schedulePending()
         LanBackupCleanupScheduler.rescheduleAll(context, store)

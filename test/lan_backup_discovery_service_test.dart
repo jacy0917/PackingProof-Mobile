@@ -44,6 +44,44 @@ void main() {
     expect(host.compatibilityMessage, contains('更新 PackingProof'));
   });
 
+  test('电脑兼容但手机过旧时不再误报电脑版本过低', () {
+    final LanBackupDiscoveredHost host = parseLanBackupDiscoveredHost(
+      Uri.parse('http://192.168.1.20:5280'),
+      '{"protocol":"packingproof","protocolVersion":1,'
+      '"nodeId":"host-1","nodeName":"仓库电脑","httpPort":5280,'
+      '"capabilities":["host","mobile-backup"],'
+      '"backupCompatibility":{"hostVersion":"0.0.55",'
+      '"protocol":"mobile-backup-v2","enrollmentVersion":2,"authVersion":3,'
+      '"minimumMobileVersion":"0.5.24","minimumMobileBuildNumber":11037}}',
+    )!;
+
+    expect(host.compatible, isFalse);
+    expect(host.compatibilityMessage, contains('手机 App 版本过低'));
+    expect(host.compatibilityMessage, isNot(contains('主机版本过低')));
+  });
+
+  test('搜索聚合提示使用在线主机的真实兼容原因', () async {
+    const String body =
+        '{"protocol":"packingproof","protocolVersion":1,'
+        '"nodeId":"host-1","nodeName":"仓库电脑","httpPort":5280,'
+        '"capabilities":["host","mobile-backup"],'
+        '"backupCompatibility":{"hostVersion":"0.0.55",'
+        '"protocol":"mobile-backup-v2","enrollmentVersion":2,"authVersion":3,'
+        '"minimumMobileVersion":"0.5.24","minimumMobileBuildNumber":11037}}';
+    final Uri uri = Uri.parse('http://192.168.1.20:5280');
+    final LanBackupHostDiscoveryService service = LanBackupHostDiscoveryService(
+      candidateProvider: () async => <Uri>[uri],
+      probe: (Uri candidate) async =>
+          parseLanBackupDiscoveredHost(candidate, body),
+    );
+    addTearDown(service.dispose);
+
+    await service.search();
+
+    expect(service.snapshot.message, contains('手机 App 版本过低'));
+    expect(service.snapshot.message, isNot(contains('电脑端版本过低')));
+  });
+
   test('搜索进度来自真实候选地址完成数并合并同一主机', () async {
     final LanBackupHostDiscoveryService service = LanBackupHostDiscoveryService(
       candidateProvider: () async => <Uri>[

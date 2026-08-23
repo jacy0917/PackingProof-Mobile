@@ -273,6 +273,68 @@ final class IosBackupJobStore {
     return updated
   }
 
+  func recoverIncompatibleFailures(destinationComputerId: String) throws -> Int {
+    let destination = destinationComputerId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !destination.isEmpty else { return 0 }
+    lock.lock()
+    defer { lock.unlock() }
+    try execute("BEGIN IMMEDIATE", operation: "开始恢复兼容任务")
+    do {
+      let selection =
+        "destination_computer_id = ? AND state = 'failed' AND failure_kind = 'incompatible_version'"
+      func failureCount() throws -> Int {
+        var statement: OpaquePointer?
+        try prepare(
+          "SELECT COUNT(*) FROM backup_jobs WHERE \(selection)",
+          statement: &statement,
+          operation: "统计兼容失败任务"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bindText(statement, 1, destination)
+        return sqlite3_step(statement) == SQLITE_ROW
+          ? Int(integer(statement, 0))
+          : 0
+      }
+      let count = try failureCount()
+      guard count > 0 else {
+        try execute("COMMIT", operation: "提交空恢复任务")
+        return 0
+      }
+
+      let revision = try nextRevisionUnlocked()
+      func recoverFailures() throws {
+        var statement: OpaquePointer?
+        try prepare(
+          "UPDATE backup_jobs SET state = 'pending', error_message = NULL, " +
+            "failure_kind = NULL, revision = ? WHERE \(selection)",
+          statement: &statement,
+          operation: "恢复兼容失败任务"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bindInt(statement, 1, revision)
+        try bindText(statement, 2, destination)
+        let code = sqlite3_step(statement)
+        guard code == SQLITE_DONE else {
+          throw databaseError(operation: "恢复兼容失败任务", code: code)
+        }
+      }
+      try recoverFailures()
+      try setMetaValueUnlocked(
+        "summary_pending_count",
+        try metaValueUnlocked("summary_pending_count") + Int64(count)
+      )
+      try setMetaValueUnlocked(
+        "summary_failed_count",
+        try metaValueUnlocked("summary_failed_count") - Int64(count)
+      )
+      try execute("COMMIT", operation: "提交恢复兼容任务")
+      return count
+    } catch {
+      try? execute("ROLLBACK", operation: "回滚恢复兼容任务")
+      throw error
+    }
+  }
+
   /// 在同一 SQLite 写事务内校验并更新任务代次，避免旧上传任务覆盖新状态。
   func updateJob(
     id: String,

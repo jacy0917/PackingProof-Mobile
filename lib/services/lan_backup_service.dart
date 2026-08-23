@@ -27,11 +27,36 @@ class LanBackupUnsupportedException implements Exception {
   String toString() => message;
 }
 
-class LanBackupHostUpgradeRequiredException implements Exception {
-  const LanBackupHostUpgradeRequiredException();
+class LanBackupCompatibilityException implements Exception {
+  const LanBackupCompatibilityException(this.result);
+
+  final LanBackupCompatibilityResult result;
 
   @override
-  String toString() => '保存主机版本过低，请在电脑端更新 PackingProof';
+  String toString() => result.message;
+}
+
+class LanBackupHostUpgradeRequiredException
+    extends LanBackupCompatibilityException {
+  const LanBackupHostUpgradeRequiredException()
+    : super(
+        const LanBackupCompatibilityResult.incompatible(
+          LanBackupCompatibilityFailure.hostVersionTooOld,
+        ),
+      );
+
+  @override
+  String toString() => result.message;
+}
+
+class LanBackupProtocolMismatchException
+    extends LanBackupCompatibilityException {
+  const LanBackupProtocolMismatchException(super.result);
+}
+
+class LanBackupCompatibilityMalformedException
+    extends LanBackupCompatibilityException {
+  const LanBackupCompatibilityMalformedException(super.result);
 }
 
 class LanBackupClientUpgradeRequiredException implements Exception {
@@ -245,6 +270,8 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   int _appBuildNumber = currentMobileCompatibilityBuildNumber;
   bool _deviceVideoClippingEnabled = false;
   bool _uploadVideoCodecEnabled = false;
+  final Map<String, String> _recoveredCompatibilityByDestination =
+      <String, String>{};
   String? _loggedProblemJobId;
   Future<Uri?>? _activeAddressRecovery;
   bool _disposed = false;
@@ -270,6 +297,10 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   @visibleForTesting
   Future<void> debugApplyHeartbeatResponseForTesting(String responseBody) =>
       _applyHeartbeatResponse(responseBody);
+
+  @visibleForTesting
+  Future<void> debugSendConnectionHeartbeatForTesting() =>
+      _sendConnectionHeartbeat();
 
   @override
   Future<void> initialize({
@@ -365,10 +396,17 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
       );
       notifyListeners();
       rethrow;
-    } on LanBackupHostUpgradeRequiredException {
+    } on LanBackupCompatibilityException catch (error) {
       _snapshot = _snapshot.copyWith(
         connectionStatus: LanConnectionStatus.offline,
-        message: '保存主机版本过低，请在电脑端更新 PackingProof',
+        message: error.toString(),
+      );
+      notifyListeners();
+      rethrow;
+    } on LanBackupClientUpgradeRequiredException catch (error) {
+      _snapshot = _snapshot.copyWith(
+        connectionStatus: LanConnectionStatus.offline,
+        message: error.toString(),
       );
       notifyListeners();
       rethrow;
@@ -677,10 +715,19 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         !capabilities.contains('mobile-backup')) {
       throw const LanBackupNotHostException();
     }
-    final LanBackupHostCompatibility? compatibility =
-        parseLanBackupHostCompatibility(node['backupCompatibility']);
-    if (compatibility?.supportsCurrentMobile != true) {
-      throw const LanBackupHostUpgradeRequiredException();
+    final LanBackupCompatibilityResult compatibility =
+        parseLanBackupCompatibilityResult(node['backupCompatibility']);
+    if (!compatibility.isCompatible) {
+      throw switch (compatibility.failure!) {
+        LanBackupCompatibilityFailure.hostVersionTooOld =>
+          const LanBackupHostUpgradeRequiredException(),
+        LanBackupCompatibilityFailure.mobileTooOld =>
+          LanBackupClientUpgradeRequiredException(compatibility.message),
+        LanBackupCompatibilityFailure.protocolMismatch =>
+          LanBackupProtocolMismatchException(compatibility),
+        LanBackupCompatibilityFailure.malformed =>
+          LanBackupCompatibilityMalformedException(compatibility),
+      };
     }
     final String nodeId = '${node['nodeId'] ?? ''}'.trim();
     if (nodeId.isEmpty) throw const LanBackupUnsupportedException();
@@ -764,6 +811,26 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     );
     notifyListeners();
     try {
+      final _BackupHostProbe hostProbe = await _probeBackupHost(
+        endpoint.baseUri,
+      );
+      if (hostProbe.status == _BackupHostStatus.notBackupHost) {
+        _snapshot = _snapshot.copyWith(
+          connectionStatus: LanConnectionStatus.notBackupHost,
+          message: '连接的电脑当前不是录像备份主机，请切换电脑用途或重新搜索',
+        );
+        notifyListeners();
+        return false;
+      }
+      if (hostProbe.status != _BackupHostStatus.backupHost ||
+          hostProbe.compatibility?.isCompatible != true) {
+        _snapshot = _snapshot.copyWith(
+          connectionStatus: LanConnectionStatus.offline,
+          message: hostProbe.compatibility?.message ?? '暂时无法确认电脑端备份兼容性',
+        );
+        notifyListeners();
+        return false;
+      }
       final HttpClientRequest request = await _httpClient
           .getUrl(
             endpoint.baseUri.replace(path: '/api/mobile-backup/capabilities'),
@@ -793,8 +860,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         return false;
       }
       if (response.statusCode == HttpStatus.notFound &&
-          await _probeBackupHost(endpoint.baseUri) ==
-              _BackupHostProbe.notBackupHost) {
+          hostProbe.status == _BackupHostStatus.notBackupHost) {
         _snapshot = _snapshot.copyWith(
           connectionStatus: LanConnectionStatus.notBackupHost,
           message: '连接的电脑当前不是录像备份主机，请切换电脑用途或重新搜索',
@@ -809,14 +875,11 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         responseBody,
       );
       _uploadVideoCodecEnabled = parseUploadVideoCodecFeature(responseBody);
-      await _platform.saveConnection(<String, Object?>{
-        'baseUrl': endpoint.baseUri.toString(),
-        'accessKey': _accessKey,
-        'computerId': endpoint.computerId,
-        'computerName': endpoint.computerName,
-        'deviceName': _snapshot.deviceName,
-        'supportsUploadVideoCodec': _uploadVideoCodecEnabled,
-      });
+      await _recoverIncompatibleJobsForCompatibleHost(
+        endpoint,
+        hostProbe.compatibility!,
+        force: true,
+      );
       _snapshot = _snapshot.copyWith(
         connectionStatus: LanConnectionStatus.connected,
         message: '电脑已重新连接',
@@ -1629,11 +1692,26 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         final _BackupHostProbe hostProbe = await _probeBackupHost(
           endpoint.baseUri,
         );
-        if (hostProbe == _BackupHostProbe.notBackupHost ||
+        String? compatibilityMessage;
+        if (hostProbe.status == _BackupHostStatus.notBackupHost ||
             _snapshot.connectionStatus == LanConnectionStatus.notBackupHost) {
           nextStatus = LanConnectionStatus.notBackupHost;
+        } else if (hostProbe.status == _BackupHostStatus.backupHost &&
+            hostProbe.compatibility?.isCompatible != true) {
+          nextStatus = LanConnectionStatus.offline;
+          compatibilityMessage =
+              hostProbe.compatibility?.message ?? '暂时无法确认电脑端备份兼容性';
+        } else if (nextStatus == LanConnectionStatus.connected &&
+            hostProbe.compatibility?.isCompatible == true) {
+          await _recoverIncompatibleJobsForCompatibleHost(
+            endpoint,
+            hostProbe.compatibility!,
+          );
         }
-        _applyHeartbeatConnectionStatus(nextStatus);
+        _applyHeartbeatConnectionStatus(
+          nextStatus,
+          message: compatibilityMessage,
+        );
         if (nextStatus == LanConnectionStatus.connected &&
             responseBody.isNotEmpty) {
           await _applyHeartbeatResponse(responseBody);
@@ -1658,16 +1736,24 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     }
   }
 
-  void _applyHeartbeatConnectionStatus(LanConnectionStatus status) {
-    if (_snapshot.connectionStatus == status) return;
+  void _applyHeartbeatConnectionStatus(
+    LanConnectionStatus status, {
+    String? message,
+  }) {
+    if (_snapshot.connectionStatus == status &&
+        (message == null || _snapshot.message == message)) {
+      return;
+    }
     _snapshot = _snapshot.copyWith(
       connectionStatus: status,
-      message: switch (status) {
-        LanConnectionStatus.connected => '电脑已重新连接',
-        LanConnectionStatus.rePair => '设备连接已失效，请重新申请并在电脑上允许连接',
-        LanConnectionStatus.notBackupHost => '连接的电脑当前不是录像备份主机，请切换电脑用途或重新搜索',
-        _ => '电脑已离线，正在自动重新连接',
-      },
+      message:
+          message ??
+          switch (status) {
+            LanConnectionStatus.connected => '电脑已重新连接',
+            LanConnectionStatus.rePair => '设备连接已失效，请重新申请并在电脑上允许连接',
+            LanConnectionStatus.notBackupHost => '连接的电脑当前不是录像备份主机，请切换电脑用途或重新搜索',
+            _ => '电脑已离线，正在自动重新连接',
+          },
     );
     notifyListeners();
   }
@@ -1683,23 +1769,61 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
       );
       final String body = await utf8.decoder.bind(response).join();
       if (response.statusCode != HttpStatus.ok) {
-        return _BackupHostProbe.unknown;
+        return const _BackupHostProbe(_BackupHostStatus.unknown);
       }
       final Object? decoded = jsonDecode(body);
       if (decoded is! Map || decoded['protocol'] != 'packingproof') {
-        return _BackupHostProbe.unknown;
+        return const _BackupHostProbe(_BackupHostStatus.unknown);
       }
       final List<Object?> capabilities = decoded['capabilities'] is List
           ? List<Object?>.from(decoded['capabilities']! as List)
           : const <Object?>[];
-      return capabilities.any(
-            (Object? value) => '$value'.toLowerCase() == 'mobile-backup',
-          )
-          ? _BackupHostProbe.backupHost
-          : _BackupHostProbe.notBackupHost;
+      if (!capabilities.any(
+        (Object? value) => '$value'.toLowerCase() == 'mobile-backup',
+      )) {
+        return const _BackupHostProbe(_BackupHostStatus.notBackupHost);
+      }
+      return _BackupHostProbe(
+        _BackupHostStatus.backupHost,
+        compatibility: parseLanBackupCompatibilityResult(
+          decoded['backupCompatibility'],
+        ),
+      );
     } on Object {
-      return _BackupHostProbe.unknown;
+      return const _BackupHostProbe(_BackupHostStatus.unknown);
     }
+  }
+
+  Future<void> _recoverIncompatibleJobsForCompatibleHost(
+    LanBackupEndpoint endpoint,
+    LanBackupCompatibilityResult result, {
+    bool force = false,
+  }) async {
+    final LanBackupHostCompatibility compatibility = result.compatibility!;
+    final String destination = endpoint.computerId.trim();
+    if (destination.isEmpty) return;
+    final String fingerprint = <Object>[
+      compatibility.hostVersion,
+      compatibility.protocol,
+      compatibility.enrollmentVersion,
+      compatibility.authVersion,
+      compatibility.minimumMobileVersion,
+      compatibility.minimumMobileBuildNumber,
+    ].join('|');
+    if (!force &&
+        _recoveredCompatibilityByDestination[destination] == fingerprint) {
+      return;
+    }
+    await _platform.saveConnection(<String, Object?>{
+      'baseUrl': endpoint.baseUri.toString(),
+      'accessKey': _accessKey,
+      'computerId': endpoint.computerId,
+      'computerName': endpoint.computerName,
+      'deviceName': _snapshot.deviceName,
+      'supportsUploadVideoCodec': _uploadVideoCodecEnabled,
+      'recoverIncompatibleFailuresOnly': true,
+    });
+    _recoveredCompatibilityByDestination[destination] = fingerprint;
   }
 
   Future<void> _applyHeartbeatResponse(String responseBody) async {
@@ -1800,6 +1924,13 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         value.dominantFailureKind,
       ),
     );
+    if (summary.dominantFailureKind ==
+        LanBackupFailureKind.incompatibleVersion) {
+      final String destination = endpoint?.computerId.trim() ?? '';
+      if (destination.isNotEmpty) {
+        _recoveredCompatibilityByDestination.remove(destination);
+      }
+    }
     _logBackupJobFailureEdge(summary.problemJob);
     final LanBackupSnapshot next = LanBackupSnapshot(
       deviceId: value.deviceId,
@@ -1874,7 +2005,14 @@ bool _sameEndpointIdentity(LanBackupEndpoint? left, LanBackupEndpoint? right) {
   return left.computerId == right.computerId && left.baseUri == right.baseUri;
 }
 
-enum _BackupHostProbe { backupHost, notBackupHost, unknown }
+enum _BackupHostStatus { backupHost, notBackupHost, unknown }
+
+class _BackupHostProbe {
+  const _BackupHostProbe(this.status, {this.compatibility});
+
+  final _BackupHostStatus status;
+  final LanBackupCompatibilityResult? compatibility;
+}
 
 bool _isSameBackupHost(LanBackupEndpoint current, LanBackupEndpoint candidate) {
   final String currentId = current.computerId.trim();

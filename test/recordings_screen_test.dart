@@ -1301,6 +1301,8 @@ void main() {
           nodeId: 'host-cache',
           name: '电脑1',
           address: '192.168.1.10:5280',
+          compatible: false,
+          compatibilityMessage: '保存主机版本过低',
           reachable: false,
         ),
       ],
@@ -1330,6 +1332,9 @@ void main() {
     expect(find.text('电脑1'), findsOneWidget);
     expect(find.textContaining('上次找到'), findsOneWidget);
     expect(find.text('未在线'), findsOneWidget);
+    expect(find.textContaining('电脑端需更新'), findsNothing);
+    expect(find.text('需更新'), findsNothing);
+    expect(find.text('暂不兼容'), findsNothing);
     final InkWell button = tester.widget<InkWell>(
       find.byKey(const ValueKey<String>('discovered-backup-host-host-cache')),
     );

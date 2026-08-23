@@ -292,7 +292,7 @@ void main() {
           'verification_failed': LanBackupRecoveryAction.retryBackup,
           'storage_unavailable': LanBackupRecoveryAction.retryBackup,
           'not_backup_host': LanBackupRecoveryAction.rescan,
-          'incompatible_version': LanBackupRecoveryAction.updateComputer,
+          'incompatible_version': LanBackupRecoveryAction.retryConnection,
           'unknown': LanBackupRecoveryAction.retryBackup,
         };
 
@@ -1619,6 +1619,99 @@ void main() {
     expect(service.snapshot.message, contains('更新 PackingProof'));
   });
 
+  test('已配对电脑升级兼容后仅请求恢复该目标的兼容失败任务', () async {
+    final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
+    final Uri baseUri = Uri.parse('http://192.168.1.20:5280');
+    final LanBackupService service = LanBackupService(
+      platform: platform,
+      httpClient: _SequenceHttpClient(<_StreamHttpResponse>[
+        _nodeInfo('computer-1', '仓库电脑'),
+        _StreamHttpResponse(HttpStatus.ok, '{}'),
+      ]),
+      wifiConnected: () async => true,
+      hostLocator: _FixedBackupHostLocator(baseUri),
+    );
+    service.debugSetSnapshotForTesting(
+      LanBackupSnapshot(
+        endpoint: LanBackupEndpoint(
+          baseUri: baseUri,
+          accessKey: '',
+          computerId: 'computer-1',
+          computerName: '仓库电脑',
+        ),
+        deviceId: 'device-1',
+        deviceName: '测试手机',
+        connectionStatus: LanConnectionStatus.offline,
+        summary: const LanBackupSummary(
+          failedCount: 1,
+          dominantFailureKind: LanBackupFailureKind.incompatibleVersion,
+        ),
+      ),
+    );
+    service.debugSetAccessKeyForTesting('a' * 64);
+    addTearDown(service.dispose);
+
+    expect(await service.retryConnection(), isTrue);
+
+    expect(platform.savedConnections, hasLength(1));
+    expect(
+      platform.savedConnections.single['recoverIncompatibleFailuresOnly'],
+      isTrue,
+    );
+    expect(platform.savedConnections.single['computerId'], 'computer-1');
+  });
+
+  test('兼容失败摘要再次出现后下次心跳会重新恢复', () async {
+    final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
+    final Uri baseUri = Uri.parse('http://192.168.1.20:5280');
+    final LanBackupService service = LanBackupService(
+      platform: platform,
+      httpClient: _SequenceHttpClient(<_StreamHttpResponse>[
+        _StreamHttpResponse(HttpStatus.ok, '{}'),
+        _nodeInfo('computer-1', '仓库电脑'),
+        _StreamHttpResponse(HttpStatus.ok, '{}'),
+        _nodeInfo('computer-1', '仓库电脑'),
+        _StreamHttpResponse(HttpStatus.ok, '{}'),
+        _nodeInfo('computer-1', '仓库电脑'),
+      ]),
+      wifiConnected: () async => true,
+      hostLocator: _FixedBackupHostLocator(baseUri),
+    );
+    service.debugSetSnapshotForTesting(
+      LanBackupSnapshot(
+        endpoint: LanBackupEndpoint(
+          baseUri: baseUri,
+          accessKey: '',
+          computerId: 'computer-1',
+          computerName: '仓库电脑',
+        ),
+        deviceId: 'device-1',
+        deviceName: '测试手机',
+        connectionStatus: LanConnectionStatus.connected,
+      ),
+    );
+    service.debugSetAccessKeyForTesting('a' * 64);
+    addTearDown(service.dispose);
+
+    await service.debugSendConnectionHeartbeatForTesting();
+    await service.debugSendConnectionHeartbeatForTesting();
+    expect(platform.savedConnections, hasLength(1));
+
+    service.debugApplyNativeSummaryForTesting(
+      _backupSnapshot(
+        deviceName: '测试手机',
+        revision: 2,
+        baseUrl: baseUri.toString(),
+        computerId: 'computer-1',
+        failedCount: 1,
+        dominantFailureKind: 'incompatible_version',
+      ),
+    );
+    await service.debugSendConnectionHeartbeatForTesting();
+
+    expect(platform.savedConnections, hasLength(2));
+  });
+
   test('主机要求新版手机时保留连接配置并提示更新 App', () async {
     final MethodChannel channel = const MethodChannel(
       'app.packingproof.mobile/lan_backup_client_upgrade_test',
@@ -1760,6 +1853,8 @@ BackupSummaryDto _backupSnapshot({
   int revision = 0,
   String? baseUrl,
   String? computerId,
+  int failedCount = 0,
+  String? dominantFailureKind,
 }) => BackupSummaryDto(
   schemaVersion: schemaVersion,
   revision: revision,
@@ -1775,11 +1870,12 @@ BackupSummaryDto _backupSnapshot({
   uploadingCount: 0,
   pausedCount: 0,
   completedCount: 0,
-  failedCount: 0,
+  failedCount: failedCount,
   waitingCleanupCount: 0,
   localDeletedCount: 0,
   unfinishedUploadedBytes: 0,
   unfinishedTotalBytes: 0,
+  dominantFailureKind: dominantFailureKind,
 );
 
 class _TestChannelBackupPlatform implements BackupNativePlatform {
@@ -1886,6 +1982,8 @@ class _TrackingBackupPlatform extends Fake implements BackupNativePlatform {
   int reclaimCalls = 0;
   int disposeCalls = 0;
   bool hasPendingOutside = false;
+  final List<Map<Object?, Object?>> savedConnections =
+      <Map<Object?, Object?>>[];
 
   @override
   void setSummaryListener(void Function(BackupSummaryDto summary)? listener) {
@@ -1943,6 +2041,11 @@ class _TrackingBackupPlatform extends Fake implements BackupNativePlatform {
   Future<String?> loadAccessKey() async => null;
 
   @override
+  Future<void> saveConnection(Map<Object?, Object?> connection) async {
+    savedConnections.add(Map<Object?, Object?>.from(connection));
+  }
+
+  @override
   Future<Map<Object?, Object?>?> reclaimStorageIfNeeded() async {
     reclaimCalls++;
     return <Object?, Object?>{
@@ -1960,6 +2063,21 @@ class _TrackingBackupPlatform extends Fake implements BackupNativePlatform {
     disposeCalls++;
     _listener = null;
   }
+}
+
+class _FixedBackupHostLocator implements LanBackupHostLocator {
+  const _FixedBackupHostLocator(this.uri);
+
+  final Uri uri;
+
+  @override
+  Future<Uri?> locate({
+    required Uri currentBaseUri,
+    required String nodeId,
+  }) async => uri;
+
+  @override
+  void dispose() {}
 }
 
 _StreamHttpResponse _nodeInfo(String id, String name) => _StreamHttpResponse(

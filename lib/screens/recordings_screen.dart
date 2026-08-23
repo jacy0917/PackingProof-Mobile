@@ -106,7 +106,7 @@ String fitTrackingNumber(
 @visibleForTesting
 String friendlyBackupConnectionError(Object error) {
   if (error is LanBackupConnectionException ||
-      error is LanBackupHostUpgradeRequiredException ||
+      error is LanBackupCompatibilityException ||
       error is LanBackupClientUpgradeRequiredException ||
       error is LanBackupNotHostException ||
       error is LanBackupUnsupportedException) {

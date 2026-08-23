@@ -338,11 +338,11 @@ class _ComputerBackupSettings extends StatelessWidget {
                                   ),
                                   const SizedBox(height: 2),
                                   Text(
-                                    host.compatible
-                                        ? host.reachable
-                                              ? host.address
-                                              : '${host.address} · 上次找到'
-                                        : '${host.address} · 电脑端需更新',
+                                    !host.reachable
+                                        ? '${host.address} · 上次找到'
+                                        : host.compatible
+                                        ? host.address
+                                        : '${host.address} · ${host.compatibilityMessage ?? '暂不兼容'}',
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(fontSize: 11),
@@ -352,13 +352,13 @@ class _ComputerBackupSettings extends StatelessWidget {
                             ),
                             const SizedBox(width: 8),
                             Text(
-                              host.compatible && host.reachable && !offline
+                              !host.reachable
+                                  ? '未在线'
+                                  : host.compatible && !offline
                                   ? '连接'
                                   : host.compatible && offline
                                   ? '离线'
-                                  : host.compatible
-                                  ? '未在线'
-                                  : '需更新',
+                                  : '暂不兼容',
                               style: TextStyle(
                                 color:
                                     host.compatible &&

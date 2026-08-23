@@ -5,6 +5,37 @@ const String minimumBackupHostVersion = '0.0.55';
 const String currentMobileCompatibilityVersion = '0.5.23';
 const int currentMobileCompatibilityBuildNumber = 11036;
 
+enum LanBackupCompatibilityFailure {
+  hostVersionTooOld,
+  mobileTooOld,
+  protocolMismatch,
+  malformed,
+}
+
+class LanBackupCompatibilityResult {
+  const LanBackupCompatibilityResult.compatible(this.compatibility)
+    : failure = null;
+
+  const LanBackupCompatibilityResult.incompatible(this.failure)
+    : compatibility = null;
+
+  final LanBackupHostCompatibility? compatibility;
+  final LanBackupCompatibilityFailure? failure;
+
+  bool get isCompatible => failure == null;
+
+  String get message => switch (failure) {
+    null => '',
+    LanBackupCompatibilityFailure.hostVersionTooOld =>
+      '保存主机版本过低，请在电脑端更新 PackingProof',
+    LanBackupCompatibilityFailure.mobileTooOld => '当前手机 App 版本过低，请更新后重新连接',
+    LanBackupCompatibilityFailure.protocolMismatch =>
+      '电脑端与手机的备份协议不兼容，请更新 PackingProof',
+    LanBackupCompatibilityFailure.malformed =>
+      '电脑端未提供完整的备份兼容信息，请更新 PackingProof',
+  };
+}
+
 class LanBackupHostCompatibility {
   const LanBackupHostCompatibility({
     required this.hostVersion,
@@ -23,16 +54,51 @@ class LanBackupHostCompatibility {
   final int minimumMobileBuildNumber;
 
   bool get supportsCurrentMobile =>
-      compareBackupVersions(hostVersion, minimumBackupHostVersion) >= 0 &&
-      protocol == backupProtocol &&
-      enrollmentVersion == backupEnrollmentVersion &&
-      authVersion == backupAuthenticationVersion &&
-      compareBackupVersions(
+      evaluateLanBackupHostCompatibility(this).isCompatible;
+}
+
+LanBackupCompatibilityResult evaluateLanBackupHostCompatibility(
+  LanBackupHostCompatibility compatibility,
+) {
+  if (compareBackupVersions(
+        compatibility.hostVersion,
+        minimumBackupHostVersion,
+      ) <
+      0) {
+    return const LanBackupCompatibilityResult.incompatible(
+      LanBackupCompatibilityFailure.hostVersionTooOld,
+    );
+  }
+  if (compatibility.protocol != backupProtocol ||
+      compatibility.enrollmentVersion != backupEnrollmentVersion ||
+      compatibility.authVersion != backupAuthenticationVersion) {
+    return const LanBackupCompatibilityResult.incompatible(
+      LanBackupCompatibilityFailure.protocolMismatch,
+    );
+  }
+  if (compareBackupVersions(
             currentMobileCompatibilityVersion,
-            minimumMobileVersion,
-          ) >=
-          0 &&
-      currentMobileCompatibilityBuildNumber >= minimumMobileBuildNumber;
+            compatibility.minimumMobileVersion,
+          ) <
+          0 ||
+      currentMobileCompatibilityBuildNumber <
+          compatibility.minimumMobileBuildNumber) {
+    return const LanBackupCompatibilityResult.incompatible(
+      LanBackupCompatibilityFailure.mobileTooOld,
+    );
+  }
+  return LanBackupCompatibilityResult.compatible(compatibility);
+}
+
+LanBackupCompatibilityResult parseLanBackupCompatibilityResult(Object? value) {
+  final LanBackupHostCompatibility? compatibility =
+      parseLanBackupHostCompatibility(value);
+  if (compatibility == null) {
+    return const LanBackupCompatibilityResult.incompatible(
+      LanBackupCompatibilityFailure.malformed,
+    );
+  }
+  return evaluateLanBackupHostCompatibility(compatibility);
 }
 
 LanBackupHostCompatibility? parseLanBackupHostCompatibility(Object? value) {

@@ -808,6 +808,51 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testCompatibleHostRecoveryOnlyRequeuesItsOwnIncompatibleFailures() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    var incompatible = makeBackupJob(id: "failure-incompatible")
+    incompatible["state"] = "failed"
+    incompatible["failureKind"] = "incompatible_version"
+    incompatible["errorMessage"] = "电脑端版本不兼容"
+    incompatible["destinationComputerId"] = "computer-1"
+    try store.upsert(incompatible)
+    var storage = makeBackupJob(id: "failure-storage")
+    storage["state"] = "failed"
+    storage["failureKind"] = "storage_unavailable"
+    storage["destinationComputerId"] = "computer-1"
+    try store.upsert(storage)
+    var otherDestination = makeBackupJob(id: "failure-other-destination")
+    otherDestination["state"] = "failed"
+    otherDestination["failureKind"] = "incompatible_version"
+    otherDestination["destinationComputerId"] = "computer-2"
+    try store.upsert(otherDestination)
+
+    XCTAssertEqual(
+      try store.recoverIncompatibleFailures(destinationComputerId: "computer-1"),
+      1
+    )
+
+    let recovered = try XCTUnwrap(store.readJob(id: "failure-incompatible"))
+    XCTAssertEqual(recovered["state"] as? String, "pending")
+    XCTAssertNil(recovered["failureKind"] as? String)
+    XCTAssertNil(recovered["errorMessage"] as? String)
+    XCTAssertEqual(
+      try store.readJob(id: "failure-storage")?["state"] as? String,
+      "failed"
+    )
+    XCTAssertEqual(
+      try store.readJob(id: "failure-other-destination")?["state"] as? String,
+      "failed"
+    )
+    let summary = try store.summaryValues()
+    XCTAssertEqual(summary["pendingCount"] as? Int64, 1)
+    XCTAssertEqual(summary["failedCount"] as? Int64, 2)
+  }
+
   func testBackupCleanupEventIsCreatedAndAcknowledgedTransactionally() throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
