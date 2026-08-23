@@ -2700,11 +2700,32 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   func performCleanup() async throws {
-    try await withMaintenanceSlot {
-      if let cleanupOperationOverride {
-        try await cleanupOperationOverride()
-      } else {
-        try await performCleanupUncoordinated()
+    do {
+      try await withMaintenanceSlot {
+        if let cleanupOperationOverride {
+          try await cleanupOperationOverride()
+        } else {
+          try await performCleanupUncoordinated()
+        }
+      }
+    } catch {
+      await drainSummaryQueue()
+      throw error
+    }
+    await drainSummaryQueue()
+  }
+
+  private func drainSummaryQueue() async {
+    await withCheckedContinuation { continuation in
+      summaryQueue.async {
+        let hadPendingProgress = self.summaryProgressWorkItem != nil
+        self.summaryProgressWorkItem?.cancel()
+        self.summaryProgressWorkItem = nil
+        if hadPendingProgress {
+          self.lastSummaryEventRequestedAt = Date()
+          self.sendSummaryIfPossible()
+        }
+        continuation.resume()
       }
     }
   }
