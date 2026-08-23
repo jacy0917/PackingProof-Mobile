@@ -1311,19 +1311,6 @@ final class IosCameraHostApi:
     bufferLock.unlock()
     liveWatermarkRenderer.reset()
     watermarkPreparationPending = false
-    var initialWatermarkPreparationError: Error?
-    if let watermarkSourceBuffer {
-      do {
-        try liveWatermarkRenderer.prepare(
-          to: watermarkSourceBuffer,
-          orientation: recordingOrientationName,
-          trackingNumber: trackingNumber
-        )
-      } catch {
-        initialWatermarkPreparationError = error
-        liveWatermarkRenderer.reset()
-      }
-    }
 
     guard writer.startWriting() else {
       throw writer.error ?? pigeonError("开始录像失败")
@@ -1334,8 +1321,8 @@ final class IosCameraHostApi:
     self.pixelBufferAdaptor = adaptor
     self.currentPath = path
     self.currentTrackingNumber = trackingNumber
-    self.currentWatermarkFailed = initialWatermarkPreparationError != nil
-    self.currentWatermarkError = initialWatermarkPreparationError.map(String.init(describing:))
+    self.currentWatermarkFailed = false
+    self.currentWatermarkError = nil
     self.currentSegmentId = UUID().uuidString
     self.currentStartedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
     self.currentSegmentSerial += 1
@@ -1344,11 +1331,11 @@ final class IosCameraHostApi:
     self.currentAudioSampleCount = 0
     self.currentAudioAppendFailedCount = 0
     self.currentAudioLastError = nil
-    if initialWatermarkPreparationError != nil {
-      eventApi.nativeError(
-        message: "录像继续保存，但实时水印准备失败",
-        completion: { _ in }
-      )
+    // 水印排版和像素计划可能需要等待上一段的预生成任务。
+    // 不在 sessionQueue 同步等待，避免切换条码时预览和采集一起停顿。
+    // 计划就绪前 capture 回调仍会推送预览，但不会写入无水印视频帧。
+    if let watermarkSourceBuffer {
+      prepareInitialWatermarkPlanIfNeeded(from: watermarkSourceBuffer)
     }
   }
 

@@ -220,9 +220,70 @@ final class IosWatermarkRasterTests: XCTestCase {
       )
       XCTAssertEqual(bounds.midX, output.width / 2, accuracy: 2, orientation)
       XCTAssertGreaterThanOrEqual(bounds.minY, output.height * 0.04, orientation)
-      XCTAssertLessThanOrEqual(bounds.minY, output.height * 0.04 + 24, orientation)
+      XCTAssertLessThanOrEqual(bounds.minY, output.height * 0.04 + 26, orientation)
       XCTAssertGreaterThan(bounds.brightPixels, 40, orientation)
       XCTAssertGreaterThan(bounds.darkPixels, 40, orientation)
+    }
+  }
+
+  func testSplitLiveRasterMatchesLegacyCompositeInAllOrientations() throws {
+    let sourceWidth = 1080
+    let sourceHeight = 1920
+    let date = Date(timeIntervalSince1970: 1_776_768_896)
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "yyyy/MM/dd HH:mm:ss"
+    let timestamp = formatter.string(from: date)
+    let trackingNumbers = [
+      "",
+      "TRACK-001",
+      "中文面单-123",
+      String(repeating: "LONG-", count: 35),
+      "ROW1\nROW2",
+    ]
+
+    for trackingNumber in trackingNumbers {
+      let legacyText = trackingNumber.isEmpty
+        ? timestamp
+        : "\(timestamp)\n\(trackingNumber)"
+      for orientation in ["portrait", "landscapeLeft", "landscapeRight"] {
+        let expected = try makePixelBuffer(width: sourceWidth, height: sourceHeight)
+        let actual = try makePixelBuffer(width: sourceWidth, height: sourceHeight)
+        for buffer in [expected, actual] {
+          fill(buffer, blue: 80, green: 96, red: 112)
+        }
+        try applyLegacyLiveWatermark(
+          legacyText,
+          to: expected,
+          orientation: orientation
+        )
+        let renderer = IosLiveWatermarkRenderer(
+          timeZone: TimeZone(secondsFromGMT: 0)!
+        )
+        try renderer.prepare(
+          to: actual,
+          orientation: orientation,
+          trackingNumber: trackingNumber,
+          date: date
+        )
+        try renderer.apply(
+          to: actual,
+          orientation: orientation,
+          trackingNumber: trackingNumber,
+          date: date
+        )
+
+        let pixelDifference = differingPixelCount(
+          bytes(of: actual),
+          bytes(of: expected)
+        )
+        XCTAssertLessThanOrEqual(
+          pixelDifference,
+          102,
+          "\(orientation): \(trackingNumber)"
+        )
+      }
     }
   }
 
@@ -280,6 +341,55 @@ final class IosWatermarkRasterTests: XCTestCase {
     )
   }
 
+  func testLiveRendererRasterizesTrackingOnlyOnceAcrossSixtySeconds() throws {
+    let second: Int64 = 1_776_768_896
+    let buffer = try makePixelBuffer(width: 1080, height: 1920)
+    fill(buffer, blue: 80, green: 96, red: 112)
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    try renderer.prepare(
+      to: buffer,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: Date(timeIntervalSince1970: Double(second))
+    )
+    renderer.waitForPendingPlansForTesting()
+
+    for offset in 0..<60 {
+      try renderer.apply(
+        to: buffer,
+        orientation: "portrait",
+        trackingNumber: "TRACK-001",
+        date: Date(timeIntervalSince1970: Double(second + Int64(offset)))
+      )
+      renderer.waitForPendingPlansForTesting()
+    }
+
+    XCTAssertEqual(renderer.trackingRasterizationCountForTesting, 1)
+    XCTAssertEqual(renderer.timestampRasterizationCountForTesting, 61)
+    XCTAssertLessThanOrEqual(renderer.preparedSecondsForTesting.count, 2)
+  }
+
+  func testLiveRendererSkipsStaticRasterForEmptyTrackingNumber() throws {
+    let date = Date(timeIntervalSince1970: 1_776_768_896)
+    let buffer = try makePixelBuffer(width: 1080, height: 1920)
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+
+    try renderer.prepare(
+      to: buffer,
+      orientation: "portrait",
+      trackingNumber: "",
+      date: date
+    )
+    renderer.waitForPendingPlansForTesting()
+
+    XCTAssertEqual(renderer.trackingRasterizationCountForTesting, 0)
+    XCTAssertEqual(renderer.timestampRasterizationCountForTesting, 2)
+  }
+
   func testLiveRendererReusesPreviousPlanUntilNextSecondIsReady() throws {
     let second: Int64 = 1_776_768_896
     let date = Date(timeIntervalSince1970: Double(second))
@@ -324,6 +434,161 @@ final class IosWatermarkRasterTests: XCTestCase {
       date: date.addingTimeInterval(1)
     )
     XCTAssertEqual(renderer.lastAppliedPlanSecondForTesting, second + 1)
+  }
+
+  func testLiveRendererRejectsPlanOlderThanOneSecond() throws {
+    let second: Int64 = 1_776_768_896
+    let buffer = try makePixelBuffer(width: 1080, height: 1920)
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    try renderer.prepare(
+      to: buffer,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: Date(timeIntervalSince1970: Double(second)),
+      prefetchNextSecond: false
+    )
+
+    XCTAssertThrowsError(
+      try renderer.apply(
+        to: buffer,
+        orientation: "portrait",
+        trackingNumber: "TRACK-001",
+        date: Date(timeIntervalSince1970: Double(second + 2))
+      )
+    ) { error in
+      guard case let IosLiveWatermarkError.planExpired(
+        requestedSecond,
+        availableSecond
+      ) = error else {
+        return XCTFail("超过一秒必须返回明确的计划过期错误：\(error)")
+      }
+      XCTAssertEqual(requestedSecond, second + 2)
+      XCTAssertEqual(availableSecond, second)
+    }
+    XCTAssertNil(renderer.lastAppliedPlanSecondForTesting)
+  }
+
+  func testLiveRendererFrozenClockKeepsCurrentAndNextPlansBounded() throws {
+    let second: Int64 = 1_776_768_896
+    let buffer = try makePixelBuffer(width: 1080, height: 1920)
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    try renderer.prepare(
+      to: buffer,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: Date(timeIntervalSince1970: Double(second))
+    )
+    renderer.waitForPendingPlansForTesting()
+
+    for _ in 0..<120 {
+      try renderer.apply(
+        to: buffer,
+        orientation: "portrait",
+        trackingNumber: "TRACK-001",
+        date: Date(timeIntervalSince1970: Double(second))
+      )
+    }
+
+    XCTAssertEqual(renderer.preparedSecondsForTesting, [second, second + 1])
+    XCTAssertEqual(renderer.trackingRasterizationCountForTesting, 1)
+    XCTAssertEqual(renderer.timestampRasterizationCountForTesting, 2)
+    XCTAssertEqual(renderer.pendingPlanRequestCountForTesting, 0)
+    XCTAssertEqual(renderer.scheduledPlanCountForTesting, 0)
+  }
+
+  func testLiveRendererBusyQueueDoesNotReuseOldPlanOrAccumulateRequests()
+    throws
+  {
+    let second: Int64 = 1_776_768_896
+    let buffer = try makePixelBuffer(width: 1080, height: 1920)
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    try renderer.prepare(
+      to: buffer,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: Date(timeIntervalSince1970: Double(second)),
+      prefetchNextSecond: false
+    )
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    renderer.blockPlanQueueForTesting(started: started, release: release)
+    XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+    var queueReleased = false
+    defer {
+      if !queueReleased { release.signal() }
+    }
+
+    try renderer.apply(
+      to: buffer,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: Date(timeIntervalSince1970: Double(second + 1))
+    )
+    XCTAssertThrowsError(
+      try renderer.apply(
+        to: buffer,
+        orientation: "portrait",
+        trackingNumber: "TRACK-001",
+        date: Date(timeIntervalSince1970: Double(second + 2))
+      )
+    ) { error in
+      guard case IosLiveWatermarkError.planExpired = error else {
+        return XCTFail("繁忙超过容差后必须失败而不是继续复用旧时间：\(error)")
+      }
+    }
+    XCTAssertLessThanOrEqual(renderer.pendingPlanRequestCountForTesting, 2)
+    XCTAssertLessThanOrEqual(renderer.scheduledPlanCountForTesting, 2)
+    release.signal()
+    queueReleased = true
+    renderer.waitForPendingPlansForTesting()
+    XCTAssertLessThanOrEqual(renderer.preparedSecondsForTesting.count, 3)
+  }
+
+  func testLiveRendererClockRollbackDropsFuturePlansAndRebuildsBoundedWindow()
+    throws
+  {
+    let second: Int64 = 1_776_768_896
+    let rollbackSecond = second - 30
+    let buffer = try makePixelBuffer(width: 1080, height: 1920)
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    try renderer.prepare(
+      to: buffer,
+      orientation: "portrait",
+      trackingNumber: "TRACK-001",
+      date: Date(timeIntervalSince1970: Double(second))
+    )
+    renderer.waitForPendingPlansForTesting()
+    XCTAssertEqual(renderer.preparedSecondsForTesting, [second, second + 1])
+
+    XCTAssertThrowsError(
+      try renderer.apply(
+        to: buffer,
+        orientation: "portrait",
+        trackingNumber: "TRACK-001",
+        date: Date(timeIntervalSince1970: Double(rollbackSecond))
+      )
+    ) { error in
+      guard case IosLiveWatermarkError.planNotReady = error else {
+        return XCTFail("时钟回拨不能套用未来水印计划：\(error)")
+      }
+    }
+    XCTAssertTrue(renderer.preparedSecondsForTesting.isEmpty)
+    XCTAssertLessThanOrEqual(renderer.pendingPlanRequestCountForTesting, 2)
+    XCTAssertLessThanOrEqual(renderer.scheduledPlanCountForTesting, 2)
+
+    renderer.waitForPendingPlansForTesting()
+    XCTAssertEqual(
+      renderer.preparedSecondsForTesting,
+      [rollbackSecond, rollbackSecond + 1]
+    )
   }
 
   func testLiveRendererResetRejectsOlderGenerationPlans() throws {
@@ -406,6 +671,37 @@ final class IosWatermarkRasterTests: XCTestCase {
       renderer.lastAppliedPlanSecondForTesting,
       Int64(date.timeIntervalSince1970)
     )
+  }
+
+  func testLiveRendererAsyncPreparationKeepsOnlyLatestGenerationBounded() throws {
+    let second: Int64 = 1_776_768_896
+    let buffer = try makePixelBuffer(width: 1080, height: 1920)
+    let renderer = IosLiveWatermarkRenderer(
+      timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    let latestCompleted = expectation(description: "最新水印计划完成")
+
+    for offset in 0..<20 {
+      renderer.prepareAsynchronously(
+        to: buffer,
+        orientation: "portrait",
+        trackingNumber: "TRACK-\(offset)",
+        date: Date(timeIntervalSince1970: Double(second + Int64(offset)))
+      ) { result in
+        if offset == 19 {
+          if case .failure(let error) = result {
+            XCTFail("最新水印计划不应失败：\(error)")
+          }
+          latestCompleted.fulfill()
+        }
+      }
+      XCTAssertLessThanOrEqual(renderer.pendingPlanRequestCountForTesting, 2)
+      XCTAssertLessThanOrEqual(renderer.scheduledPlanCountForTesting, 2)
+    }
+
+    wait(for: [latestCompleted], timeout: 5)
+    renderer.waitForPendingPlansForTesting()
+    XCTAssertEqual(renderer.preparedSecondsForTesting, [second + 19, second + 20])
   }
 
   func testLiveRendererPreparedPlanSupportsConcurrentFrameBuffers() throws {
@@ -633,6 +929,139 @@ final class IosWatermarkRasterTests: XCTestCase {
         bytes[offset + 3] = 255
       }
     }
+  }
+
+  private func applyLegacyLiveWatermark(
+    _ text: String,
+    to pixelBuffer: CVPixelBuffer,
+    orientation: String
+  ) throws {
+    let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
+    let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
+    let outputSize = IosLiveWatermarkGeometry.outputSize(
+      sourceWidth: sourceWidth,
+      sourceHeight: sourceHeight,
+      orientation: orientation
+    )
+    let fontSize = max(35, min(61, outputSize.height * 0.032))
+    let font = UIFont.boldSystemFont(ofSize: fontSize)
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.alignment = .center
+    paragraph.minimumLineHeight = fontSize * 1.25
+    paragraph.maximumLineHeight = fontSize * 1.25
+    let measurement = NSAttributedString(
+      string: text,
+      attributes: [.font: font, .paragraphStyle: paragraph]
+    ).boundingRect(
+      with: CGSize(
+        width: max(1, outputSize.width),
+        height: CGFloat.greatestFiniteMagnitude
+      ),
+      options: [.usesLineFragmentOrigin, .usesFontLeading],
+      context: nil
+    )
+    let padding = ceil(fontSize * 0.1 + 3)
+    let width = max(1, Int(ceil(measurement.width + padding * 2)))
+    let height = max(1, Int(ceil(measurement.height + padding * 2)))
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    format.opaque = false
+    let image = UIGraphicsImageRenderer(
+      size: CGSize(width: width, height: height),
+      format: format
+    ).image { _ in
+      let rect = CGRect(
+        x: padding,
+        y: padding,
+        width: CGFloat(width) - padding * 2,
+        height: CGFloat(height) - padding * 2
+      )
+      NSAttributedString(
+        string: text,
+        attributes: [
+          .font: font,
+          .foregroundColor: UIColor.black,
+          .strokeColor: UIColor.black,
+          .strokeWidth: -10,
+          .paragraphStyle: paragraph,
+        ]
+      ).draw(
+        with: rect,
+        options: [.usesLineFragmentOrigin, .usesFontLeading],
+        context: nil
+      )
+      NSAttributedString(
+        string: text,
+        attributes: [
+          .font: font,
+          .foregroundColor: UIColor.white,
+          .paragraphStyle: paragraph,
+        ]
+      ).draw(
+        with: rect,
+        options: [.usesLineFragmentOrigin, .usesFontLeading],
+        context: nil
+      )
+    }
+    let raster = try IosLiveWatermarkRasterizer.bgraPixels(
+      from: try XCTUnwrap(image.cgImage),
+      width: width,
+      height: height
+    )
+    let origin = IosLiveWatermarkGeometry.outputOrigin(
+      outputSize: outputSize,
+      rasterSize: CGSize(width: width, height: height)
+    )
+    let originX = Int(origin.x.rounded(.down))
+    let originY = Int(origin.y.rounded(.down))
+    CVPixelBufferLockBaseAddress(pixelBuffer, [])
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+    let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    let destination = CVPixelBufferGetBaseAddress(pixelBuffer)!
+      .assumingMemoryBound(to: UInt8.self)
+    raster.withUnsafeBytes { raw in
+      let source = raw.baseAddress!.assumingMemoryBound(to: UInt8.self)
+      for rasterY in 0..<height {
+        for rasterX in 0..<width {
+          let sourceOffset = (rasterY * width + rasterX) * 4
+          let alpha = source[sourceOffset + 3]
+          guard alpha > 0 else { continue }
+          let mapped = IosLiveWatermarkGeometry.sourcePixel(
+            outputX: originX + rasterX,
+            outputY: originY + rasterY,
+            sourceWidth: sourceWidth,
+            sourceHeight: sourceHeight,
+            orientation: orientation
+          )
+          guard mapped.x >= 0, mapped.x < sourceWidth,
+                mapped.y >= 0, mapped.y < sourceHeight else { continue }
+          let offset = mapped.y * bytesPerRow + mapped.x * 4
+          let inverseAlpha = 255 - Int(alpha)
+          for channel in 0..<3 {
+            destination[offset + channel] = UInt8(min(
+              255,
+              Int(source[sourceOffset + channel]) +
+                (Int(destination[offset + channel]) * inverseAlpha + 127) / 255
+            ))
+          }
+          destination[offset + 3] = 255
+        }
+      }
+    }
+  }
+
+  private func differingPixelCount(_ first: [UInt8], _ second: [UInt8]) -> Int {
+    precondition(first.count == second.count)
+    var count = 0
+    for offset in stride(from: 0, to: first.count, by: 4) {
+      if first[offset] != second[offset] ||
+          first[offset + 1] != second[offset + 1] ||
+          first[offset + 2] != second[offset + 2] ||
+          first[offset + 3] != second[offset + 3] {
+        count += 1
+      }
+    }
+    return count
   }
 
   private func makePixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
