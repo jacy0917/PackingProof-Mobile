@@ -3635,6 +3635,10 @@ class RunnerTests: XCTestCase {
         printf('/recordings/bounded-%05d.mp4', value),
         'pending', '[]', value
       FROM counter;
+      UPDATE backup_meta SET int_value = 10000
+      WHERE key IN ('summary_total_count', 'summary_pending_count');
+      UPDATE backup_meta SET int_value = 9999
+      WHERE key = 'global_revision';
       """,
       databaseURL: fixture.databaseURL
     )
@@ -3649,12 +3653,19 @@ class RunnerTests: XCTestCase {
       }
     )
 
-    for _ in 0..<10_000 { api.requestUploadDispatchForTesting() }
+    try await awaitVoidResult {
+      api.setAutoEnabled(enabled: true, completion: $0)
+    }
+    api.requestUploadDispatchForTesting()
     await fulfillment(of: [started], timeout: 5)
+    for _ in 0..<10_000 { api.requestUploadDispatchForTesting() }
     let running = api.uploadTaskCountsForTesting()
     XCTAssertEqual(running.dispatcher, 1)
     XCTAssertEqual(running.active, 1)
 
+    try await awaitVoidResult {
+      api.setAutoEnabled(enabled: false, completion: $0)
+    }
     await gate.open()
     await api.waitForUploadDispatcherForTesting()
     let finished = api.uploadTaskCountsForTesting()
@@ -3687,7 +3698,7 @@ class RunnerTests: XCTestCase {
       }
     )
 
-    _ = try await awaitInitializeResult(api)
+    _ = try await awaitInitializeResult(api, autoEnabled: true)
     await fulfillment(of: [completed], timeout: 5)
     await api.waitForUploadDispatcherForTesting()
 
@@ -3698,6 +3709,7 @@ class RunnerTests: XCTestCase {
   func testUploadDispatcherCancelsAndRunsReplacementGeneration() async throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
+    fixture.defaults.set(true, forKey: "ios_backup_auto_enabled")
     let store = try IosBackupJobStore(
       databaseURL: fixture.databaseURL,
       defaults: fixture.defaults
@@ -3739,6 +3751,7 @@ class RunnerTests: XCTestCase {
   func testUploadDispatcherCancelLeavesJobPausedAndStopsWorker() async throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
+    fixture.defaults.set(true, forKey: "ios_backup_auto_enabled")
     let store = try IosBackupJobStore(
       databaseURL: fixture.databaseURL,
       defaults: fixture.defaults
@@ -4229,10 +4242,11 @@ class RunnerTests: XCTestCase {
   }
 
   private func awaitInitializeResult(
-    _ api: IosBackupHostApi
+    _ api: IosBackupHostApi,
+    autoEnabled: Bool = false
   ) async throws -> BackupSummaryDto {
     try await withCheckedThrowingContinuation { continuation in
-      api.initialize(request: [:]) { result in
+      api.initialize(request: ["autoEnabled": autoEnabled]) { result in
         continuation.resume(with: result)
       }
     }
