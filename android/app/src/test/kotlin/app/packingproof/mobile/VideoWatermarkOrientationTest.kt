@@ -111,10 +111,10 @@ class VideoWatermarkOrientationTest {
     }
 
     @Test
-    fun `uses the same 40 pixel text for portrait and landscape`() {
-        assertEquals(40f, watermarkTextSize(1920, "portrait"), 0.001f)
-        assertEquals(40f, watermarkTextSize(1080, "landscapeLeft"), 0.001f)
-        assertEquals(40f, watermarkTextSize(1080, "landscapeRight"), 0.001f)
+    fun `uses the same 42 pixel text for portrait and landscape`() {
+        assertEquals(42f, watermarkTextSize(1920, "portrait"), 0.001f)
+        assertEquals(42f, watermarkTextSize(1080, "landscapeLeft"), 0.001f)
+        assertEquals(42f, watermarkTextSize(1080, "landscapeRight"), 0.001f)
     }
 
     @Test

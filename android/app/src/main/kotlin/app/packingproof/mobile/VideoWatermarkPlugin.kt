@@ -215,7 +215,7 @@ internal class ReusableWatermarkBitmap(
 @Suppress("UNUSED_PARAMETER")
 internal fun watermarkTextSize(videoHeight: Int, recordingOrientation: String): Float {
     require(videoHeight > 0)
-    return 40f
+    return 42f
 }
 
 internal fun isSuccessfulWatermarkExport(

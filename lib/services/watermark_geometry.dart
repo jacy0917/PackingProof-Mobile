@@ -54,7 +54,7 @@ WatermarkPreviewMetrics watermarkPreviewMetrics({
     resolvedSourceVideoSize.width,
     resolvedSourceVideoSize.height,
   );
-  const double outputFontSize = 40;
+  const double outputFontSize = 42;
   final double previewScale = viewportWidth / portraitWidth;
   return WatermarkPreviewMetrics(
     fontSize: outputFontSize * previewScale,
