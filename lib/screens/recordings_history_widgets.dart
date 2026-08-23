@@ -1,5 +1,42 @@
 part of 'recordings_screen.dart';
 
+class _RecordingsHistoryTitle extends StatelessWidget {
+  const _RecordingsHistoryTitle({
+    required this.deviceName,
+    required this.ipAddress,
+  });
+
+  final String deviceName;
+  final String ipAddress;
+
+  @override
+  Widget build(BuildContext context) {
+    final String name = deviceName.trim().isEmpty ? '设备' : deviceName.trim();
+    final String ip = ipAddress.trim();
+    return Semantics(
+      label: recordingsHistoryTitle(name, ip),
+      child: Row(
+        children: <Widget>[
+          Flexible(
+            child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          if (ip.isNotEmpty)
+            Text(
+              ' · $ip',
+              key: const Key('recordings-history-ip'),
+              maxLines: 1,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontSize: 12,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _HistorySummary extends StatelessWidget {
   const _HistorySummary({
     required this.total,

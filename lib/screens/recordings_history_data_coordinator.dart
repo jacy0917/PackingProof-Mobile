@@ -21,6 +21,9 @@ mixin _RecordingsHistoryDataCoordinator on _RecordingsBackupCoordinator {
   int _remoteDeviceTotal = 0;
   int _localTotal = 0;
   bool _loadingLocal = false;
+  int _localRecordingBytes = 0;
+  Set<String> _localRecordingPaths = <String>{};
+  int _localRecordingStatsGeneration = 0;
   @override
   int _historyPage = 0;
   @override
@@ -301,4 +304,184 @@ mixin _RecordingsHistoryDataCoordinator on _RecordingsBackupCoordinator {
       // broad-catch: Keep the page usable with availability from /api/videos.
     }
   }
+
+  @override
+  void _refreshLocalRecordingStats() {
+    final ({int bytes, Set<String> paths})? databaseSummary =
+        _localRecordingStatsFromPages();
+    final int generation = ++_localRecordingStatsGeneration;
+    if (databaseSummary != null) {
+      _localRecordingBytes = databaseSummary.bytes;
+      _localRecordingPaths = databaseSummary.paths;
+      return;
+    }
+    if (widget.onLoadLocalRecordings != null && _localPages.isEmpty) {
+      _localRecordingBytes = 0;
+      _localRecordingPaths = <String>{};
+      return;
+    }
+    final List<String> paths = _sessions
+        .map((RecordingSession session) => session.filePath)
+        .where((String path) => path.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    unawaited(_measureLocalRecordingStatsAsync(paths, generation));
+  }
+
+  ({int bytes, Set<String> paths})? _localRecordingStatsFromPages() {
+    if (_localPages.isEmpty ||
+        _localPages.values.any(
+          (LocalRecordingPage page) => page.availableFileBytesById == null,
+        )) {
+      return null;
+    }
+    int bytes = 0;
+    final Set<String> paths = <String>{};
+    for (final LocalRecordingPage page in _localPages.values) {
+      final Map<String, int> available = page.availableFileBytesById!;
+      for (final RecordingSession session in page.data) {
+        final int? fileBytes = available[session.id];
+        if (fileBytes == null || session.filePath.isEmpty) continue;
+        paths.add(session.filePath);
+        bytes += fileBytes;
+      }
+    }
+    return (bytes: bytes, paths: paths);
+  }
+
+  Future<void> _measureLocalRecordingStatsAsync(
+    List<String> paths,
+    int generation,
+  ) async {
+    int bytes = 0;
+    final Set<String> existingPaths = <String>{};
+    for (var offset = 0; offset < paths.length; offset += 4) {
+      if (!mounted || generation != _localRecordingStatsGeneration) return;
+      final List<String> batch = paths.sublist(
+        offset,
+        offset + 4 < paths.length ? offset + 4 : paths.length,
+      );
+      final List<({String path, bool exists, int bytes})> results =
+          await Future.wait(
+            batch.map((String path) async {
+              final ({bool exists, int bytes}) result =
+                  await _probeLocalRecordingFile(path);
+              return (path: path, exists: result.exists, bytes: result.bytes);
+            }),
+          );
+      for (final ({String path, bool exists, int bytes}) result in results) {
+        if (!result.exists) continue;
+        existingPaths.add(result.path);
+        bytes += result.bytes;
+      }
+    }
+    if (!mounted || generation != _localRecordingStatsGeneration) return;
+    setState(() {
+      _localRecordingBytes = bytes;
+      _localRecordingPaths = existingPaths;
+    });
+  }
+
+  Future<({bool exists, int bytes})> _probeLocalRecordingFile(
+    String path,
+  ) async {
+    final LocalRecordingFileProbe? probe = widget.localRecordingFileProbe;
+    if (probe != null) return probe(path);
+    try {
+      final FileStat stat = await File(path).stat();
+      return (exists: stat.type == FileSystemEntityType.file, bytes: stat.size);
+    } on FileSystemException {
+      return (exists: false, bytes: 0);
+    }
+  }
+
+  List<RecordingSession> get _existingLocalSessions => _sessions
+      .where(
+        (RecordingSession session) =>
+            session.filePath.isNotEmpty &&
+            _localRecordingPaths.contains(session.filePath),
+      )
+      .toList(growable: false);
+
+  bool _isJobConfirmedAvailable(LanBackupJob job) {
+    final String currentComputerId = _backupSnapshot.endpoint?.computerId ?? '';
+    if (currentComputerId.isEmpty ||
+        job.destinationComputerId != currentComputerId) {
+      return false;
+    }
+    return _isJobKnownAvailable(job);
+  }
+
+  bool _isRemoteFromThisDevice(RemoteRecording recording) {
+    final String deviceId = _backupSnapshot.deviceId.trim();
+    return deviceId.isNotEmpty && recording.sourceDeviceId == deviceId;
+  }
+
+  String _recordingSourceLabel(RecordingHistoryItem item) {
+    final RemoteRecording? remote = item.remote;
+    if (remote != null) {
+      if (remote.sourceType.toLowerCase() != 'external') {
+        final String computerName = remote.sourceDeviceName.trim();
+        if (computerName.isNotEmpty) return computerName;
+        final String pairedComputerName =
+            _backupSnapshot.endpoint?.computerName.trim() ?? '';
+        if (pairedComputerName.isNotEmpty) return pairedComputerName;
+        return '电脑';
+      }
+      final String remoteName = remote.sourceDeviceName.trim();
+      if (remoteName.isNotEmpty) return remoteName;
+    }
+    final String currentDeviceName = _backupSnapshot.deviceName.trim();
+    if (item.local != null ||
+        (remote != null && _isRemoteFromThisDevice(remote))) {
+      return currentDeviceName.isEmpty ? '手机' : currentDeviceName;
+    }
+    return '手机';
+  }
+
+  String _recordingSourceIdentity(RecordingHistoryItem item) {
+    final RemoteRecording? remote = item.remote;
+    if (remote != null) {
+      if (remote.sourceType.toLowerCase() != 'external') return 'computer';
+      final String remoteDeviceId = remote.sourceDeviceId.trim();
+      if (remoteDeviceId.isNotEmpty) return remoteDeviceId;
+      final String remoteDeviceName = remote.sourceDeviceName.trim();
+      if (remoteDeviceName.isNotEmpty) return remoteDeviceName;
+    }
+    final String currentDeviceId = _backupSnapshot.deviceId.trim();
+    if (currentDeviceId.isNotEmpty) return currentDeviceId;
+    final String currentDeviceName = _backupSnapshot.deviceName.trim();
+    return currentDeviceName.isEmpty ? 'mobile' : currentDeviceName;
+  }
+
+  bool _isJobKnownAvailable(LanBackupJob job) {
+    final int? remoteRecordId = job.remoteRecordId;
+    if (job.state != LanBackupJobState.completed || remoteRecordId == null) {
+      return false;
+    }
+    final status = _remoteStatuses[remoteRecordId];
+    return status == null ||
+        (status.status == RemoteRecordingStatus.available && status.exists);
+  }
+}
+
+bool _sameSessionSnapshot(
+  List<RecordingSession> first,
+  List<RecordingSession> second,
+) {
+  if (identical(first, second)) return true;
+  if (first.length != second.length) return false;
+  for (var index = 0; index < first.length; index++) {
+    final RecordingSession left = first[index];
+    final RecordingSession right = second[index];
+    if (left.id != right.id ||
+        left.filePath != right.filePath ||
+        left.startedAt != right.startedAt ||
+        left.endedAt != right.endedAt ||
+        left.mediaStart != right.mediaStart ||
+        left.mediaEnd != right.mediaEnd) {
+      return false;
+    }
+  }
+  return true;
 }
