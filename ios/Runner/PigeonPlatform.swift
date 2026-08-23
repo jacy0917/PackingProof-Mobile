@@ -65,7 +65,9 @@ final class IosSharedAudioSessionCoordinator {
   func acquire(_ owner: IosAudioSessionOwner) throws {
     lock.lock()
     defer { lock.unlock() }
-    try activateUnlocked()
+    if ownerCounts.isEmpty {
+      try activateUnlocked()
+    }
     ownerCounts[owner, default: 0] += 1
   }
 
@@ -100,6 +102,19 @@ final class IosSharedAudioSessionCoordinator {
     lock.lock()
     defer { lock.unlock() }
     return ownerCounts[owner] ?? 0
+  }
+
+  /// owner 已销毁且无法再重试停用时，只丢弃其逻辑所有权。下一位 owner
+  /// 会重新执行完整激活，避免一次停用失败永久留下无法释放的计数。
+  func abandon(_ owner: IosAudioSessionOwner) {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let count = ownerCounts[owner], count > 0 else { return }
+    if count == 1 {
+      ownerCounts.removeValue(forKey: owner)
+    } else {
+      ownerCounts[owner] = count - 1
+    }
   }
 
   private func activateUnlocked() throws {
@@ -271,14 +286,10 @@ private final class IosPromptAudioHost: NSObject {
     }
     var addedAudioSessionKey = false
     do {
-      if audioSessionKeys.contains(key) {
-        try audioSessionCoordinator.ensureActive(for: .prompt)
-      } else if audioSessionKeys.isEmpty {
-        try audioSessionCoordinator.acquire(.prompt)
-        audioSessionKeys.insert(key)
-        addedAudioSessionKey = true
-      } else {
-        try audioSessionCoordinator.ensureActive(for: .prompt)
+      if !audioSessionKeys.contains(key) {
+        if audioSessionKeys.isEmpty {
+          try audioSessionCoordinator.acquire(.prompt)
+        }
         audioSessionKeys.insert(key)
         addedAudioSessionKey = true
       }
@@ -577,9 +588,7 @@ final class IosAlertAudioSessionHostApi: AlertAudioSessionHostApi {
 
   func beginSession(completion: @escaping (Result<Void, Error>) -> Void) {
     do {
-      if audioSessionHeld {
-        try audioSessionCoordinator.ensureActive(for: .maxVolume)
-      } else {
+      if !audioSessionHeld {
         try audioSessionCoordinator.acquire(.maxVolume)
         audioSessionHeld = true
       }

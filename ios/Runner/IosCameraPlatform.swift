@@ -329,7 +329,6 @@ final class IosCameraHostApi:
     let session = self.session
     let audioSessionCoordinator = self.audioSessionCoordinator
     let shouldReleaseAudioSession = cameraAudioSessionHeld
-    cameraAudioSessionHeld = false
     sessionQueue.async {
       if session.isRunning {
         session.stopRunning()
@@ -338,6 +337,7 @@ final class IosCameraHostApi:
         do {
           try audioSessionCoordinator.release(.camera)
         } catch {
+          audioSessionCoordinator.abandon(.camera)
           NSLog(
             "PackingProof failed to release camera audio session: %@",
             error.localizedDescription
@@ -386,7 +386,7 @@ final class IosCameraHostApi:
         return
       }
       do {
-        try self.ensureRecordingAudioSession()
+        try self.acquireRecordingAudioSessionIfNeeded()
         try self.addAudioInputIfNeeded()
       } catch {
         completion(.failure(error))
@@ -1165,13 +1165,18 @@ final class IosCameraHostApi:
   }
 
   /// 录像期音频会话：同时支持录音与播放提示音，避免被 .playback 降级。
-  private func ensureRecordingAudioSession() throws {
-    if cameraAudioSessionHeld {
-      try audioSessionCoordinator.ensureActive(for: .camera)
-    } else {
-      try audioSessionCoordinator.acquire(.camera)
-      cameraAudioSessionHeld = true
+  private func acquireRecordingAudioSessionIfNeeded() throws {
+    guard !cameraAudioSessionHeld else { return }
+    try audioSessionCoordinator.acquire(.camera)
+    cameraAudioSessionHeld = true
+  }
+
+  private func restoreRecordingAudioSession() throws {
+    if !cameraAudioSessionHeld {
+      try acquireRecordingAudioSessionIfNeeded()
+      return
     }
+    try audioSessionCoordinator.ensureActive(for: .camera)
   }
 
   private func releaseRecordingAudioSession() throws {
@@ -1183,7 +1188,7 @@ final class IosCameraHostApi:
   /// 工作开始前只负责让会话可运行，不重注册纹理、不处理 dispose 恢复。
   private func ensureRunningForWork() throws {
     if recordAudio {
-      try ensureRecordingAudioSession()
+      try restoreRecordingAudioSession()
     }
     try addAudioInputIfNeeded()
     configureOutputDelegates()
@@ -1416,7 +1421,7 @@ final class IosCameraHostApi:
 
   private func startWriter(path: String, trackingNumber: String) throws {
     if recordAudio {
-      try ensureRecordingAudioSession()
+      try acquireRecordingAudioSessionIfNeeded()
     }
     let url = URL(fileURLWithPath: path)
     try? FileManager.default.removeItem(at: url)

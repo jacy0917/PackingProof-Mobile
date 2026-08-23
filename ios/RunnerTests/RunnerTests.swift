@@ -70,6 +70,8 @@ class RunnerTests: XCTestCase {
 
     XCTAssertTrue(session.isActive)
     XCTAssertFalse(session.activeCalls.contains(false))
+    XCTAssertEqual(session.activeCalls.filter { $0 }.count, 1)
+    XCTAssertEqual(session.categoryCalls.count, 1)
     XCTAssertEqual(coordinator.ownerCount(.camera), 1)
     XCTAssertEqual(coordinator.ownerCount(.maxVolume), 0)
 
@@ -84,6 +86,8 @@ class RunnerTests: XCTestCase {
 
     XCTAssertTrue(session.isActive)
     XCTAssertFalse(session.activeCalls.contains(false))
+    XCTAssertEqual(session.activeCalls.filter { $0 }.count, 2)
+    XCTAssertEqual(session.categoryCalls.count, 2)
     XCTAssertTrue(session.categoryCalls.allSatisfy {
       $0.0 == .playAndRecord &&
         $0.1 == .videoRecording &&
@@ -118,6 +122,8 @@ class RunnerTests: XCTestCase {
     try coordinator.acquire(.camera)
     try coordinator.acquire(.camera)
     XCTAssertEqual(coordinator.ownerCount(.camera), 2)
+    XCTAssertEqual(session.activeCalls.filter { $0 }.count, 1)
+    XCTAssertEqual(session.categoryCalls.count, 1)
 
     try coordinator.release(.camera)
     XCTAssertEqual(coordinator.ownerCount(.camera), 1)
@@ -147,6 +153,104 @@ class RunnerTests: XCTestCase {
     XCTAssertThrowsError(try XCTUnwrap(endResult).get())
     XCTAssertEqual(coordinator.ownerCount(.maxVolume), 1)
     XCTAssertTrue(session.isActive)
+  }
+
+  func testAbandonRemovesUnretryableOwnerAfterDeactivationFailure() throws {
+    let session = FakeIosAudioSession()
+    let coordinator = IosSharedAudioSessionCoordinator(session: session)
+    try coordinator.acquire(.camera)
+    session.failNextDeactivation = true
+
+    XCTAssertThrowsError(try coordinator.release(.camera))
+    XCTAssertEqual(coordinator.ownerCount(.camera), 1)
+
+    coordinator.abandon(.camera)
+    XCTAssertEqual(coordinator.ownerCount(.camera), 0)
+
+    try coordinator.acquire(.prompt)
+    XCTAssertEqual(coordinator.ownerCount(.prompt), 1)
+    XCTAssertEqual(session.activeCalls.filter { $0 }.count, 2)
+  }
+
+  func testAudioEnergyProbeReadsSigned16BitPcmSampleBuffer() throws {
+    var streamDescription = AudioStreamBasicDescription(
+      mSampleRate: 48_000,
+      mFormatID: kAudioFormatLinearPCM,
+      mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+      mBytesPerPacket: 2,
+      mFramesPerPacket: 1,
+      mBytesPerFrame: 2,
+      mChannelsPerFrame: 1,
+      mBitsPerChannel: 16,
+      mReserved: 0
+    )
+    var formatDescription: CMAudioFormatDescription?
+    XCTAssertEqual(
+      CMAudioFormatDescriptionCreate(
+        allocator: kCFAllocatorDefault,
+        asbd: &streamDescription,
+        layoutSize: 0,
+        layout: nil,
+        magicCookieSize: 0,
+        magicCookie: nil,
+        extensions: nil,
+        formatDescriptionOut: &formatDescription
+      ),
+      noErr
+    )
+
+    let samples: [Int16] = [0, 8_192, 16_384, -32_768]
+    var blockBuffer: CMBlockBuffer?
+    XCTAssertEqual(
+      CMBlockBufferCreateWithMemoryBlock(
+        allocator: kCFAllocatorDefault,
+        memoryBlock: nil,
+        blockLength: samples.count * MemoryLayout<Int16>.stride,
+        blockAllocator: kCFAllocatorDefault,
+        customBlockSource: nil,
+        offsetToData: 0,
+        dataLength: samples.count * MemoryLayout<Int16>.stride,
+        flags: 0,
+        blockBufferOut: &blockBuffer
+      ),
+      kCMBlockBufferNoErr
+    )
+    let copyStatus = samples.withUnsafeBytes { bytes in
+      CMBlockBufferReplaceDataBytes(
+        with: bytes.baseAddress!,
+        blockBuffer: blockBuffer!,
+        offsetIntoDestination: 0,
+        dataLength: bytes.count
+      )
+    }
+    XCTAssertEqual(copyStatus, kCMBlockBufferNoErr)
+
+    var timing = CMSampleTimingInfo(
+      duration: CMTime(value: 1, timescale: 48_000),
+      presentationTimeStamp: .zero,
+      decodeTimeStamp: .invalid
+    )
+    var sampleSize = MemoryLayout<Int16>.stride
+    var sampleBuffer: CMSampleBuffer?
+    XCTAssertEqual(
+      CMSampleBufferCreateReady(
+        allocator: kCFAllocatorDefault,
+        dataBuffer: blockBuffer,
+        formatDescription: formatDescription,
+        sampleCount: samples.count,
+        sampleTimingEntryCount: 1,
+        sampleTimingArray: &timing,
+        sampleSizeEntryCount: 1,
+        sampleSizeArray: &sampleSize,
+        sampleBufferOut: &sampleBuffer
+      ),
+      noErr
+    )
+
+    let peak = try XCTUnwrap(
+      IosAudioSampleEnergyProbe.normalizedPeak(in: try XCTUnwrap(sampleBuffer))
+    )
+    XCTAssertEqual(peak, 1, accuracy: 0.000_001)
   }
 
   func testWatermarkCancellationBeforeSessionCreationCompletesOnceAndDeletesOutput() throws {
