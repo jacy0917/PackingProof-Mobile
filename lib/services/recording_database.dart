@@ -759,8 +759,8 @@ class RecordingDatabase {
     final List<String> conditions = <String>['is_deleted = 0'];
     final List<Object?> args = <Object?>[];
     if (query.isNotEmpty) {
-      conditions.add('search_text LIKE ?');
-      args.add('%$query%');
+      conditions.add('instr(search_text, ?) > 0');
+      args.add(query);
     }
     if (start != null) {
       conditions.add('started_at >= ?');
