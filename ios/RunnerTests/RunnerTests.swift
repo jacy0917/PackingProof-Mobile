@@ -1147,6 +1147,451 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(storageCount, 2_500)
   }
 
+  func testFiftyThousandCleanupCandidatesUseBoundedPersistentSlices() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    var store: IosBackupJobStore? = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    try executeBackupStoreSql(
+      """
+      WITH RECURSIVE counter(value) AS (
+        SELECT 0 UNION ALL SELECT value + 1 FROM counter WHERE value < 49999
+      )
+      INSERT INTO backup_jobs(
+        id,generation,file_path,state,uploaded_bytes,total_bytes,last_modified,
+        file_created_at,waiting_cleanup,sessions,revision
+      )
+      SELECT printf('bounded-%05d',value),printf('generation-%05d',value),
+        printf('/recordings/bounded-%05d.mp4',value),'paused',0,1,value,
+        '2026-08-23T00:00:00Z',0,'[]',value FROM counter;
+      """,
+      databaseURL: fixture.databaseURL
+    )
+    let first = try XCTUnwrap(store).cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 7
+    )
+    XCTAssertEqual(first.jobs.count, 100)
+    XCTAssertTrue(first.hasMore)
+    XCTAssertTrue(try XCTUnwrap(store).finishCleanupSlice(first))
+
+    // Reopening the database must continue at the persisted keyset cursor.
+    store = nil
+    let reopened = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let second = try reopened.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 7
+    )
+    XCTAssertEqual(second.jobs.count, 100)
+    XCTAssertEqual(second.jobs.first?["id"] as? String, "bounded-00100")
+    XCTAssertEqual(second.generation, first.generation)
+
+    var totalCount = first.jobs.count
+    var current = second
+    while true {
+      XCTAssertLessThanOrEqual(current.jobs.count, 100)
+      totalCount += current.jobs.count
+      let shouldContinue = try reopened.finishCleanupSlice(current)
+      XCTAssertEqual(shouldContinue, current.hasMore)
+      guard shouldContinue else { break }
+      current = try reopened.cleanupCandidateJobsSlice(
+        unbackedRetentionDays: 30, backedRetentionDays: 7
+      )
+      XCTAssertEqual(current.generation, first.generation)
+    }
+    XCTAssertEqual(totalCount, 50_000)
+  }
+
+  func testCleanupSliceExactHundredDoesNotRequireEmptyTailSlice() throws {
+    for count in [99, 100, 101] {
+      let fixture = try makeBackupStoreFixture()
+      defer { removeBackupStoreFixture(fixture) }
+      let store = try IosBackupJobStore(
+        databaseURL: fixture.databaseURL, defaults: fixture.defaults
+      )
+      for index in 0..<count {
+        var job = makeBackupJob(id: String(format: "edge-%03d", index))
+        job["state"] = "paused"
+        try store.upsert(job)
+      }
+      let slice = try store.cleanupCandidateJobsSlice(
+        unbackedRetentionDays: 30, backedRetentionDays: 7
+      )
+      XCTAssertEqual(slice.jobs.count, min(count, 100), "count=\(count)")
+      XCTAssertEqual(slice.hasMore, count > 100, "count=\(count)")
+      XCTAssertEqual(try store.finishCleanupSlice(slice), count > 100)
+    }
+  }
+
+  func testCleanupSliceRestartsForInputInsertedBehindCursor() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    for index in 0..<101 {
+      var job = makeBackupJob(id: String(format: "middle-%03d", index))
+      job["state"] = "paused"
+      try store.upsert(job)
+    }
+    let first = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 7
+    )
+    var inserted = makeBackupJob(id: "ahead-of-cursor")
+    inserted["state"] = "paused"
+    try store.upsert(inserted)
+    XCTAssertTrue(try store.finishCleanupSlice(first))
+    let tail = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 7
+    )
+    XCTAssertEqual(tail.jobs.count, 1)
+    XCTAssertTrue(try store.finishCleanupSlice(tail))
+    let restarted = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 7
+    )
+    XCTAssertEqual(restarted.jobs.first?["id"] as? String, "ahead-of-cursor")
+    XCTAssertNotEqual(restarted.generation, first.generation)
+  }
+
+  func testCleanupSliceRestartsWhenSmallerIdArrivesAfterCursorWasPersisted() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    for index in 0..<101 {
+      var job = makeBackupJob(id: String(format: "persisted-%03d", index))
+      job["state"] = "paused"
+      try store.upsert(job)
+    }
+    let first = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 7
+    )
+    XCTAssertEqual(first.jobs.last?["id"] as? String, "persisted-099")
+    XCTAssertTrue(try store.finishCleanupSlice(first))
+
+    var inserted = makeBackupJob(id: "after-cursor-smaller")
+    inserted["state"] = "paused"
+    try store.upsert(inserted)
+    let tail = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 7
+    )
+    XCTAssertEqual(tail.jobs.map { $0["id"] as? String }, ["persisted-100"])
+    XCTAssertTrue(try store.finishCleanupSlice(tail))
+
+    let restarted = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 7
+    )
+    XCTAssertEqual(restarted.jobs.first?["id"] as? String, "after-cursor-smaller")
+    XCTAssertNotEqual(restarted.generation, first.generation)
+  }
+
+  func testCleanupPolicySwitchInvalidatesCursorAndClaimedRetentionIntent() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    try store.activateCleanupPolicy(unbackedRetentionDays: 1, backedRetentionDays: 1)
+    let oldSlice = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 1, backedRetentionDays: 1
+    )
+    var job = makeBackupJob(id: "claimed-old-policy")
+    job["state"] = "paused"
+    job["filePath"] = "/recordings/claimed-old-policy-missing.mp4"
+    try store.upsert(job)
+    XCTAssertNotNil(try store.beginCleanupIntent(
+      jobId: "claimed-old-policy",
+      expectedGeneration: "generation-claimed-old-policy",
+      allowedStates: ["paused"],
+      originalPath: "/recordings/claimed-old-policy-missing.mp4",
+      tombstonePath: "/recordings/.claimed-old-policy.tombstone",
+      expectedBytes: 1024, expectedModifiedAtMilliseconds: 1_800_000_000_000,
+      expectedDevice: 0, expectedInode: 0, expectedSha256: nil,
+      reason: "未备份录像保留策略清理", completedState: "expired",
+      completedErrorMessage: nil, expectedCleanupGeneration: oldSlice.generation
+    ))
+
+    try store.activateCleanupPolicy(unbackedRetentionDays: 30, backedRetentionDays: 30)
+    XCTAssertTrue(try store.cleanupIntents().isEmpty)
+    XCTAssertFalse(try store.isCleanupGenerationCurrent(oldSlice.generation))
+    let replacementSlice = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 30
+    )
+    XCTAssertEqual(replacementSlice.unbackedRetentionDays, 30)
+    XCTAssertEqual(replacementSlice.backedRetentionDays, 30)
+    XCTAssertNotEqual(replacementSlice.generation, oldSlice.generation)
+
+    // A stale worker may finish after the policy switch. Its generation CAS
+    // must leave the replacement checkpoint untouched.
+    XCTAssertTrue(try store.finishCleanupSlice(oldSlice))
+    XCTAssertTrue(try store.isCleanupGenerationCurrent(replacementSlice.generation))
+    let currentSlice = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 30
+    )
+    XCTAssertEqual(currentSlice.generation, replacementSlice.generation)
+  }
+
+  func testCleanupPolicySwitchCancelsClaimedButPreservesMovingIntentForRecovery()
+    async throws
+  {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    try store.activateCleanupPolicy(unbackedRetentionDays: 1, backedRetentionDays: 1)
+    let oldSlice = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 1, backedRetentionDays: 1
+    )
+    for id in ["claimed-policy-switch", "moving-policy-switch"] {
+      var job = makeBackupJob(id: id)
+      job["state"] = "paused"
+      try store.upsert(job)
+      let claimed = try XCTUnwrap(store.beginCleanupIntent(
+        jobId: id, expectedGeneration: "generation-\(id)",
+        allowedStates: ["paused"], originalPath: "/recordings/\(id).mp4",
+        tombstonePath: "/recordings/.\(id).tombstone", expectedBytes: 1024,
+        expectedModifiedAtMilliseconds: 1_800_000_000_000,
+        expectedDevice: 0, expectedInode: 0, expectedSha256: nil,
+        reason: "未备份录像保留策略清理", completedState: "expired",
+        completedErrorMessage: nil, expectedCleanupGeneration: oldSlice.generation
+      ))
+      if id == "moving-policy-switch" {
+        XCTAssertNotNil(try store.activateCleanupIntent(token: claimed.token))
+      }
+    }
+
+    try store.activateCleanupPolicy(unbackedRetentionDays: 30, backedRetentionDays: 30)
+    let preserved = try store.cleanupIntents()
+    XCTAssertEqual(preserved.count, 1)
+    XCTAssertEqual(preserved.first?.jobId, "moving-policy-switch")
+    XCTAssertEqual(preserved.first?.phase, "moving")
+
+    let api = makeBackupApi(
+      defaults: fixture.defaults, store: store,
+      recordingsRoot: URL(fileURLWithPath: "/recordings", isDirectory: true)
+    )
+    try await api.performCleanup()
+    XCTAssertTrue(try store.cleanupIntents().isEmpty)
+    XCTAssertNotNil(try store.readJob(id: "moving-policy-switch")?["localDeletedAt"])
+    XCTAssertNil(try store.readJob(id: "claimed-policy-switch")?["localDeletedAt"])
+  }
+
+  func testRetentionScheduleFailureDoesNotPublishDefaultsBeforeDatabaseActivation()
+    throws
+  {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    fixture.defaults.set(
+      ["unbackedRetentionDays": 14, "backedRetentionDays": 7],
+      forKey: "ios_backup_retention"
+    )
+    let api = IosBackupHostApi(
+      eventApi: FakeBackupNativeEventApi(),
+      defaults: fixture.defaults,
+      credentialStore: IosBackupCredentialStore(
+        defaults: fixture.defaults,
+        keychain: FakeIosKeychainClient(),
+        service: "RunnerTests.retention-failure.\(UUID().uuidString)",
+        account: "access-key"
+      ),
+      jobStore: .failure(IosBackupStoreError(
+        operation: "测试策略激活", code: SQLITE_IOERR,
+        message: "模拟数据库策略激活失败"
+      )),
+      recordingsRoot: FileManager.default.temporaryDirectory
+    )
+    var updateResult: Result<Void, Error>?
+
+    api.updateRetentionSchedule(request: [
+      "unbackedRetentionDays": 30, "backedRetentionDays": 21,
+    ]) { updateResult = $0 }
+
+    guard case .failure(let error) = updateResult else {
+      return XCTFail("数据库激活失败必须传回 failure")
+    }
+    XCTAssertTrue(error is IosBackupStoreError)
+    let retained = try XCTUnwrap(
+      fixture.defaults.dictionary(forKey: "ios_backup_retention")
+    )
+    XCTAssertEqual(retained["unbackedRetentionDays"] as? Int, 14)
+    XCTAssertEqual(retained["backedRetentionDays"] as? Int, 7)
+  }
+
+  func testCleanupRecoverySliceIsBoundedAndPrecedesNewCandidates() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    for index in 0..<101 {
+      let id = String(format: "recovery-bounded-%03d", index)
+      var job = makeBackupJob(id: id)
+      job["state"] = "paused"
+      try store.upsert(job)
+      let claimed = try XCTUnwrap(store.beginCleanupIntent(
+        jobId: id, expectedGeneration: "generation-\(id)",
+        allowedStates: ["paused"], originalPath: "/recordings/\(id).mp4",
+        tombstonePath: "/recordings/.\(id).tombstone", expectedBytes: 1024,
+        expectedModifiedAtMilliseconds: 1_800_000_000_000,
+        expectedDevice: 0, expectedInode: 0, expectedSha256: nil,
+        reason: "测试恢复", completedState: "expired", completedErrorMessage: nil
+      ))
+      XCTAssertNotNil(try store.activateCleanupIntent(token: claimed.token))
+    }
+    var candidate = makeBackupJob(id: "new-cleanup-candidate")
+    candidate["state"] = "paused"
+    candidate["fileCreatedAt"] = "2020-01-01T00:00:00Z"
+    try store.upsert(candidate)
+
+    let api = makeBackupApi(
+      defaults: fixture.defaults, store: store,
+      recordingsRoot: URL(fileURLWithPath: "/recordings", isDirectory: true)
+    )
+    try await api.performCleanup()
+
+    let remaining = try store.cleanupIntents(limit: 100, recoverableOnly: true)
+    XCTAssertEqual(remaining.count, 1)
+    XCTAssertEqual(remaining.first?.phase, "moving")
+    XCTAssertNil(try store.readJob(id: "new-cleanup-candidate")?["localDeletedAt"])
+
+    try await api.performCleanup()
+    XCTAssertTrue(try store.cleanupIntents(recoverableOnly: true).isEmpty)
+    XCTAssertNil(try store.readJob(id: "new-cleanup-candidate")?["localDeletedAt"])
+
+    try await api.performCleanup()
+    XCTAssertNotNil(try store.readJob(id: "new-cleanup-candidate")?["localDeletedAt"])
+  }
+
+  func testCleanupTriggerAutomaticallyDrainsRecoveryBeforeEnteringCandidates()
+    async throws
+  {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    for index in 0..<101 {
+      let id = String(format: "trigger-recovery-%03d", index)
+      var job = makeBackupJob(id: id)
+      job["state"] = "paused"
+      try store.upsert(job)
+      let claimed = try XCTUnwrap(store.beginCleanupIntent(
+        jobId: id, expectedGeneration: "generation-\(id)",
+        allowedStates: ["paused"], originalPath: "/recordings/\(id).mp4",
+        tombstonePath: "/recordings/.\(id).tombstone", expectedBytes: 1024,
+        expectedModifiedAtMilliseconds: 1_800_000_000_000,
+        expectedDevice: 0, expectedInode: 0, expectedSha256: nil,
+        reason: "测试自动恢复", completedState: "expired", completedErrorMessage: nil
+      ))
+      XCTAssertNotNil(try store.activateCleanupIntent(token: claimed.token))
+    }
+    let candidateId = "trigger-after-recovery-candidate"
+    var candidate = makeBackupJob(id: candidateId)
+    candidate["state"] = "paused"
+    candidate["fileCreatedAt"] = "2020-01-01T00:00:00Z"
+    try store.upsert(candidate)
+    let candidateReached = expectation(description: "恢复清空后自动进入候选")
+    let candidateCommitted = expectation(description: "自动候选清理完成")
+    let api = makeBackupApi(
+      defaults: fixture.defaults, store: store,
+      recordingsRoot: URL(fileURLWithPath: "/recordings", isDirectory: true),
+      beforeCleanupIntentClaimForTesting: { job in
+        if job["id"] as? String == candidateId { candidateReached.fulfill() }
+      },
+      afterCleanupCommitForTesting: { intent in
+        if intent.jobId == candidateId { candidateCommitted.fulfill() }
+      }
+    )
+
+    api.initialize(request: [
+      "unbackedRetentionDays": 0, "backedRetentionDays": 0,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+
+    await fulfillment(of: [candidateReached], timeout: 5)
+    XCTAssertTrue(try store.cleanupIntents(recoverableOnly: true).isEmpty)
+    await fulfillment(of: [candidateCommitted], timeout: 2)
+    XCTAssertNotNil(try store.readJob(id: candidateId)?["localDeletedAt"])
+  }
+
+  func testRetentionPolicySwitchDoesNotWaitForLargeFileProofHash() async throws {
+    let proofMayContinue = DispatchSemaphore(value: 0)
+    let hookLock = NSLock()
+    var blockedFirstProof = false
+    let proofOpened = expectation(description: "大文件已打开且即将计算 SHA")
+    let restartedCleanupFinished = expectation(description: "新策略清理已完成")
+    let fixture = try makeRetentionCleanupFixture(
+      id: "policy-during-large-proof",
+      beforeCleanupFileProofForTesting: { _ in
+        hookLock.lock()
+        let shouldBlock = !blockedFirstProof
+        blockedFirstProof = true
+        hookLock.unlock()
+        guard shouldBlock else { return }
+        proofOpened.fulfill()
+        proofMayContinue.wait()
+      },
+      afterCleanupCommitForTesting: { _ in restartedCleanupFinished.fulfill() }
+    )
+    defer {
+      proofMayContinue.signal()
+      removeRetentionCleanupFixture(fixture)
+    }
+    let contents = Data(repeating: 0x5a, count: 16 * 1024 * 1024)
+    try contents.write(to: fixture.file)
+    let snapshot = try IosBackupFileSnapshot.read(from: fixture.file)
+    var job = fixture.job
+    job["state"] = "paused"
+    job["backupCompletedAt"] = nil
+    job["totalBytes"] = snapshot.byteCount
+    job["lastModified"] = snapshot.modifiedAtMilliseconds
+    job["contentSha256"] = SHA256.hash(data: contents)
+      .map { String(format: "%02x", $0) }.joined()
+    try fixture.store.upsert(job)
+    fixture.defaults.set(
+      ["unbackedRetentionDays": 0, "backedRetentionDays": 0],
+      forKey: "ios_backup_retention"
+    )
+    try fixture.store.activateCleanupPolicy(
+      unbackedRetentionDays: 0, backedRetentionDays: 0
+    )
+
+    let cleanup = Task { try await fixture.api.performCleanup() }
+    await fulfillment(of: [proofOpened], timeout: 2)
+    let policyUpdated = expectation(
+      description: "proof 读取暂停期间策略切换未被 cleanupPolicyLock 阻塞"
+    )
+    fixture.api.updateRetentionSchedule(request: [
+      "unbackedRetentionDays": 0, "backedRetentionDays": 1,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+      policyUpdated.fulfill()
+    }
+    await fulfillment(of: [policyUpdated], timeout: 0.5)
+    proofMayContinue.signal()
+    try await cleanup.value
+    await fulfillment(of: [restartedCleanupFinished], timeout: 3)
+  }
+
+  func testNoOpCleanupSliceDoesNotAdvanceSummaryRevision() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let before = try store.summaryValues()["revision"] as? Int64
+    let slice = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 7
+    )
+    XCTAssertTrue(slice.jobs.isEmpty)
+    XCTAssertFalse(try store.finishCleanupSlice(slice))
+    XCTAssertEqual(try store.summaryValues()["revision"] as? Int64, before)
+  }
+
   func testCleanupIntentPaginationIsBoundedAndKeysetBased() throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
@@ -1983,6 +2428,380 @@ class RunnerTests: XCTestCase {
 
     XCTAssertEqual(completed, 1_000)
     XCTAssertEqual(counts.started, 1_000)
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertEqual(counts.maximumActive, 1)
+  }
+
+  func testCleanupTriggerWhileRunningSchedulesASecondInvocation() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let tracker = AsyncMaintenanceTracker()
+    let hold = AsyncTestGate()
+    let firstStarted = expectation(description: "首个清理任务已启动")
+    let secondStarted = expectation(description: "运行中请求未丢失")
+    let api = makeBackupApi(
+      defaults: fixture.defaults, store: store,
+      cleanupOperationOverride: {
+        let invocation = await tracker.begin()
+        if invocation == 1 {
+          firstStarted.fulfill()
+          await hold.wait()
+        } else if invocation == 2 {
+          secondStarted.fulfill()
+        }
+        await tracker.finish()
+      }
+    )
+
+    api.initialize(request: [
+      "unbackedRetentionDays": 30, "backedRetentionDays": 7,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    await fulfillment(of: [firstStarted], timeout: 2)
+    api.updateRetentionSchedule(request: [
+      "unbackedRetentionDays": 31, "backedRetentionDays": 8,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    await hold.open()
+    await fulfillment(of: [secondStarted], timeout: 2)
+    let counts = await tracker.counts()
+    XCTAssertGreaterThanOrEqual(counts.started, 2)
+    XCTAssertEqual(counts.maximumActive, 1)
+  }
+
+  func testCleanupDispatcherRetriesOneFailureThenStopsAfterSuccess() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let tracker = AsyncMaintenanceTracker()
+    let retrySucceeded = expectation(description: "首次异常后自动续跑成功")
+    let unexpectedExtraRun = expectation(description: "成功后不得无限续跑")
+    unexpectedExtraRun.isInverted = true
+    let api = makeBackupApi(
+      defaults: fixture.defaults, store: store,
+      cleanupOperationOverride: {
+        let invocation = await tracker.begin()
+        await tracker.finish()
+        if invocation == 1 { throw MaintenanceTestError.expected }
+        if invocation == 2 {
+          retrySucceeded.fulfill()
+        } else {
+          unexpectedExtraRun.fulfill()
+        }
+      }
+    )
+
+    api.initialize(request: [
+      "unbackedRetentionDays": 30, "backedRetentionDays": 7,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    await fulfillment(of: [retrySucceeded], timeout: 3)
+    await fulfillment(of: [unexpectedExtraRun], timeout: 0.3)
+    let counts = await tracker.counts()
+    XCTAssertEqual(counts.started, 2)
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertEqual(counts.maximumActive, 1)
+  }
+
+  func testCleanupTriggersDuringBackoffShareOneRunnerAndCollapseToOneHandoff()
+    async throws
+  {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let tracker = AsyncMaintenanceTracker()
+    let firstFailed = expectation(description: "首轮失败并进入退避")
+    let retrySucceeded = expectation(description: "单一 runner 完成退避重试")
+    let stickyHandoffFinished = expectation(description: "多次触发合并为一次 handoff")
+    let unexpectedFourth = expectation(description: "不得创建额外 runner 或 sleeper")
+    unexpectedFourth.isInverted = true
+    let api = makeBackupApi(
+      defaults: fixture.defaults, store: store,
+      cleanupOperationOverride: {
+        let invocation = await tracker.begin()
+        await tracker.finish()
+        switch invocation {
+        case 1:
+          firstFailed.fulfill()
+          throw MaintenanceTestError.expected
+        case 2: retrySucceeded.fulfill()
+        case 3: stickyHandoffFinished.fulfill()
+        default: unexpectedFourth.fulfill()
+        }
+      },
+      cleanupRetryDelaysNanoseconds: [1_000_000_000]
+    )
+
+    api.initialize(request: [
+      "unbackedRetentionDays": 30, "backedRetentionDays": 7,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    await fulfillment(of: [firstFailed], timeout: 2)
+    for index in 0..<20 {
+      api.updateRetentionSchedule(request: [
+        "unbackedRetentionDays": 31 + index,
+        "backedRetentionDays": 8 + index,
+      ]) { result in
+        if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+      }
+    }
+
+    await fulfillment(of: [retrySucceeded, stickyHandoffFinished], timeout: 3)
+    await fulfillment(of: [unexpectedFourth], timeout: 0.3)
+    let counts = await tracker.counts()
+    XCTAssertEqual(counts.started, 3)
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertEqual(counts.maximumActive, 1)
+  }
+
+  func testCleanupDispatcherStopsAfterInitialFailureAndFiveBackoffRetries()
+    async throws
+  {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let tracker = AsyncMaintenanceTracker()
+    let sixthFailure = expectation(description: "初始执行加五次退避重试")
+    let unexpectedSeventh = expectation(description: "第六次失败后必须停止")
+    unexpectedSeventh.isInverted = true
+    let scaledRetryDelays = [1, 2, 4, 8, 16].map { UInt64($0) * 1_000_000 }
+    let api = makeBackupApi(
+      defaults: fixture.defaults, store: store,
+      cleanupOperationOverride: {
+        let invocation = await tracker.begin()
+        await tracker.finish()
+        if invocation == 6 {
+          sixthFailure.fulfill()
+        } else if invocation > 6 {
+          unexpectedSeventh.fulfill()
+        }
+        throw MaintenanceTestError.expected
+      },
+      cleanupRetryDelaysNanoseconds: scaledRetryDelays
+    )
+
+    api.initialize(request: [
+      "unbackedRetentionDays": 30, "backedRetentionDays": 7,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    await fulfillment(of: [sixthFailure], timeout: 2)
+    await fulfillment(of: [unexpectedSeventh], timeout: 0.2)
+    let counts = await tracker.counts()
+    XCTAssertEqual(counts.started, 6)
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertEqual(counts.maximumActive, 1)
+  }
+
+  func testCleanupSuccessInvalidatesFailedAttemptSleeperAndToken() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let tracker = AsyncMaintenanceTracker()
+    let retrySucceeded = expectation(description: "退避后的唯一重试成功")
+    let staleWakeup = expectation(description: "旧 sleeper 或 token 不得再次唤醒")
+    staleWakeup.isInverted = true
+    let api = makeBackupApi(
+      defaults: fixture.defaults, store: store,
+      cleanupOperationOverride: {
+        let invocation = await tracker.begin()
+        await tracker.finish()
+        if invocation == 1 { throw MaintenanceTestError.expected }
+        if invocation == 2 {
+          retrySucceeded.fulfill()
+        } else {
+          staleWakeup.fulfill()
+        }
+      },
+      cleanupRetryDelaysNanoseconds: [100_000_000]
+    )
+
+    api.initialize(request: [
+      "unbackedRetentionDays": 30, "backedRetentionDays": 7,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    await fulfillment(of: [retrySucceeded], timeout: 2)
+    await fulfillment(of: [staleWakeup], timeout: 0.3)
+    let counts = await tracker.counts()
+    XCTAssertEqual(counts.started, 2)
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertEqual(counts.maximumActive, 1)
+  }
+
+  func testCleanupTriggerAtSuccessfulStopDecisionIsNotLost() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let tracker = AsyncMaintenanceTracker()
+    let decisionReached = expectation(description: "首轮成功后已完成停止决策")
+    let secondFinished = expectation(description: "决策点触发的清理未丢失")
+    let unexpectedThird = expectation(description: "不得创建第三个 runner")
+    unexpectedThird.isInverted = true
+    let allowDecision = DispatchSemaphore(value: 0)
+    let hookLock = NSLock()
+    var blockedFirstDecision = false
+    let api = makeBackupApi(
+      defaults: fixture.defaults, store: store,
+      cleanupOperationOverride: {
+        let invocation = await tracker.begin()
+        await tracker.finish()
+        if invocation == 2 {
+          secondFinished.fulfill()
+        } else if invocation > 2 {
+          unexpectedThird.fulfill()
+        }
+      },
+      afterCleanupRunnerDecisionForTesting: {
+        hookLock.lock()
+        let shouldBlock = !blockedFirstDecision
+        blockedFirstDecision = true
+        hookLock.unlock()
+        guard shouldBlock else { return }
+        decisionReached.fulfill()
+        allowDecision.wait()
+      }
+    )
+    defer { allowDecision.signal() }
+
+    api.initialize(request: [
+      "unbackedRetentionDays": 30, "backedRetentionDays": 7,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    await fulfillment(of: [decisionReached], timeout: 2)
+    api.updateRetentionSchedule(request: [
+      "unbackedRetentionDays": 31, "backedRetentionDays": 8,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    allowDecision.signal()
+
+    await fulfillment(of: [secondFinished], timeout: 2)
+    await fulfillment(of: [unexpectedThird], timeout: 0.2)
+    let counts = await tracker.counts()
+    XCTAssertEqual(counts.started, 2)
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertEqual(counts.maximumActive, 1)
+  }
+
+  func testCleanupTriggerAtRetryLimitStopDecisionIsNotLost() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let tracker = AsyncMaintenanceTracker()
+    let decisionReached = expectation(description: "失败后已完成重试耗尽决策")
+    let handoffFinished = expectation(description: "耗尽临界点触发的新 runner 已完成")
+    let unexpectedThird = expectation(description: "重试耗尽不得创建额外 runner")
+    unexpectedThird.isInverted = true
+    let allowDecision = DispatchSemaphore(value: 0)
+    let hookLock = NSLock()
+    var blockedFirstDecision = false
+    let api = makeBackupApi(
+      defaults: fixture.defaults, store: store,
+      cleanupOperationOverride: {
+        let invocation = await tracker.begin()
+        await tracker.finish()
+        if invocation == 1 {
+          throw MaintenanceTestError.expected
+        } else if invocation == 2 {
+          handoffFinished.fulfill()
+        } else {
+          unexpectedThird.fulfill()
+        }
+      },
+      cleanupRetryDelaysNanoseconds: [],
+      afterCleanupRunnerDecisionForTesting: {
+        hookLock.lock()
+        let shouldBlock = !blockedFirstDecision
+        blockedFirstDecision = true
+        hookLock.unlock()
+        guard shouldBlock else { return }
+        decisionReached.fulfill()
+        allowDecision.wait()
+      }
+    )
+    defer { allowDecision.signal() }
+
+    api.initialize(request: [
+      "unbackedRetentionDays": 30, "backedRetentionDays": 7,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    await fulfillment(of: [decisionReached], timeout: 2)
+    api.updateRetentionSchedule(request: [
+      "unbackedRetentionDays": 31, "backedRetentionDays": 8,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    allowDecision.signal()
+
+    await fulfillment(of: [handoffFinished], timeout: 2)
+    await fulfillment(of: [unexpectedThird], timeout: 0.2)
+    let counts = await tracker.counts()
+    XCTAssertEqual(counts.started, 2)
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertEqual(counts.maximumActive, 1)
+  }
+
+  func testCleanupRetrySleeperDoesNotRetainReleasedApi() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let tracker = AsyncMaintenanceTracker()
+    let retrySleepReached = expectation(description: "首次失败已进入长退避")
+    var api: IosBackupHostApi? = makeBackupApi(
+      defaults: fixture.defaults, store: store,
+      cleanupOperationOverride: {
+        _ = await tracker.begin()
+        await tracker.finish()
+        throw MaintenanceTestError.expected
+      },
+      cleanupRetryDelaysNanoseconds: [5_000_000_000],
+      beforeCleanupRetrySleepForTesting: { attempt, delay in
+        XCTAssertEqual(attempt, 1)
+        XCTAssertEqual(delay, 5_000_000_000)
+        retrySleepReached.fulfill()
+      }
+    )
+    weak var weakApi = api
+
+    api?.initialize(request: [
+      "unbackedRetentionDays": 30, "backedRetentionDays": 7,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    await fulfillment(of: [retrySleepReached], timeout: 2)
+    api = nil
+
+    for _ in 0..<50 where weakApi != nil {
+      try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTAssertNil(weakApi, "退避 sleeper 不应持有 API 的唯一强引用")
+    try await Task.sleep(nanoseconds: 150_000_000)
+    let counts = await tracker.counts()
+    XCTAssertEqual(counts.started, 1)
     XCTAssertEqual(counts.active, 0)
     XCTAssertEqual(counts.maximumActive, 1)
   }
@@ -2847,7 +3666,12 @@ class RunnerTests: XCTestCase {
     storageReclaimOperationOverride:
       (() async throws -> [String?: Any?])? = nil,
     cleanupOperationOverride: (() async throws -> Void)? = nil,
-    recordingsRoot: URL? = nil
+    cleanupRetryDelaysNanoseconds: [UInt64]? = nil,
+    afterCleanupRunnerDecisionForTesting: (() -> Void)? = nil,
+    beforeCleanupRetrySleepForTesting: ((Int, UInt64) -> Void)? = nil,
+    recordingsRoot: URL? = nil,
+    beforeCleanupIntentClaimForTesting: (([String: Any]) -> Void)? = nil,
+    afterCleanupCommitForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil
   ) -> IosBackupHostApi {
     IosBackupHostApi(
       eventApi: FakeBackupNativeEventApi(),
@@ -2864,7 +3688,13 @@ class RunnerTests: XCTestCase {
       uploadPersistenceFailureReporter: uploadPersistenceFailureReporter,
       uploadOperationOverride: uploadOperationOverride,
       storageReclaimOperationOverride: storageReclaimOperationOverride,
-      cleanupOperationOverride: cleanupOperationOverride
+      cleanupOperationOverride: cleanupOperationOverride,
+      cleanupRetryDelaysNanoseconds: cleanupRetryDelaysNanoseconds,
+      afterCleanupRunnerDecisionForTesting:
+        afterCleanupRunnerDecisionForTesting,
+      beforeCleanupRetrySleepForTesting: beforeCleanupRetrySleepForTesting,
+      beforeCleanupIntentClaimForTesting: beforeCleanupIntentClaimForTesting,
+      afterCleanupCommitForTesting: afterCleanupCommitForTesting
     )
   }
 
@@ -2879,6 +3709,7 @@ class RunnerTests: XCTestCase {
     storageAttestationOverride:
       (([String: Any], String, Int64) async -> String?)? = nil,
     onSnapshot: ((BackupSummaryDto) -> Void)? = nil,
+    beforeCleanupFileProofForTesting: (([String: Any]) -> Void)? = nil,
     beforeCleanupIntentClaimForTesting: (([String: Any]) -> Void)? = nil,
     beforeCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil,
     afterCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil,
@@ -2916,6 +3747,7 @@ class RunnerTests: XCTestCase {
       recordingsRoot: recordings,
       availableStorageBytesOverride: availableStorageBytesOverride,
       storageAttestationOverride: storageAttestationOverride,
+      beforeCleanupFileProofForTesting: beforeCleanupFileProofForTesting,
       beforeCleanupIntentClaimForTesting: beforeCleanupIntentClaimForTesting,
       beforeCleanupRenameForTesting: beforeCleanupRenameForTesting,
       afterCleanupRenameForTesting: afterCleanupRenameForTesting,

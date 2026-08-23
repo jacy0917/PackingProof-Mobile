@@ -67,7 +67,7 @@ private final class IosBackupCleanupFileProof {
   let sha256: String
   private let descriptor: Int32
 
-  init(url: URL) throws {
+  init(url: URL, onOpenedBeforeHash: (() -> Void)? = nil) throws {
     descriptor = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
     guard descriptor >= 0 else {
       throw BackupSourceError(message: "无法安全打开待清理录像")
@@ -77,6 +77,7 @@ private final class IosBackupCleanupFileProof {
       guard before.byteCount > 0 else {
         throw BackupSourceError(message: "待清理录像为空")
       }
+      onOpenedBeforeHash?()
       var hasher = SHA256()
       var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
       while true {
@@ -413,6 +414,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private let storageReclaimOperationOverride:
     (() async throws -> [String?: Any?])?
   private let cleanupOperationOverride: (() async throws -> Void)?
+  private let cleanupRetryDelaysNanoseconds: [UInt64]
+  private let afterCleanupRunnerDecisionForTesting: (() -> Void)?
+  private let beforeCleanupRetrySleepForTesting: ((Int, UInt64) -> Void)?
+  private let beforeCleanupFileProofForTesting: (([String: Any]) -> Void)?
   private let beforeCleanupIntentClaimForTesting: (([String: Any]) -> Void)?
   private let beforeCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)?
   private let afterCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)?
@@ -426,8 +431,15 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private var uploadDispatchRequested = false
   private let maintenanceGate = IosBackupMaintenanceGate()
   private let cleanupLock = NSLock()
+  private let cleanupPolicyLock = NSLock()
   private let hostResolver = IosLanBackupHostResolver()
   private var cleanupRunning = false
+  private var cleanupRequested = false
+  private var cleanupRestartAfterSweep = false
+  private var cleanupSliceHasMore = false
+  private var cleanupRetryAttempt = 0
+  private var cleanupRunnerToken: UInt64 = 0
+  private var cleanupRunnerTask: Task<Void, Never>?
   private var lastCleanupAt = Date.distantPast
   private let emitLock = NSLock()
   private var summaryEventInFlight = false
@@ -452,6 +464,9 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private static let retentionConfirmationGrace: TimeInterval = 24 * 60 * 60
   private static let storageAttestationFreshness: TimeInterval = 5 * 60
   private static let cleanupThrottle: TimeInterval = 60
+  private static let cleanupRetryDelaysNanoseconds: [UInt64] = [
+    1, 2, 4, 8, 16,
+  ].map { $0 * 1_000_000_000 }
   private static let summaryProgressThrottle: TimeInterval = 1
   private static let isoFormatter = ISO8601DateFormatter()
 
@@ -471,6 +486,11 @@ final class IosBackupHostApi: BackupNativeHostApi {
     case failed
   }
 
+  private enum CleanupRunnerDecision {
+    case retry(UInt64)
+    case finished(exhausted: Bool)
+  }
+
   init(
     eventApi: BackupNativeEventApiProtocol,
     defaults: UserDefaults = .standard,
@@ -488,6 +508,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
     storageReclaimOperationOverride:
       (() async throws -> [String?: Any?])? = nil,
     cleanupOperationOverride: (() async throws -> Void)? = nil,
+    cleanupRetryDelaysNanoseconds: [UInt64]? = nil,
+    afterCleanupRunnerDecisionForTesting: (() -> Void)? = nil,
+    beforeCleanupRetrySleepForTesting: ((Int, UInt64) -> Void)? = nil,
+    beforeCleanupFileProofForTesting: (([String: Any]) -> Void)? = nil,
     beforeCleanupIntentClaimForTesting: (([String: Any]) -> Void)? = nil,
     beforeCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil,
     afterCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil,
@@ -506,6 +530,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
     self.uploadOperationOverride = uploadOperationOverride
     self.storageReclaimOperationOverride = storageReclaimOperationOverride
     self.cleanupOperationOverride = cleanupOperationOverride
+    self.cleanupRetryDelaysNanoseconds =
+      cleanupRetryDelaysNanoseconds ?? Self.cleanupRetryDelaysNanoseconds
+    self.afterCleanupRunnerDecisionForTesting =
+      afterCleanupRunnerDecisionForTesting
+    self.beforeCleanupRetrySleepForTesting = beforeCleanupRetrySleepForTesting
+    self.beforeCleanupFileProofForTesting = beforeCleanupFileProofForTesting
     self.beforeCleanupIntentClaimForTesting = beforeCleanupIntentClaimForTesting
     self.beforeCleanupRenameForTesting = beforeCleanupRenameForTesting
     self.afterCleanupRenameForTesting = afterCleanupRenameForTesting
@@ -519,6 +549,13 @@ final class IosBackupHostApi: BackupNativeHostApi {
 
   deinit {
     networkMonitor.cancel()
+    cleanupLock.lock()
+    cleanupRunnerToken &+= 1
+    let cleanupTask = cleanupRunnerTask
+    cleanupRunnerTask = nil
+    cleanupRunning = false
+    cleanupLock.unlock()
+    cleanupTask?.cancel()
     uploadsLock.lock()
     uploadDispatcherTask?.cancel()
     for upload in activeUploads.values { upload.task.cancel() }
@@ -534,12 +571,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
     request: [String?: Any?],
     completion: @escaping (Result<BackupSummaryDto, Error>) -> Void
   ) {
-    saveRetentionDays(
-      unbacked: (request["unbackedRetentionDays"] as? Int) ?? -1,
-      backed: (request["backedRetentionDays"] as? Int) ?? -1
-    )
-    triggerCleanup()
     do {
+      try saveRetentionDays(
+        unbacked: (request["unbackedRetentionDays"] as? Int) ?? -1,
+        backed: (request["backedRetentionDays"] as? Int) ?? -1
+      )
+      triggerCleanup()
       requestUploadDispatch()
       completion(.success(try currentSummary()))
     } catch {
@@ -782,12 +819,16 @@ final class IosBackupHostApi: BackupNativeHostApi {
     request: [String?: Any?],
     completion: @escaping (Result<Void, Error>) -> Void
   ) {
-    saveRetentionDays(
-      unbacked: (request["unbackedRetentionDays"] as? Int) ?? -1,
-      backed: (request["backedRetentionDays"] as? Int) ?? -1
-    )
-    triggerCleanup()
-    completion(.success(()))
+    do {
+      try saveRetentionDays(
+        unbacked: (request["unbackedRetentionDays"] as? Int) ?? -1,
+        backed: (request["backedRetentionDays"] as? Int) ?? -1
+      )
+      triggerCleanup()
+      completion(.success(()))
+    } catch {
+      completion(.failure(error))
+    }
   }
 
   func reclaimStorageIfNeeded(
@@ -819,7 +860,17 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func performStorageReclaimUncoordinated() async throws -> [String?: Any?] {
-    try recoverCleanupIntents()
+    let recovery = try recoverCleanupIntentsSlice()
+    if recovery.processedAny {
+      triggerCleanup()
+      let available = availableStorageBytes()
+      return [
+        "availableBytes": available, "availableBytesBefore": available,
+        "freedBytes": Int64(0), "deletedCount": 0,
+        "warning": available < 3 * 1024 * 1024 * 1024,
+        "insufficient": available < 2 * 1024 * 1024 * 1024,
+      ]
+    }
     let minimumBytes: Int64 = 2 * 1024 * 1024 * 1024
     let targetBytes: Int64 = 3 * 1024 * 1024 * 1024
     let before = availableStorageBytes()
@@ -998,19 +1049,31 @@ final class IosBackupHostApi: BackupNativeHostApi {
     return receiptSignature
   }
 
-  private func recoverCleanupIntents() throws {
-    var afterToken: String?
-    while true {
-      let intents = try jobStore.get().cleanupIntents(
-        afterToken: afterToken, limit: 100, recoverableOnly: true
-      )
-      if intents.isEmpty { return }
-      for intent in intents {
-        _ = try resumeCleanupIntent(intent)
-      }
-      guard intents.count == 100 else { return }
-      afterToken = intents.last?.token
+  /// Recovers at most one bounded page. New cleanup candidates must wait until
+  /// every recoverable intent has crossed recovery or been explicitly resolved.
+  private func recoverCleanupIntentsSlice() throws -> (
+    processedAny: Bool, hasMore: Bool
+  ) {
+    let intents = try jobStore.get().cleanupIntents(
+      limit: 100, recoverableOnly: true
+    )
+    guard !intents.isEmpty else { return (false, false) }
+    var unresolved = false
+    for intent in intents {
+      unresolved = !(try resumeCleanupIntent(intent)) || unresolved
     }
+    var hasMore = false
+    if intents.count == 100 {
+      hasMore = !(try jobStore.get().cleanupIntents(
+        afterToken: intents.last?.token, limit: 1, recoverableOnly: true
+      )).isEmpty
+    }
+    if unresolved {
+      throw BackupSourceError(
+        message: "仍有清理意图等待文件系统恢复"
+      )
+    }
+    return (true, hasMore)
   }
 
   @discardableResult
@@ -1126,7 +1189,8 @@ final class IosBackupHostApi: BackupNativeHostApi {
 
   private func performAtomicCleanup(
     job: [String: Any], allowedStates: Set<String>, reason: String,
-    completedState: String? = nil, completedErrorMessage: String? = nil
+    completedState: String? = nil, completedErrorMessage: String? = nil,
+    expectedCleanupGeneration: String? = nil
   ) throws -> AtomicCleanupResult {
     guard let id = job["id"] as? String,
           let generation = job["generation"] as? String,
@@ -1139,7 +1203,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
     let proof: IosBackupCleanupFileProof?
     if FileManager.default.fileExists(atPath: path) {
       do {
-        proof = try IosBackupCleanupFileProof(url: file)
+        proof = try IosBackupCleanupFileProof(
+          url: file,
+          onOpenedBeforeHash: { [weak self] in
+            self?.beforeCleanupFileProofForTesting?(job)
+          }
+        )
       } catch {
         return .failed
       }
@@ -1154,49 +1223,57 @@ final class IosBackupHostApi: BackupNativeHostApi {
 
     beforeCleanupIntentClaimForTesting?(job)
     if let proof, !proof.pathStillReferencesOpenedFile(path) { return .stale }
-    let intent = try jobStore.get().beginCleanupIntent(
-      jobId: id, expectedGeneration: generation, allowedStates: allowedStates,
-      originalPath: path, tombstonePath: tombstone.path,
-      expectedBytes: proof?.identity.byteCount ?? int64(job["totalBytes"]),
-      expectedModifiedAtMilliseconds: proof?.identity.modifiedAtMilliseconds
-        ?? int64(job["lastModified"]),
-      expectedDevice: proof?.identity.device ?? 0,
-      expectedInode: proof?.identity.inode ?? 0,
-      expectedSha256: proof?.sha256 ?? job["contentSha256"] as? String,
-      reason: reason,
-      completedState: completedState, completedErrorMessage: completedErrorMessage
-    )
-    guard let intent else { return .busy }
-    guard let movingIntent = try jobStore.get().activateCleanupIntent(
-      token: intent.token
-    ) else {
-      try jobStore.get().abandonCleanupIntent(token: intent.token)
-      return .busy
-    }
-    try beforeCleanupRenameForTesting?(movingIntent)
+    let claimResult: (intent: IosBackupCleanupIntent?, failure: AtomicCleanupResult?) = try {
+      cleanupPolicyLock.lock()
+      defer { cleanupPolicyLock.unlock() }
+      let intent = try jobStore.get().beginCleanupIntent(
+        jobId: id, expectedGeneration: generation, allowedStates: allowedStates,
+        originalPath: path, tombstonePath: tombstone.path,
+        expectedBytes: proof?.identity.byteCount ?? int64(job["totalBytes"]),
+        expectedModifiedAtMilliseconds: proof?.identity.modifiedAtMilliseconds
+          ?? int64(job["lastModified"]),
+        expectedDevice: proof?.identity.device ?? 0,
+        expectedInode: proof?.identity.inode ?? 0,
+        expectedSha256: proof?.sha256 ?? job["contentSha256"] as? String,
+        reason: reason, completedState: completedState,
+        completedErrorMessage: completedErrorMessage,
+        expectedCleanupGeneration: expectedCleanupGeneration
+      )
+      guard let intent else { return (nil, .busy) }
+      guard let movingIntent = try jobStore.get().activateCleanupIntent(
+        token: intent.token
+      ) else {
+        try jobStore.get().abandonCleanupIntent(token: intent.token)
+        return (nil, .busy)
+      }
+      try beforeCleanupRenameForTesting?(movingIntent)
 
-    if let proof {
-      guard proof.pathStillReferencesOpenedFile(path),
-            !FileManager.default.fileExists(atPath: tombstone.path)
-      else {
-        _ = try jobStore.get().updateCleanupIntentPhase(
-          token: movingIntent.token, from: "moving", to: "conflict"
-        )
-        return .stale
-      }
-      guard Darwin.rename(path, tombstone.path) == 0 else {
-        return .failed
-      }
-      guard proof.pathStillReferencesOpenedFile(tombstone.path) else {
-        if !FileManager.default.fileExists(atPath: path) {
-          _ = Darwin.rename(tombstone.path, path)
+      if let proof {
+        guard proof.pathStillReferencesOpenedFile(path),
+              !FileManager.default.fileExists(atPath: tombstone.path)
+        else {
+          _ = try jobStore.get().updateCleanupIntentPhase(
+            token: movingIntent.token, from: "moving", to: "conflict"
+          )
+          return (nil, .stale)
         }
-        return .failed
+        guard Darwin.rename(path, tombstone.path) == 0 else {
+          return (nil, .failed)
+        }
+        guard proof.pathStillReferencesOpenedFile(tombstone.path) else {
+          if !FileManager.default.fileExists(atPath: path) {
+            _ = Darwin.rename(tombstone.path, path)
+          }
+          return (nil, .failed)
+        }
       }
-    }
-    _ = try jobStore.get().updateCleanupIntentPhase(
-      token: movingIntent.token, from: "moving", to: "renamed"
-    )
+      _ = try jobStore.get().updateCleanupIntentPhase(
+        token: movingIntent.token, from: "moving", to: "renamed"
+      )
+      return (movingIntent, nil)
+    }()
+    if let failure = claimResult.failure { return failure }
+    guard let movingIntent = claimResult.intent else { return .failed }
     try afterCleanupRenameForTesting?(movingIntent)
     guard !FileManager.default.fileExists(atPath: path) else { return .failed }
     guard try jobStore.get().commitCleanupIntent(token: movingIntent.token) else {
@@ -1313,11 +1390,21 @@ final class IosBackupHostApi: BackupNativeHostApi {
     return "本机"
   }
 
-  private func saveRetentionDays(unbacked: Int, backed: Int) {
+  private func saveRetentionDays(unbacked: Int, backed: Int) throws {
+    cleanupPolicyLock.lock()
+    defer { cleanupPolicyLock.unlock() }
+    try jobStore.get().activateCleanupPolicy(
+      unbackedRetentionDays: unbacked, backedRetentionDays: backed
+    )
     defaults.set(
       ["unbackedRetentionDays": unbacked, "backedRetentionDays": backed],
       forKey: keys.retention
     )
+    guard unbackedRetentionDays() == unbacked, backedRetentionDays() == backed else {
+      throw BackupSourceError(
+        message: "本地保留策略写入后读取不一致"
+      )
+    }
   }
 
   private func unbackedRetentionDays() -> Int {
@@ -1533,10 +1620,22 @@ final class IosBackupHostApi: BackupNativeHostApi {
 
   private func runUploadDispatcher() async {
     do {
-      try await withMaintenanceSlot { try recoverCleanupIntents() }
+      let recovery = try await withMaintenanceSlot {
+        try recoverCleanupIntentsSlice()
+      }
+      if recovery.processedAny {
+        withUploadsLock { uploadDispatcherTask = nil }
+        if recovery.hasMore {
+          triggerCleanup()
+        } else {
+          requestUploadDispatch()
+        }
+        return
+      }
     } catch {
       NSLog("PackingProof cleanup recovery failed before upload: %@", error.localizedDescription)
       withUploadsLock { uploadDispatcherTask = nil }
+      triggerCleanup()
       return
     }
     while !Task.isCancelled {
@@ -2182,7 +2281,9 @@ final class IosBackupHostApi: BackupNativeHostApi {
     try jobStore.get().readJob(id: id)
   }
 
-  private func dueAt(_ job: [String: Any]) -> Date? {
+  private func dueAt(
+    _ job: [String: Any], unbackedDays: Int, backedDays: Int
+  ) -> Date? {
     let state = job["state"] as? String ?? ""
     let completedAt = job["backupCompletedAt"] as? String
     // 旧版本“已完成但缺 backupCompletedAt”的录像按 legacy 保留，不参与清理。
@@ -2192,10 +2293,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
     let days: Int
     let base: String?
     if let completedAt {
-      days = backedRetentionDays()
+      days = backedDays
       base = completedAt
     } else {
-      days = unbackedRetentionDays()
+      days = unbackedDays
       base = job["fileCreatedAt"] as? String
     }
     guard days >= 0, let base, let baseDate = Self.isoFormatter.date(from: base) else {
@@ -2234,18 +2335,125 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func triggerCleanup() {
-    let shouldStart = withCleanupLock { () -> Bool in
-      guard !cleanupRunning else { return false }
-      cleanupRunning = true
-      lastCleanupAt = Date()
-      return true
+    withCleanupLock {
+      guard cleanupRunnerTask == nil else {
+        cleanupRequested = true
+        cleanupRestartAfterSweep = true
+        return
+      }
+      startCleanupRunnerUnlocked()
     }
-    guard shouldStart else { return }
+  }
 
-    Task.detached { [weak self] in
-      guard let self else { return }
-      try? await self.performCleanup()
-      self.withCleanupLock { self.cleanupRunning = false }
+  /// Must be called with cleanupLock held.
+  private func startCleanupRunnerUnlocked() {
+    cleanupRunnerToken &+= 1
+    let token = cleanupRunnerToken
+    cleanupRunning = true
+    cleanupRequested = false
+    lastCleanupAt = Date()
+    cleanupRunnerTask = Task.detached { [weak self] in
+      while !Task.isCancelled {
+        let failed = await { [weak self] () async -> Bool? in
+          guard let self else { return nil }
+          self.withCleanupLock { self.cleanupSliceHasMore = false }
+          do {
+            try await self.performCleanup()
+            return false
+          } catch {
+            NSLog("PackingProof cleanup slice failed: %@", error.localizedDescription)
+            return true
+          }
+        }()
+        guard let failed,
+              let decision = self?.cleanupRunnerDecision(token: token, failed: failed)
+        else { return }
+        self?.afterCleanupRunnerDecisionForTesting?()
+        switch decision {
+        case .retry(let delay):
+          let attempt = self?.withCleanupLock { self?.cleanupRetryAttempt ?? 0 } ?? 0
+          self?.beforeCleanupRetrySleepForTesting?(attempt, delay)
+          do {
+            try await Task.sleep(nanoseconds: delay)
+          } catch {
+            self?.finishCleanupRunner(token: token)
+            return
+          }
+          guard self?.cleanupRunnerIsCurrent(token: token) == true else { return }
+        case .finished(let exhausted):
+          if exhausted {
+            NSLog("PackingProof cleanup retry limit reached; waiting for next trigger")
+          }
+          return
+        }
+      }
+      self?.finishCleanupRunner(token: token)
+    }
+  }
+
+  private func cleanupRunnerDecision(
+    token: UInt64, failed: Bool
+  ) -> CleanupRunnerDecision? {
+    withCleanupLock {
+      guard cleanupRunnerToken == token, cleanupRunnerTask != nil else { return nil }
+      if failed {
+        let attempt = cleanupRetryAttempt
+        guard attempt < cleanupRetryDelaysNanoseconds.count else {
+          cleanupRetryAttempt = 0
+          if cleanupRequested || cleanupRestartAfterSweep {
+            cleanupRestartAfterSweep = false
+            handoffCleanupRunnerUnlocked(token: token)
+            return .finished(exhausted: false)
+          }
+          finalizeCleanupRunnerUnlocked(token: token)
+          return .finished(exhausted: true)
+        }
+        cleanupRetryAttempt = attempt + 1
+        return .retry(cleanupRetryDelaysNanoseconds[attempt])
+      }
+      cleanupRetryAttempt = 0
+      if cleanupSliceHasMore {
+        handoffCleanupRunnerUnlocked(token: token)
+        return .finished(exhausted: false)
+      }
+      if cleanupRestartAfterSweep {
+        cleanupRestartAfterSweep = false
+        handoffCleanupRunnerUnlocked(token: token)
+        return .finished(exhausted: false)
+      }
+      if cleanupRequested {
+        handoffCleanupRunnerUnlocked(token: token)
+        return .finished(exhausted: false)
+      }
+      finalizeCleanupRunnerUnlocked(token: token)
+      return .finished(exhausted: false)
+    }
+  }
+
+  private func cleanupRunnerIsCurrent(token: UInt64) -> Bool {
+    withCleanupLock { cleanupRunnerToken == token && cleanupRunnerTask != nil }
+  }
+
+  /// Must be called with cleanupLock held.
+  private func handoffCleanupRunnerUnlocked(token: UInt64) {
+    guard cleanupRunnerToken == token, cleanupRunnerTask != nil else { return }
+    cleanupRunnerToken &+= 1
+    cleanupRunnerTask = nil
+    cleanupRunning = false
+    startCleanupRunnerUnlocked()
+  }
+
+  /// Must be called with cleanupLock held.
+  private func finalizeCleanupRunnerUnlocked(token: UInt64) {
+    guard cleanupRunnerToken == token else { return }
+    cleanupRunnerToken &+= 1
+    cleanupRunnerTask = nil
+    cleanupRunning = false
+  }
+
+  private func finishCleanupRunner(token: UInt64) {
+    withCleanupLock {
+      finalizeCleanupRunnerUnlocked(token: token)
     }
   }
 
@@ -2269,19 +2477,43 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func performCleanupUncoordinated() async throws {
-    try recoverCleanupIntents()
+    let recovery = try recoverCleanupIntentsSlice()
+    if recovery.processedAny {
+      withCleanupLock { cleanupSliceHasMore = true }
+      if !recovery.hasMore { requestUploadDispatch() }
+      return
+    }
     let root = recordingsDirectory().path + "/"
-    let now = Date()
+    let unbackedDays = unbackedRetentionDays()
+    let backedDays = backedRetentionDays()
+    let slice = try jobStore.get().cleanupCandidateJobsSlice(
+      unbackedRetentionDays: unbackedDays,
+      backedRetentionDays: backedDays
+    )
+    let now = slice.evaluationNow
     func persistCleanupStatus(
       id: String, generation: String, proposed: [String: Any]
     ) throws -> Bool {
-      try jobStore.get().updateJob(
-        id: id, expectedGeneration: generation
+      guard let current = try readJobById(id) else { return false }
+      let keys = [
+        "waitingCleanup", "errorMessage", "lastAttestedAt",
+        "verificationReceipt",
+      ]
+      let differs = keys.contains { key in
+        let old = current[key]
+        let new = proposed[key]
+        if old == nil && new == nil { return false }
+        guard let oldObject = old as? NSObject, let newObject = new as? NSObject else {
+          return true
+        }
+        return !oldObject.isEqual(newObject)
+      }
+      guard differs else { return false }
+      return try jobStore.get().updateJob(
+        id: id, expectedGeneration: generation,
+        expectedCleanupGeneration: slice.generation
       ) { stored in
-        for key in [
-          "waitingCleanup", "errorMessage", "lastAttestedAt",
-          "verificationReceipt",
-        ] {
+        for key in keys {
           if let value = proposed[key] {
             stored[key] = value
           } else {
@@ -2291,11 +2523,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
       }
     }
     var changed = false
-    var afterId: String?
-    var storedPage: [[String: Any]]
-    repeat {
-      storedPage = try jobStore.get().cleanupCandidateJobsPage(afterId: afterId)
-      for job in jobsApplyingFailureOverrides(storedPage) {
+    for job in jobsApplyingFailureOverrides(slice.jobs) {
+      guard try jobStore.get().isCleanupGenerationCurrent(slice.generation) else {
+        break
+      }
       guard
         let id = job["id"] as? String,
         let path = job["filePath"] as? String,
@@ -2304,7 +2535,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
       if job["localDeletedAt"] as? String != nil { continue }
       let state = job["state"] as? String ?? ""
       if state == "pending" || state == "uploading" { continue }
-      guard let due = dueAt(job), now >= due else { continue }
+      guard let due = dueAt(
+        job, unbackedDays: slice.unbackedRetentionDays,
+        backedDays: slice.backedRetentionDays
+      ), now >= due else { continue }
 
       let completedAt = job["backupCompletedAt"] as? String
       var baseJob = job
@@ -2393,12 +2627,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
             let currentState = baseJob["state"] as? String
       else { continue }
       if completedAt != nil {
-        guard try jobStore.get().updateJob(
-          id: id, expectedGeneration: generation,
-          mutate: { stored in
-          stored["lastAttestedAt"] = baseJob["lastAttestedAt"]
-          stored["verificationReceipt"] = baseJob["verificationReceipt"]
-        }), let refreshed = try readJobById(id)
+        changed = try persistCleanupStatus(
+          id: id, generation: generation, proposed: baseJob
+        ) || changed
+        guard let refreshed = try readJobById(id),
+              refreshed["generation"] as? String == generation,
+              try jobStore.get().isCleanupGenerationCurrent(slice.generation)
         else { continue }
         baseJob = refreshed
       }
@@ -2408,31 +2642,31 @@ final class IosBackupHostApi: BackupNativeHostApi {
         job: baseJob, allowedStates: [currentState], reason: reason,
         completedState: completedAt == nil ? "expired" : nil,
         completedErrorMessage: completedAt == nil
-          ? "未备份录像已按保留策略清理" : nil
+          ? "未备份录像已按保留策略清理" : nil,
+        expectedCleanupGeneration: slice.generation
       ) {
       case .stale:
         baseJob["waitingCleanup"] = false
         baseJob["errorMessage"] = "录像文件已被替换，已取消本次自动清理"
-        changed = try jobStore.get().updateJob(
-          id: id, expectedGeneration: generation
-        ) { stored in
-          stored["waitingCleanup"] = false
-          stored["errorMessage"] = "录像文件已被替换，已取消本次自动清理"
-        } || changed
+        changed = try persistCleanupStatus(
+          id: id, generation: generation, proposed: baseJob
+        ) || changed
         continue
       case .failed:
-        changed = try jobStore.get().updateJob(
-          id: id, expectedGeneration: generation
-        ) { $0["waitingCleanup"] = true } || changed
+        baseJob["waitingCleanup"] = true
+        changed = try persistCleanupStatus(
+          id: id, generation: generation, proposed: baseJob
+        ) || changed
         continue
       case .busy:
         continue
       case .deleted(_), .reconciledMissing:
         changed = true
       }
-      }
-      afterId = storedPage.last?["id"] as? String
-    } while storedPage.count == 100
+    }
+
+    let hasMore = try jobStore.get().finishCleanupSlice(slice)
+    withCleanupLock { cleanupSliceHasMore = hasMore }
 
     if changed {
       emitSummary()

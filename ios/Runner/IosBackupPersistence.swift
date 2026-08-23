@@ -42,6 +42,15 @@ struct IosBackupCleanupIntent: Equatable {
   let phase: String
 }
 
+struct IosBackupCleanupSlice {
+  let generation: String
+  let unbackedRetentionDays: Int
+  let backedRetentionDays: Int
+  let jobs: [[String: Any]]
+  let hasMore: Bool
+  let evaluationNow: Date
+}
+
 protocol IosKeychainClient {
   func read(service: String, account: String) throws -> Data?
   func save(_ data: Data, service: String, account: String) throws
@@ -388,13 +397,18 @@ final class IosBackupJobStore {
   func updateJob(
     id: String,
     expectedGeneration: String,
+    expectedCleanupGeneration: String? = nil,
     mutate: (inout [String: Any]) -> Void
   ) throws -> Bool {
     lock.lock()
     defer { lock.unlock() }
     try execute("BEGIN IMMEDIATE", operation: "开始按代次更新任务")
     do {
-      guard var job = try readJobUnlocked(id),
+      let activeCleanupGeneration = try cleanupCheckpointUnlocked()?.generation
+      let cleanupGenerationMatches = expectedCleanupGeneration == nil
+        || activeCleanupGeneration == expectedCleanupGeneration
+      guard cleanupGenerationMatches,
+            var job = try readJobUnlocked(id),
             job["generation"] as? String == expectedGeneration
       else {
         try execute("ROLLBACK", operation: "取消过期任务更新")
@@ -526,18 +540,179 @@ final class IosBackupJobStore {
     return jobs
   }
 
+  func cleanupCandidateJobsSlice(
+    unbackedRetentionDays: Int, backedRetentionDays: Int, limit: Int = 100
+  ) throws -> IosBackupCleanupSlice {
+    lock.lock()
+    defer { lock.unlock() }
+    guard (1...100).contains(limit) else {
+      throw IosBackupStoreError(
+        operation: "校验清理分片", code: SQLITE_RANGE,
+        message: "单片数量必须为 1 到 100"
+      )
+    }
+    try execute("BEGIN IMMEDIATE", operation: "开始读取清理分片")
+    do {
+      var checkpoint = try cleanupCheckpointUnlocked()
+      if checkpoint == nil
+          || checkpoint!.unbackedDays != unbackedRetentionDays
+          || checkpoint!.backedDays != backedRetentionDays
+          || checkpoint!.exhausted {
+        checkpoint = try newCleanupCheckpointUnlocked(
+          unbackedDays: unbackedRetentionDays, backedDays: backedRetentionDays
+        )
+        try writeCleanupCheckpointUnlocked(checkpoint!)
+      }
+      let current = checkpoint!
+      let cursorClause = current.afterId == nil ? "" : " AND id > ?"
+      let predicate = "local_deleted_at IS NULL AND state NOT IN ('pending', 'uploading') "
+        + "AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i WHERE (i.job_id = backup_jobs.id OR i.original_path = backup_jobs.file_path) AND i.phase IN ('claimed','moving','renamed'))"
+      var statement: OpaquePointer?
+      try prepare(
+        "SELECT * FROM backup_jobs WHERE \(predicate)\(cursorClause) ORDER BY id ASC LIMIT \(limit)",
+        statement: &statement, operation: "读取清理分片"
+      )
+      defer { sqlite3_finalize(statement) }
+      if let afterId = current.afterId {
+        try bindText(statement, 1, afterId, operation: "绑定清理分片游标")
+      }
+      var jobs: [[String: Any]] = []
+      while true {
+        let code = sqlite3_step(statement)
+        if code == SQLITE_DONE { break }
+        guard code == SQLITE_ROW else {
+          throw databaseError(operation: "读取清理分片", code: code)
+        }
+        jobs.append(try jobFromRow(statement))
+      }
+      var hasMore = false
+      if jobs.count == limit, let lastId = jobs.last?["id"] as? String {
+        var moreStatement: OpaquePointer?
+        try prepare(
+          "SELECT EXISTS(SELECT 1 FROM backup_jobs WHERE \(predicate) AND id > ? LIMIT 1)",
+          statement: &moreStatement, operation: "检查后续清理分片"
+        )
+        defer { sqlite3_finalize(moreStatement) }
+        try bindText(moreStatement, 1, lastId)
+        hasMore = sqlite3_step(moreStatement) == SQLITE_ROW
+          && integer(moreStatement, 0) != 0
+      }
+      try execute("COMMIT", operation: "提交读取清理分片")
+      return IosBackupCleanupSlice(
+        generation: current.generation,
+        unbackedRetentionDays: current.unbackedDays,
+        backedRetentionDays: current.backedDays,
+        jobs: jobs, hasMore: hasMore,
+        evaluationNow: Date(
+          timeIntervalSince1970: Double(current.evaluationNowMilliseconds) / 1000
+        )
+      )
+    } catch {
+      try? execute("ROLLBACK", operation: "回滚读取清理分片")
+      throw error
+    }
+  }
+
+  func activateCleanupPolicy(
+    unbackedRetentionDays: Int, backedRetentionDays: Int
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try execute("BEGIN IMMEDIATE", operation: "开始切换清理策略")
+    do {
+      let current = try cleanupCheckpointUnlocked()
+      if current == nil
+          || current!.unbackedDays != unbackedRetentionDays
+          || current!.backedDays != backedRetentionDays {
+        // A claimed retention intent has not crossed the irreversible moving
+        // barrier yet. Drop it in the same policy-switch transaction so crash
+        // recovery cannot apply an older, shorter policy. Storage-pressure
+        // intents intentionally use a different reason and are preserved.
+        try execute(
+          "DELETE FROM backup_cleanup_intents WHERE phase = 'claimed' AND reason IN ('未备份录像保留策略清理','已备份录像保留策略清理')",
+          operation: "取消旧策略待执行清理"
+        )
+        try writeCleanupCheckpointUnlocked(
+          try newCleanupCheckpointUnlocked(
+            unbackedDays: unbackedRetentionDays, backedDays: backedRetentionDays
+          )
+        )
+      }
+      try execute("COMMIT", operation: "提交切换清理策略")
+    } catch {
+      try? execute("ROLLBACK", operation: "回滚切换清理策略")
+      throw error
+    }
+  }
+
+  /// Advances with generation CAS. When inputs changed behind the cursor, a
+  /// fresh sweep is installed atomically instead of declaring the scan done.
+  func finishCleanupSlice(_ slice: IosBackupCleanupSlice) throws -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    try execute("BEGIN IMMEDIATE", operation: "开始推进清理分片")
+    do {
+      guard let current = try cleanupCheckpointUnlocked(),
+            current.generation == slice.generation,
+            current.unbackedDays == slice.unbackedRetentionDays,
+            current.backedDays == slice.backedRetentionDays
+      else {
+        try execute("ROLLBACK", operation: "取消过期清理分片")
+        return true
+      }
+      if slice.hasMore, let afterId = slice.jobs.last?["id"] as? String {
+        try writeCleanupCheckpointUnlocked((
+          current.generation, current.unbackedDays, current.backedDays, afterId,
+          current.sweepStartSequence, current.evaluationNowMilliseconds, false
+        ))
+        try execute("COMMIT", operation: "提交清理分片游标")
+        return true
+      }
+      if try metaValueUnlocked("cleanup_input_sequence") != current.sweepStartSequence {
+        try writeCleanupCheckpointUnlocked(
+          try newCleanupCheckpointUnlocked(
+            unbackedDays: current.unbackedDays, backedDays: current.backedDays
+          )
+        )
+        try execute("COMMIT", operation: "提交重启清理扫描")
+        return true
+      }
+      try writeCleanupCheckpointUnlocked((
+        current.generation, current.unbackedDays, current.backedDays,
+        slice.jobs.last?["id"] as? String ?? current.afterId,
+        current.sweepStartSequence, current.evaluationNowMilliseconds, true
+      ))
+      try execute("COMMIT", operation: "提交清理扫描完成")
+      return false
+    } catch {
+      try? execute("ROLLBACK", operation: "回滚推进清理分片")
+      throw error
+    }
+  }
+
+  func isCleanupGenerationCurrent(_ generation: String) throws -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return try cleanupCheckpointUnlocked()?.generation == generation
+  }
+
   func beginCleanupIntent(
     jobId: String, expectedGeneration: String, allowedStates: Set<String>,
     originalPath: String, tombstonePath: String, expectedBytes: Int64,
     expectedModifiedAtMilliseconds: Int64, expectedDevice: UInt64,
     expectedInode: UInt64, expectedSha256: String?, reason: String,
-    completedState: String?, completedErrorMessage: String?
+    completedState: String?, completedErrorMessage: String?,
+    expectedCleanupGeneration: String? = nil
   ) throws -> IosBackupCleanupIntent? {
     lock.lock()
     defer { lock.unlock() }
     try execute("BEGIN IMMEDIATE", operation: "开始领取清理任务")
     do {
-      guard let job = try readJobUnlocked(jobId),
+      let activeCleanupGeneration = try cleanupCheckpointUnlocked()?.generation
+      let cleanupGenerationMatches = expectedCleanupGeneration == nil
+        || activeCleanupGeneration == expectedCleanupGeneration
+      guard cleanupGenerationMatches,
+            let job = try readJobUnlocked(jobId),
             job["generation"] as? String == expectedGeneration,
             let state = job["state"] as? String,
             allowedStates.contains(state), job["localDeletedAt"] as? String == nil,
@@ -957,6 +1132,16 @@ final class IosBackupJobStore {
         phase TEXT NOT NULL,
         created_at_ms INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS backup_cleanup_scan (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+        generation TEXT NOT NULL,
+        unbacked_days INTEGER NOT NULL,
+        backed_days INTEGER NOT NULL,
+        after_id TEXT,
+        sweep_start_sequence INTEGER NOT NULL,
+        evaluation_now_ms INTEGER NOT NULL,
+        exhausted INTEGER NOT NULL DEFAULT 0
+      );
     """
     try execute(sql, operation: "建表")
     if try !columnExistsUnlocked(table: "backup_jobs", column: "revision") {
@@ -965,7 +1150,7 @@ final class IosBackupJobStore {
     try execute("DROP INDEX IF EXISTS idx_backup_jobs_resumable_scan; CREATE INDEX IF NOT EXISTS idx_backup_jobs_file_path ON backup_jobs(file_path); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state ON backup_jobs(state); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state_id ON backup_jobs(state, id); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state_local_revision ON backup_jobs(state, local_deleted_at, revision DESC); CREATE INDEX IF NOT EXISTS idx_backup_jobs_failure_revision ON backup_jobs(state, failure_kind, revision DESC); CREATE INDEX IF NOT EXISTS idx_backup_jobs_storage_recovery ON backup_jobs(state, local_deleted_at, COALESCE(file_created_at, '9999-12-31T23:59:59Z'), id); CREATE INDEX IF NOT EXISTS idx_backup_jobs_revision ON backup_jobs(revision); CREATE INDEX IF NOT EXISTS idx_backup_jobs_cleanup ON backup_jobs(local_deleted_at, state, scheduled_cleanup_at);", operation: "创建备份索引")
     try execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_cleanup_intents_active_job ON backup_cleanup_intents(job_id) WHERE phase IN ('claimed','moving','renamed')", operation: "创建清理意图索引")
     try execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_cleanup_intents_active_path ON backup_cleanup_intents(original_path) WHERE phase IN ('claimed','moving','renamed')", operation: "创建清理路径索引")
-    for key in ["global_revision", "completed_revision", "cleanup_high_watermark", "cleanup_ack_revision"] {
+    for key in ["global_revision", "completed_revision", "cleanup_high_watermark", "cleanup_ack_revision", "cleanup_input_sequence"] {
       try execute("INSERT OR IGNORE INTO backup_meta(key,int_value) VALUES ('\(key)',0)", operation: "初始化备份修订号")
     }
     try ensureSummaryCountersUnlocked()
@@ -1171,6 +1356,11 @@ final class IosBackupJobStore {
     let revision = try nextRevisionUnlocked()
     let job = Self.migratedJob(rawJob)
     try upsertUnlocked(job, revision: revision)
+    if cleanupInputChanged(previous: previous, current: job) {
+      try setMetaValueUnlocked(
+        "cleanup_input_sequence", try metaValueUnlocked("cleanup_input_sequence") + 1
+      )
+    }
     try adjustSummaryCountersUnlocked(previous: previous, current: job)
     if previous?["state"] as? String == "completed" || job["state"] as? String == "completed" {
       try setMetaValueUnlocked("completed_revision", revision)
@@ -1179,6 +1369,25 @@ final class IosBackupJobStore {
       try insertCleanupEventUnlocked(job: job, deletedAt: deletedAt, revision: revision)
       try setMetaValueUnlocked("cleanup_high_watermark", revision)
     }
+  }
+
+  private func cleanupInputChanged(
+    previous: [String: Any]?, current: [String: Any]
+  ) -> Bool {
+    guard let previous else { return true }
+    for key in [
+      "generation", "filePath", "state", "fileCreatedAt", "backupCompletedAt",
+      "localDeletedAt", "contentSha256", "verificationVersion", "remoteRecordId",
+      "sessions", "totalBytes", "lastModified",
+    ] {
+      let old = previous[key]
+      let new = current[key]
+      if old == nil && new == nil { continue }
+      guard let oldObject = old as? NSObject, let newObject = new as? NSObject,
+            oldObject.isEqual(newObject)
+      else { return true }
+    }
+    return false
   }
 
   private func upsertUnlocked(_ rawJob: [String: Any], revision: Int64) throws {
@@ -1393,6 +1602,55 @@ final class IosBackupJobStore {
     let next = try metaValueUnlocked("global_revision") + 1
     try setMetaValueUnlocked("global_revision", next)
     return next
+  }
+
+  private typealias CleanupCheckpoint = (
+    generation: String, unbackedDays: Int, backedDays: Int, afterId: String?,
+    sweepStartSequence: Int64, evaluationNowMilliseconds: Int64, exhausted: Bool
+  )
+
+  private func cleanupCheckpointUnlocked() throws -> CleanupCheckpoint? {
+    var statement: OpaquePointer?
+    try prepare(
+      "SELECT generation,unbacked_days,backed_days,after_id,sweep_start_sequence,evaluation_now_ms,exhausted FROM backup_cleanup_scan WHERE singleton_id = 1",
+      statement: &statement, operation: "读取清理分片游标"
+    )
+    defer { sqlite3_finalize(statement) }
+    guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+    return (
+      text(statement, 0) ?? "", Int(integer(statement, 1)),
+      Int(integer(statement, 2)), text(statement, 3), integer(statement, 4),
+      integer(statement, 5), integer(statement, 6) != 0
+    )
+  }
+
+  private func newCleanupCheckpointUnlocked(
+    unbackedDays: Int, backedDays: Int
+  ) throws -> CleanupCheckpoint {
+    (
+      UUID().uuidString, unbackedDays, backedDays, nil,
+      try metaValueUnlocked("cleanup_input_sequence"),
+      Int64(Date().timeIntervalSince1970 * 1000), false
+    )
+  }
+
+  private func writeCleanupCheckpointUnlocked(_ value: CleanupCheckpoint) throws {
+    var statement: OpaquePointer?
+    try prepare(
+      "INSERT INTO backup_cleanup_scan(singleton_id,generation,unbacked_days,backed_days,after_id,sweep_start_sequence,evaluation_now_ms,exhausted) VALUES (1,?,?,?,?,?,?,?) ON CONFLICT(singleton_id) DO UPDATE SET generation=excluded.generation,unbacked_days=excluded.unbacked_days,backed_days=excluded.backed_days,after_id=excluded.after_id,sweep_start_sequence=excluded.sweep_start_sequence,evaluation_now_ms=excluded.evaluation_now_ms,exhausted=excluded.exhausted",
+      statement: &statement, operation: "保存清理分片游标"
+    )
+    defer { sqlite3_finalize(statement) }
+    try bindText(statement, 1, value.generation)
+    try bindInt(statement, 2, Int64(value.unbackedDays))
+    try bindInt(statement, 3, Int64(value.backedDays))
+    try bindText(statement, 4, value.afterId)
+    try bindInt(statement, 5, value.sweepStartSequence)
+    try bindInt(statement, 6, value.evaluationNowMilliseconds)
+    try bindInt(statement, 7, value.exhausted ? 1 : 0)
+    guard sqlite3_step(statement) == SQLITE_DONE else {
+      throw databaseError(operation: "保存清理分片游标", code: sqlite3_errcode(db))
+    }
   }
 
   private func metaValueUnlocked(_ key: String) throws -> Int64 {
