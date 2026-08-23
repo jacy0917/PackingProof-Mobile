@@ -177,6 +177,46 @@ class RecordingMuxPipelineTest {
         assertEquals(listOf("stop", "release"), events)
     }
 
+    @Test
+    fun `切段后迟到的旧帧不写入新文件`() {
+        val events = mutableListOf<String>()
+        val pipeline = pipeline(events)
+        pipeline.beginRecording()
+        pipeline.openSegment("first.mp4", 1_000L, 10_000L, 0, false)
+        pipeline.rotateAtKeyFrame(
+            nextPath = "second.mp4",
+            buffer = ByteBuffer.wrap(byteArrayOf(1)),
+            sourcePtsUs = 2_000L,
+            flags = MediaCodec.BUFFER_FLAG_KEY_FRAME,
+            orientationHintDegrees = 0,
+            recordAudio = false,
+        )
+
+        val written = pipeline.writeVideo(
+            ByteBuffer.wrap(byteArrayOf(2)),
+            1_999L,
+            0,
+        )
+
+        assertFalse(written)
+        assertEquals(
+            listOf(
+                "open:first.mp4",
+                "close:first.mp4:false",
+                "open:second.mp4",
+                "video:second.mp4:0:${MediaCodec.BUFFER_FLAG_KEY_FRAME}",
+            ),
+            events,
+        )
+    }
+
+    @Test
+    fun `没有活动 muxer 时视频样本不会报告已写入`() {
+        val pipeline = pipeline(mutableListOf())
+
+        assertFalse(pipeline.writeVideo(ByteBuffer.wrap(byteArrayOf(1)), 1_000L, 0))
+    }
+
     private fun pipeline(events: MutableList<String>): RecordingMuxPipeline =
         RecordingMuxPipeline(
             muxerFactory = SegmentMuxerFactory { path, _, _ ->

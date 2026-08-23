@@ -111,6 +111,81 @@ class LiveWatermarkRuntimePolicyTest {
     }
 
     @Test
+    fun `GL submission is not completed until matching encoded sample is muxed`() {
+        val tracker = EncodedWatermarkFrameTracker()
+        val state = LiveWatermarkSegmentState()
+        tracker.recordSubmitted(1_000L, true)
+
+        assertEquals(LiveWatermarkSegmentDisposition.FAILED_PARTIAL, state.disposition())
+
+        state.markMuxedWatermarkSample(tracker.takeForEncodedSample(1_000L))
+        assertEquals(LiveWatermarkSegmentDisposition.COMPLETED, state.disposition())
+    }
+
+    @Test
+    fun `unwritten submitted frame cannot make segment completed`() {
+        val tracker = EncodedWatermarkFrameTracker()
+        val state = LiveWatermarkSegmentState()
+        tracker.recordSubmitted(2_000L, true)
+
+        assertEquals(LiveWatermarkSegmentDisposition.FAILED_PARTIAL, state.disposition())
+    }
+
+    @Test
+    fun `late old frame cannot satisfy a newer encoded sample`() {
+        val tracker = EncodedWatermarkFrameTracker()
+        tracker.recordSubmitted(1_000L, true)
+        tracker.recordSubmitted(2_000L, true)
+
+        assertEquals(true, tracker.takeForEncodedSample(2_000L))
+        assertEquals(null, tracker.takeForEncodedSample(1_000L))
+    }
+
+    @Test
+    fun `ten thousand submitted frames without encoder output remain bounded`() {
+        val tracker = EncodedWatermarkFrameTracker(
+            maxPendingFrames = 120,
+            maxPendingAgeUs = 5_000_000L,
+        )
+        var evicted = false
+
+        repeat(10_000) { index ->
+            evicted = tracker.recordSubmitted(index * 33_333L, true) || evicted
+        }
+
+        assertTrue(evicted)
+        assertTrue(tracker.pendingCountForTesting() <= 120)
+    }
+
+    @Test
+    fun `missing encoder correlation or failed watermark keeps segment partial`() {
+        val missing = LiveWatermarkSegmentState()
+        missing.markMuxedWatermarkSample(null)
+        assertEquals(LiveWatermarkSegmentDisposition.FAILED_PARTIAL, missing.disposition())
+
+        val failed = LiveWatermarkSegmentState()
+        failed.markMuxedWatermarkSample(false)
+        failed.markMuxedWatermarkSample(true)
+        assertEquals(LiveWatermarkSegmentDisposition.FAILED_PARTIAL, failed.disposition())
+    }
+
+    @Test
+    fun `segment reset requires a muxed watermarked sample in the new file`() {
+        val tracker = EncodedWatermarkFrameTracker()
+        val state = LiveWatermarkSegmentState()
+        tracker.recordSubmitted(1_000L, true)
+        state.markMuxedWatermarkSample(tracker.takeForEncodedSample(1_000L))
+        assertEquals(LiveWatermarkSegmentDisposition.COMPLETED, state.disposition())
+
+        state.reset()
+        tracker.recordSubmitted(2_000L, true)
+        assertEquals(LiveWatermarkSegmentDisposition.FAILED_PARTIAL, state.disposition())
+
+        state.markMuxedWatermarkSample(tracker.takeForEncodedSample(2_000L))
+        assertEquals(LiveWatermarkSegmentDisposition.COMPLETED, state.disposition())
+    }
+
+    @Test
     fun `GL full recording keeps barcode direct and collapses preview encoder to one camera surface`() {
         val topology = CameraSurfaceTopologyPolicy.create(
             pipeline = CameraSurfacePipeline.GL_COMPOSITOR,

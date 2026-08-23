@@ -71,6 +71,11 @@ internal data class CameraRecoveryDiagnostics(
     val recordingFallbackMode: String?,
     val surfacePipeline: String = "direct",
     val surfaceFallbackReason: String? = null,
+    val glFailureStage: String? = null,
+    val glFailureOutput: String? = null,
+    val glFailureApi: String? = null,
+    val glFailureErrorCode: String? = null,
+    val glFailureType: String? = null,
 )
 
 internal data class CameraCapabilityDiagnostics(
@@ -309,6 +314,11 @@ internal object CameraDiagnosticsSnapshotMapper {
             "recordingFallbackMode" to recovery.recordingFallbackMode,
             "surfacePipeline" to recovery.surfacePipeline,
             "surfaceFallbackReason" to recovery.surfaceFallbackReason,
+            "glFailureStage" to recovery.glFailureStage,
+            "glFailureOutput" to recovery.glFailureOutput,
+            "glFailureApi" to recovery.glFailureApi,
+            "glFailureErrorCode" to recovery.glFailureErrorCode,
+            "glFailureType" to recovery.glFailureType,
             "capabilityMode" to capability.mode,
             "preferEncoderAnalysisRecording" to capability.preferEncoderAnalysisRecording,
             "sessionSurfaces" to "preview=${capability.sessionHasPreview} " +

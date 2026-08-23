@@ -32,6 +32,24 @@ internal data class CameraGlFailure(
     val error: Throwable,
 )
 
+internal class CameraGlOperationException(
+    val stage: String,
+    val api: String,
+    val errorCode: Int?,
+    cause: Throwable? = null,
+) : IllegalStateException(
+    buildString {
+        append(api)
+        append(" operation failed at ")
+        append(stage)
+        errorCode?.let {
+            append(" with error 0x")
+            append(it.toString(16))
+        }
+    },
+    cause,
+)
+
 private data class CameraGlDrawResult(
     val submitted: Boolean,
     val watermarkRendered: Boolean,
@@ -50,7 +68,7 @@ internal class CameraGlCompositor(
     private val encoderOutput: Surface,
     private val recordingOrientation: String = "portrait",
     private val onFailure: (CameraGlFailure) -> Unit,
-    private val onEncodedWatermarkFrame: (Boolean) -> Unit = {},
+    private val onEncodedWatermarkFrame: (Long, Boolean) -> Unit = { _, _ -> },
     private val onWatermarkFailure: (Throwable) -> Unit = {},
 ) {
     companion object {
@@ -312,8 +330,13 @@ internal class CameraGlCompositor(
 
     private fun initializeEgl() {
         display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-        check(display != EGL14.EGL_NO_DISPLAY) { "No EGL display" }
-        check(EGL14.eglInitialize(display, null, 0, null, 0)) { eglError("eglInitialize") }
+        if (display == EGL14.EGL_NO_DISPLAY) {
+            throw CameraGlOperationException("get_display", "egl", null)
+        }
+        checkEgl(
+            EGL14.eglInitialize(display, null, 0, null, 0),
+            "initialize",
+        )
 
         val configs = arrayOfNulls<android.opengl.EGLConfig>(1)
         val configCount = IntArray(1)
@@ -327,7 +350,7 @@ internal class CameraGlCompositor(
             EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT or EGL14.EGL_PBUFFER_BIT,
             EGL14.EGL_NONE,
         )
-        check(
+        checkEgl(
             EGL14.eglChooseConfig(
                 display,
                 configAttributes,
@@ -337,8 +360,9 @@ internal class CameraGlCompositor(
                 configs.size,
                 configCount,
                 0,
-            ) && configCount[0] > 0
-        ) { eglError("eglChooseConfig") }
+            ) && configCount[0] > 0,
+            "choose_config",
+        )
         val config = checkNotNull(configs[0])
         context = EGL14.eglCreateContext(
             display,
@@ -347,14 +371,18 @@ internal class CameraGlCompositor(
             intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE),
             0,
         )
-        check(context != EGL14.EGL_NO_CONTEXT) { eglError("eglCreateContext") }
+        if (context == EGL14.EGL_NO_CONTEXT) {
+            throw eglException("create_context")
+        }
         pbuffer = EGL14.eglCreatePbufferSurface(
             display,
             config,
             intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE),
             0,
         )
-        check(pbuffer != EGL14.EGL_NO_SURFACE) { eglError("eglCreatePbufferSurface") }
+        if (pbuffer == EGL14.EGL_NO_SURFACE) {
+            throw eglException("create_pbuffer_surface")
+        }
         previewEglSurface = createWindowSurface(config, previewOutput, "preview")
         encoderEglSurface = createWindowSurface(config, encoderOutput, "encoder")
         makeCurrent(pbuffer)
@@ -408,7 +436,10 @@ internal class CameraGlCompositor(
                     callback(input.timestamp / 1_000L, drawResult.watermarkRendered)
                 }
                 try {
-                    onEncodedWatermarkFrame(drawResult.watermarkRendered)
+                    onEncodedWatermarkFrame(
+                        input.timestamp / 1_000L,
+                        drawResult.watermarkRendered,
+                    )
                 } catch (_: Throwable) {
                     // Recording diagnostics must not interrupt frame delivery.
                 }
@@ -478,7 +509,7 @@ internal class CameraGlCompositor(
             if (presentationTimeNs != null) {
                 EGLExt.eglPresentationTimeANDROID(display, surface, presentationTimeNs)
             }
-            check(EGL14.eglSwapBuffers(display, surface)) { eglError("eglSwapBuffers") }
+            checkEgl(EGL14.eglSwapBuffers(display, surface), "swap_buffers")
             return CameraGlDrawResult(submitted = true, watermarkRendered = watermarkRendered)
         } catch (error: Throwable) {
             reportFailure(output, error)
@@ -714,14 +745,17 @@ internal class CameraGlCompositor(
             intArrayOf(EGL14.EGL_NONE),
             0,
         )
-        check(result != EGL14.EGL_NO_SURFACE) { eglError("eglCreateWindowSurface($label)") }
+        if (result == EGL14.EGL_NO_SURFACE) {
+            throw eglException("create_window_surface_$label")
+        }
         return result
     }
 
     private fun makeCurrent(surface: android.opengl.EGLSurface) {
-        check(EGL14.eglMakeCurrent(display, surface, surface, context)) {
-            eglError("eglMakeCurrent")
-        }
+        checkEgl(
+            EGL14.eglMakeCurrent(display, surface, surface, context),
+            "make_current",
+        )
     }
 
     private fun createExternalTexture(): Int {
@@ -765,8 +799,8 @@ internal class CameraGlCompositor(
             GLES20.glGetProgramiv(result, GLES20.GL_LINK_STATUS, linkStatus, 0)
             GLES20.glDeleteShader(vertex)
             GLES20.glDeleteShader(fragment)
-            check(linkStatus[0] == GLES20.GL_TRUE) {
-                "GL program link failed: ${GLES20.glGetProgramInfoLog(result)}"
+            if (linkStatus[0] != GLES20.GL_TRUE) {
+                throw CameraGlOperationException("link_program", "gl", null)
             }
         }
     }
@@ -777,18 +811,24 @@ internal class CameraGlCompositor(
             GLES20.glCompileShader(shader)
             val status = IntArray(1)
             GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
-            check(status[0] == GLES20.GL_TRUE) {
-                "GL shader compile failed: ${GLES20.glGetShaderInfoLog(shader)}"
+            if (status[0] != GLES20.GL_TRUE) {
+                throw CameraGlOperationException("compile_shader", "gl", null)
             }
         }
 
     private fun checkGlError(operation: String) {
         val error = GLES20.glGetError()
-        check(error == GLES20.GL_NO_ERROR) { "$operation failed with GL error 0x${error.toString(16)}" }
+        if (error != GLES20.GL_NO_ERROR) {
+            throw CameraGlOperationException(operation, "gl", error)
+        }
     }
 
-    private fun eglError(operation: String): String =
-        "$operation failed with EGL error 0x${EGL14.eglGetError().toString(16)}"
+    private fun checkEgl(success: Boolean, operation: String) {
+        if (!success) throw eglException(operation)
+    }
+
+    private fun eglException(operation: String): CameraGlOperationException =
+        CameraGlOperationException(operation, "egl", EGL14.eglGetError())
 
     private fun releaseGlResources() {
         cameraSurfaceTexture?.setOnFrameAvailableListener(null)

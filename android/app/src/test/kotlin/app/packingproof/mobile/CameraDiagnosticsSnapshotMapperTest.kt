@@ -43,6 +43,11 @@ class CameraDiagnosticsSnapshotMapperTest {
         assertEquals("preview=true encoder=false analysis=true", camera["sessionSurfaces"])
         assertEquals("direct", camera["surfacePipeline"])
         assertEquals(null, camera["surfaceFallbackReason"])
+        assertEquals("swap_buffers", camera["glFailureStage"])
+        assertEquals("encoder", camera["glFailureOutput"])
+        assertEquals("egl", camera["glFailureApi"])
+        assertEquals("0x300d", camera["glFailureErrorCode"])
+        assertEquals("CameraGlOperationException", camera["glFailureType"])
         assertEquals(listOf(mapOf("phase" to "idle")), camera["probeResults"])
         assertEquals(100L, camera["storageAvailableBytes"])
         assertEquals(2L, camera["muxWriteStallCount"])
@@ -173,17 +178,22 @@ class CameraDiagnosticsSnapshotMapperTest {
         switchAndFrames = CameraSwitchAndFrameDiagnostics(2, 50L, true, 6L, 0L, 8_000L),
         resources = CameraResourceDiagnostics(100L, 200L, 8L, 2L),
         recovery = CameraRecoveryDiagnostics(
-            null,
-            "record",
-            false,
-            2,
-            "configured",
-            2,
-            null,
-            null,
-            null,
-            null,
-            null,
+            codecFallbackReason = null,
+            lastRequestTemplate = "record",
+            stallActive = false,
+            stallRecoveryStage = 2,
+            sessionConfigStage = "configured",
+            sessionConfigAttempts = 2,
+            initFailureStage = null,
+            initFailureDetail = null,
+            startFailureStage = null,
+            startFailureDetail = null,
+            recordingFallbackMode = null,
+            glFailureStage = "swap_buffers",
+            glFailureOutput = "encoder",
+            glFailureApi = "egl",
+            glFailureErrorCode = "0x300d",
+            glFailureType = "CameraGlOperationException",
         ),
         capability = CameraCapabilityDiagnostics(
             mode = "full",

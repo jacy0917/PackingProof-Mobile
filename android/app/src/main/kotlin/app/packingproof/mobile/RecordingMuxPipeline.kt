@@ -76,6 +76,7 @@ internal class RecordingMuxPipeline(
 ) {
     private val pendingAudio = mutableListOf<EncodedMuxSample>()
     private var muxer: SegmentMuxer? = null
+    private var segmentBaseSourcePtsUs: Long? = null
 
     var currentPath: String? = null
         private set
@@ -123,12 +124,16 @@ internal class RecordingMuxPipeline(
         muxer = newMuxer
         currentPath = path
         segmentStartedAtMs = startedAtMs
+        segmentBaseSourcePtsUs = basePtsUs
         timeline.openSegment(basePtsUs)
     }
 
-    fun writeVideo(buffer: ByteBuffer, sourcePtsUs: Long, flags: Int) {
-        val activeMuxer = muxer ?: return
+    fun writeVideo(buffer: ByteBuffer, sourcePtsUs: Long, flags: Int): Boolean {
+        val activeMuxer = muxer ?: return false
+        val segmentBase = segmentBaseSourcePtsUs ?: return false
+        if (sourcePtsUs < segmentBase) return false
         activeMuxer.writeVideo(buffer, timeline.videoPtsUs(sourcePtsUs), flags)
+        return true
     }
 
     fun flushPendingAudio() {
@@ -201,6 +206,7 @@ internal class RecordingMuxPipeline(
     fun close(deleteOutput: Boolean) {
         val closing = muxer
         muxer = null
+        segmentBaseSourcePtsUs = null
         closing?.close(deleteOutput)
     }
 

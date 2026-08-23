@@ -1,5 +1,7 @@
 package app.packingproof.mobile
 
+import java.util.TreeMap
+
 internal data class CameraGlPoint(
     val x: Float,
     val y: Float,
@@ -99,6 +101,16 @@ internal class LiveWatermarkSegmentState {
         watermarkFailed = true
     }
 
+    /** Only muxed video samples are allowed to affect the published segment disposition. */
+    @Synchronized
+    fun markMuxedWatermarkSample(rendered: Boolean?) {
+        if (rendered == true) {
+            renderedFrameCount++
+        } else {
+            watermarkFailed = true
+        }
+    }
+
     @Synchronized
     fun disposition(): LiveWatermarkSegmentDisposition =
         if (renderedFrameCount > 0L && !watermarkFailed) {
@@ -112,6 +124,52 @@ internal class LiveWatermarkSegmentState {
         renderedFrameCount = 0L
         watermarkFailed = false
     }
+}
+
+/**
+ * Correlates a frame submitted to the encoder surface with the MediaCodec output carrying the
+ * same presentation timestamp. A GL submission is deliberately not treated as durable until the
+ * caller has successfully written the matching encoded sample to its current muxer.
+ */
+internal class EncodedWatermarkFrameTracker(
+    private val maxPendingFrames: Int = 300,
+    private val maxPendingAgeUs: Long = 5_000_000L,
+) {
+    private val submittedFrames = TreeMap<Long, Boolean>()
+
+    init {
+        require(maxPendingFrames > 0)
+        require(maxPendingAgeUs > 0L)
+    }
+
+    @Synchronized
+    fun recordSubmitted(presentationTimeUs: Long, watermarkRendered: Boolean): Boolean {
+        submittedFrames[presentationTimeUs] = watermarkRendered
+        var evicted = false
+        val oldestAllowedPtsUs = presentationTimeUs - maxPendingAgeUs
+        while (submittedFrames.isNotEmpty() &&
+            (submittedFrames.size > maxPendingFrames ||
+                submittedFrames.firstKey() < oldestAllowedPtsUs)
+        ) {
+            submittedFrames.pollFirstEntry()
+            evicted = true
+        }
+        return evicted
+    }
+
+    @Synchronized
+    fun takeForEncodedSample(presentationTimeUs: Long): Boolean? {
+        submittedFrames.headMap(presentationTimeUs, false).clear()
+        return submittedFrames.remove(presentationTimeUs)
+    }
+
+    @Synchronized
+    fun reset() {
+        submittedFrames.clear()
+    }
+
+    @Synchronized
+    internal fun pendingCountForTesting(): Int = submittedFrames.size
 }
 
 internal enum class CameraSurfacePipeline {

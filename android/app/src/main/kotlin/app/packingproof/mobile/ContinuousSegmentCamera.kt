@@ -116,6 +116,11 @@ class ContinuousSegmentCamera(
     private var compositorInputSurface: Surface? = null
     @Volatile private var cameraSurfacePipeline = CameraSurfacePipeline.GL_COMPOSITOR
     @Volatile private var cameraSurfaceFallbackReason: String? = null
+    @Volatile private var glFailureStage: String? = null
+    @Volatile private var glFailureOutput: String? = null
+    @Volatile private var glFailureApi: String? = null
+    @Volatile private var glFailureErrorCode: String? = null
+    @Volatile private var glFailureType: String? = null
     private var cameraDevice: CameraDevice? = null
     @Volatile private var selectedCameraId: String? = null
     @Volatile private var selectedCameraCharacteristics: CameraCharacteristics? = null
@@ -187,13 +192,21 @@ class ContinuousSegmentCamera(
     private var pendingNextTrackingNumber: String? = null
     private var activeWatermarkTrackingNumber: String = ""
     @Volatile private var pendingWatermarkTransitionPtsUs: Long? = null
-    @Volatile private var pendingWatermarkTransitionRendered = false
     private val liveWatermarkSegmentState = LiveWatermarkSegmentState()
+    private val encodedWatermarkFrameTracker = EncodedWatermarkFrameTracker()
     private val recordingVideoEncoder = RecordingVideoEncoder(
         recordingSpec = { recordingSpec },
         onSample = ::handleVideoSample,
-        onSampleFailure = { error -> notifyWriteError("视频写入失败", error) },
-        onEncoderError = { error -> notifyNativeError("视频编码器异常", error) },
+        onSampleFailure = { error ->
+            liveWatermarkSegmentState.markWatermarkFailure()
+            encodedWatermarkFrameTracker.reset()
+            notifyWriteError("视频写入失败", error)
+        },
+        onEncoderError = { error ->
+            liveWatermarkSegmentState.markWatermarkFailure()
+            encodedWatermarkFrameTracker.reset()
+            notifyNativeError("视频编码器异常", error)
+        },
         onOutputFormatChanged = ::handleVideoEncoderOutputFormatChanged,
         onSyncFrameFailure = { error -> notifyNativeError("无法请求录像关键帧", error) },
     )
@@ -295,6 +308,11 @@ class ContinuousSegmentCamera(
         sessionHasAnalysis = false
         cameraSurfacePipeline = CameraSurfacePipeline.GL_COMPOSITOR
         cameraSurfaceFallbackReason = null
+        glFailureStage = null
+        glFailureOutput = null
+        glFailureApi = null
+        glFailureErrorCode = null
+        glFailureType = null
         startFallbackTried = false
         recordingFallbackMode = null
         capabilityMode = CameraCapabilityMode.fromWire(capabilityModeName)
@@ -356,6 +374,7 @@ class ContinuousSegmentCamera(
             audioOutputFormat = null
             recordingMuxPipeline.beginRecording()
             liveWatermarkSegmentState.reset()
+            encodedWatermarkFrameTracker.reset()
             activeWatermarkTrackingNumber = trackingNumber
             if (cameraSurfacePipeline == CameraSurfacePipeline.GL_COMPOSITOR &&
                 cameraGlCompositor != null
@@ -462,9 +481,8 @@ class ContinuousSegmentCamera(
                             }
                         }
                     },
-                    onFirstFrameSubmitted = { presentationTimeUs, rendered ->
+                    onFirstFrameSubmitted = { presentationTimeUs, _ ->
                         pendingWatermarkTransitionPtsUs = presentationTimeUs
-                        pendingWatermarkTransitionRendered = rendered
                     },
                 )
             } else {
@@ -476,8 +494,9 @@ class ContinuousSegmentCamera(
                     pendingSplitPath = null
                     pendingNextTrackingNumber = null
                     pendingWatermarkTransitionPtsUs = null
-                    pendingWatermarkTransitionRendered = false
                     splitResult = null
+                    liveWatermarkSegmentState.markWatermarkFailure()
+                    encodedWatermarkFrameTracker.reset()
                     cameraGlCompositor?.setWatermark(activeWatermarkTrackingNumber)
                     replyError(result, "split_timeout", "等待关键帧超时，当前录像仍在继续")
                 }
@@ -598,6 +617,7 @@ class ContinuousSegmentCamera(
                         if (disposed) return@post
                         try {
                             releaseCameraGlCompositor()
+                            encodedWatermarkFrameTracker.reset()
                             recordingVideoEncoder.release()
                             recordingVideoEncoder.prepare(
                                 videoSize.width,
@@ -771,6 +791,7 @@ class ContinuousSegmentCamera(
             initialized = false
             recordingMuxPipeline.close(deleteOutput = false)
             releaseCameraGlCompositor()
+            encodedWatermarkFrameTracker.reset()
             recordingVideoEncoder.release()
             finishCleanup()
         } else finishCleanup()
@@ -1261,6 +1282,7 @@ class ContinuousSegmentCamera(
                 ) {
                     releaseCameraGlCompositor()
                 }
+                encodedWatermarkFrameTracker.reset()
                 recordingVideoEncoder.release()
                 try {
                     recordingVideoEncoder.prepare(
@@ -1344,15 +1366,18 @@ class ContinuousSegmentCamera(
                 encoderOutput = encoder,
                 recordingOrientation = recordingOrientationName,
                 onFailure = ::handleCameraGlFailure,
-                onEncodedWatermarkFrame = { rendered ->
-                    if (rendered) {
-                        liveWatermarkSegmentState.markWatermarkRendered()
-                    } else {
+                onEncodedWatermarkFrame = { presentationTimeUs, rendered ->
+                    if (encodedWatermarkFrameTracker.recordSubmitted(
+                            presentationTimeUs,
+                            rendered,
+                        )
+                    ) {
                         liveWatermarkSegmentState.markWatermarkFailure()
                     }
                 },
                 onWatermarkFailure = { error ->
                     liveWatermarkSegmentState.markWatermarkFailure()
+                    recordCameraGlFailure("watermark_overlay", "encoder", error)
                     Log.e(CAMERA_LOG_TAG, "live watermark overlay disabled", error)
                 },
             )
@@ -1430,6 +1455,7 @@ class ContinuousSegmentCamera(
                 stage = "compositor_${failure.output.name.lowercase()}",
                 error = failure.error,
                 recreateSession = true,
+                output = failure.output.name.lowercase(),
             )
         }
     }
@@ -1438,9 +1464,12 @@ class ContinuousSegmentCamera(
         stage: String,
         error: Throwable,
         recreateSession: Boolean,
+        output: String? = null,
     ) {
         if (cameraSurfacePipeline == CameraSurfacePipeline.DIRECT) return
+        recordCameraGlFailure(stage, output, error)
         liveWatermarkSegmentState.markWatermarkFailure()
+        encodedWatermarkFrameTracker.reset()
         cameraSurfacePipeline = CameraSurfaceLifecyclePolicy.failureFallback(
             cameraSurfacePipeline,
         )
@@ -1473,6 +1502,19 @@ class ContinuousSegmentCamera(
                 },
             )
         }
+    }
+
+    private fun recordCameraGlFailure(
+        fallbackStage: String,
+        output: String?,
+        error: Throwable,
+    ) {
+        val operation = error as? CameraGlOperationException
+        glFailureStage = operation?.stage ?: fallbackStage
+        glFailureOutput = output
+        glFailureApi = operation?.api
+        glFailureErrorCode = operation?.errorCode?.let { "0x${it.toString(16)}" }
+        glFailureType = error.javaClass.simpleName
     }
 
     private fun analyzeImage(reader: ImageReader) {
@@ -2094,6 +2136,9 @@ class ContinuousSegmentCamera(
     }
 
     private fun handleVideoSample(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+        val watermarkRendered = encodedWatermarkFrameTracker.takeForEncodedSample(
+            info.presentationTimeUs,
+        )
         val isKeyFrame = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
         if (startResult != null && recordingRequested && isKeyFrame && formatsReady()) {
             val path = pendingStartPath ?: return
@@ -2132,14 +2177,21 @@ class ContinuousSegmentCamera(
                 transitionPtsUs = pendingWatermarkTransitionPtsUs,
             )) {
                 SplitVideoSampleAction.ROTATE -> {
-                    rotateMuxerAtKeyFrame(buffer, info)
+                    rotateMuxerAtKeyFrame(buffer, info, watermarkRendered)
                     return
                 }
                 SplitVideoSampleAction.DROP_TRANSITION -> return
                 SplitVideoSampleAction.WRITE_CURRENT -> Unit
             }
         }
-        recordingMuxPipeline.writeVideo(buffer, info.presentationTimeUs, info.flags)
+        if (recordingMuxPipeline.writeVideo(
+                buffer,
+                info.presentationTimeUs,
+                info.flags,
+            )
+        ) {
+            liveWatermarkSegmentState.markMuxedWatermarkSample(watermarkRendered)
+        }
     }
 
     private fun handleVideoEncoderOutputFormatChanged() {
@@ -2161,14 +2213,16 @@ class ContinuousSegmentCamera(
         }
     }
 
-    private fun rotateMuxerAtKeyFrame(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+    private fun rotateMuxerAtKeyFrame(
+        buffer: ByteBuffer,
+        info: MediaCodec.BufferInfo,
+        watermarkRendered: Boolean?,
+    ) {
         val result = splitResult ?: return
         val nextPath = pendingSplitPath ?: return
         if (recordingMuxPipeline.currentPath == null) return
         try {
             val transitionPtsUs = pendingWatermarkTransitionPtsUs
-            val transitionRendered = pendingWatermarkTransitionRendered
-            val transitionFailed = cameraGlCompositor?.hasWatermarkOverlayFailed() == true
             val rotation = recordingMuxPipeline.rotateAtKeyFrame(
                 nextPath = nextPath,
                 buffer = buffer,
@@ -2181,16 +2235,11 @@ class ContinuousSegmentCamera(
             splitResult = null
             pendingSplitPath = null
             pendingWatermarkTransitionPtsUs = null
-            pendingWatermarkTransitionRendered = false
             val watermarkDisposition = liveWatermarkDispositionWire()
             liveWatermarkSegmentState.reset()
             activeWatermarkTrackingNumber = pendingNextTrackingNumber.orEmpty()
             pendingNextTrackingNumber = null
-            if (transitionRendered && !transitionFailed) {
-                liveWatermarkSegmentState.markWatermarkRendered()
-            } else {
-                liveWatermarkSegmentState.markWatermarkFailure()
-            }
+            liveWatermarkSegmentState.markMuxedWatermarkSample(watermarkRendered)
             if (cameraSurfacePipeline != CameraSurfacePipeline.GL_COMPOSITOR ||
                 cameraGlCompositor == null
             ) {
@@ -2209,7 +2258,8 @@ class ContinuousSegmentCamera(
             pendingSplitPath = null
             pendingNextTrackingNumber = null
             pendingWatermarkTransitionPtsUs = null
-            pendingWatermarkTransitionRendered = false
+            liveWatermarkSegmentState.markWatermarkFailure()
+            encodedWatermarkFrameTracker.reset()
             cameraGlCompositor?.setWatermark(activeWatermarkTrackingNumber)
             replyError(result, "split_failed", "录像分段保存失败")
             notifyNativeError("录像分段保存失败", error)
@@ -2242,6 +2292,7 @@ class ContinuousSegmentCamera(
         try {
             val summary = recordingMuxPipeline.finishStop(System.currentTimeMillis())
             val watermarkDisposition = liveWatermarkDispositionWire()
+            encodedWatermarkFrameTracker.reset()
             cameraGlCompositor?.setEncoderEnabled(false)
             cameraGlCompositor?.clearWatermark()
             activeWatermarkTrackingNumber = ""
@@ -2260,6 +2311,7 @@ class ContinuousSegmentCamera(
                 ))
             }
         } catch (error: Throwable) {
+            encodedWatermarkFrameTracker.reset()
             stopResult = null
             pendingNextTrackingNumber = null
             cameraGlCompositor?.setEncoderEnabled(false)
@@ -2280,7 +2332,7 @@ class ContinuousSegmentCamera(
         pendingStartPath = null
         pendingNextTrackingNumber = null
         pendingWatermarkTransitionPtsUs = null
-        pendingWatermarkTransitionRendered = false
+        encodedWatermarkFrameTracker.reset()
         recordingRequested = false
         recordingActive = false
         cameraGlCompositor?.setEncoderEnabled(false)
@@ -2620,6 +2672,7 @@ class ContinuousSegmentCamera(
             runCatching { cameraDevice?.close() }
             cameraDevice = null
             releaseCameraGlCompositor()
+            encodedWatermarkFrameTracker.reset()
             recordingVideoEncoder.release()
             cam.post {
                 if (disposed || generation != probeGeneration) {
@@ -2788,6 +2841,8 @@ class ContinuousSegmentCamera(
                     sessionConfigStage, sessionConfigAttempts, initFailureStage, initFailureDetail,
                     startFailureStage, startFailureDetail, recordingFallbackMode,
                     cameraSurfacePipeline.name.lowercase(), cameraSurfaceFallbackReason,
+                    glFailureStage, glFailureOutput, glFailureApi, glFailureErrorCode,
+                    glFailureType,
                 ),
                 CameraCapabilityDiagnostics(
                     capabilityMode.name.lowercase(),
