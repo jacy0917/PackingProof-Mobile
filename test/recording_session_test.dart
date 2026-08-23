@@ -753,6 +753,12 @@ void main() {
     final String firstPath = '${root.path}/a-first.mp4';
     final String secondPath = '${root.path}/b-second.mp4';
     final String thirdPath = '${root.path}/c-third.mp4';
+    await Future.wait<void>(<Future<void>>[
+      File(firstPath).writeAsBytes(const <int>[1]),
+      File(secondPath).writeAsBytes(const <int>[2]),
+      File(thirdPath).writeAsBytes(const <int>[3]),
+    ]);
+    await repository.resumeSharedFileMigration();
     await repository.addSessions(<RecordingSession>[
       RecordingSession(
         id: 'first',
