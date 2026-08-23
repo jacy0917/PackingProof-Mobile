@@ -1800,7 +1800,7 @@ void main() {
     expect(find.text('备份完成'), findsOneWidget);
     expect(find.byKey(const Key('backup-now-button')), findsOneWidget);
     expect(find.byKey(const Key('auto-backup-button')), findsOneWidget);
-    expect(find.text('暂停备份'), findsOneWidget);
+    expect(find.text('暂停上传'), findsOneWidget);
     expect(find.byType(Switch), findsNothing);
     final Rect backupCardRect = tester.getRect(
       find.byKey(const Key('computer-backup-settings')),
@@ -2061,7 +2061,7 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pumpAndSettle();
-    expect(find.text('开启备份'), findsOneWidget);
+    expect(find.text('继续上传'), findsOneWidget);
     final FilledButton autoButton = tester.widget<FilledButton>(
       find.byKey(const Key('auto-backup-button')),
     );
@@ -3464,6 +3464,13 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(remoteLoadCount, 1);
+    final double progressWidth = tester
+        .getRect(find.byKey(const Key('backup-progress-slot')))
+        .width;
+    final double cardWidth = tester
+        .getRect(find.byKey(const Key('computer-backup-settings')))
+        .width;
+    expect(progressWidth, closeTo(cardWidth - 28, 0.1));
 
     snapshots.value = LanBackupSnapshot(
       endpoint: snapshots.value.endpoint,

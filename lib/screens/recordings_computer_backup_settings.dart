@@ -437,30 +437,33 @@ class _ComputerBackupSettings extends StatelessWidget {
               ),
           ],
           if (snapshot.endpoint != null) ...<Widget>[
-            Stack(
-              clipBehavior: Clip.none,
-              children: <Widget>[
-                Text(
-                  key: const Key('connected-computer-summary'),
-                  status ?? remainingLabel,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: colors.onSurfaceVariant,
-                    fontSize: 12,
-                    height: 1.35,
-                    fontWeight: FontWeight.w600,
+            SizedBox(
+              width: double.infinity,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: <Widget>[
+                  Text(
+                    key: const Key('connected-computer-summary'),
+                    status ?? remainingLabel,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: colors.onSurfaceVariant,
+                      fontSize: 12,
+                      height: 1.35,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
-                if (active != null && !needsRepair)
-                  Positioned(
-                    key: const Key('backup-progress-slot'),
-                    left: 0,
-                    right: 0,
-                    bottom: -6,
-                    child: LinearProgressIndicator(value: active.progress),
-                  ),
-              ],
+                  if (active != null && !needsRepair)
+                    Positioned(
+                      key: const Key('backup-progress-slot'),
+                      left: 0,
+                      right: 0,
+                      bottom: -6,
+                      child: LinearProgressIndicator(value: active.progress),
+                    ),
+                ],
+              ),
             ),
           ],
           if (showRetention) ...<Widget>[
@@ -579,7 +582,7 @@ class _ComputerBackupSettings extends StatelessWidget {
                             ? null
                             : colors.onErrorContainer,
                       ),
-                      child: Text(snapshot.autoEnabled ? '暂停备份' : '开启备份'),
+                      child: Text(snapshot.autoEnabled ? '暂停上传' : '继续上传'),
                     ),
                   ),
                 ],
