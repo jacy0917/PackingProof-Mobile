@@ -128,7 +128,7 @@ class LanBackupStateStoreSummaryTest {
         assertEquals("network", summary.dominantFailureKind)
         assertEquals(failed.getString("id"), summary.problemJob?.id)
         assertEquals(1, selected.jobs.size)
-        assertEquals(first.canonicalPath, selected.jobs.single().filePath)
+        assertEquals(first.absolutePath, selected.jobs.single().filePath)
         assertEquals(1, selected.missingPaths.size)
         runCatching { store.jobsForPaths(List(101) { "$root/$it.mp4" }) }
             .onSuccess { throw AssertionError("101 个路径必须被拒绝") }
