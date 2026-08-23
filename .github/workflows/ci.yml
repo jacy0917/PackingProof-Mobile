@@ -114,7 +114,8 @@ jobs:
           xcodebuild test \
             -workspace ios/Runner.xcworkspace \
             -scheme Runner \
-            -destination "platform=iOS Simulator,arch=x86_64,id=${{ steps.simulator.outputs.udid }}" \
+            -destination "platform=iOS Simulator,arch=arm64,id=${{ steps.simulator.outputs.udid }}" \
+            -parallel-testing-enabled NO \
             -resultBundlePath build/test-results/ios/RunnerTests.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             | tee build/test-results/ios/xcodebuild.log
