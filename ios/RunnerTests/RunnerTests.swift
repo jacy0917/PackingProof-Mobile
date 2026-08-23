@@ -2700,6 +2700,7 @@ class RunnerTests: XCTestCase {
 
     let counts = await tracker.counts()
     XCTAssertEqual(counts.started, 0)
+    api.drainSummaryQueueForTesting()
   }
 
   func testTenThousandCleanupTriggersDuringRecordingSharePausedRunner()
