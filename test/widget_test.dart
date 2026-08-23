@@ -442,7 +442,7 @@ void main() {
     final Positioned watermarkPosition = tester.widget<Positioned>(
       find.byKey(const Key('camera-watermark-position')),
     );
-    expect(watermarkPosition.top, closeTo(27.733, 0.01));
+    expect(watermarkPosition.top, closeTo(69.333, 0.01));
     expect(watermarkPosition.left, 70);
     expect(watermarkPosition.right, isNull);
 
@@ -455,10 +455,10 @@ void main() {
     expect(watermarkOutline.textAlign, TextAlign.center);
     expect(watermarkOutline.style?.foreground?.style, PaintingStyle.stroke);
     expect(watermarkOutline.style?.foreground?.color, Colors.black);
-    expect(watermarkOutline.style?.fontSize, closeTo(61 * 390 / 1080, 0.0001));
+    expect(watermarkOutline.style?.fontSize, closeTo(44 * 390 / 1080, 0.0001));
     expect(
       watermarkOutline.style?.foreground?.strokeWidth,
-      closeTo(6.1 * 390 / 1080, 0.0001),
+      closeTo(4.4 * 390 / 1080, 0.0001),
     );
     expect(watermarkFill.textAlign, TextAlign.center);
     expect(watermarkFill.style?.color, Colors.white);

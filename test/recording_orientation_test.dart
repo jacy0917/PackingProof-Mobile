@@ -25,7 +25,10 @@ void main() {
           ? const Size(1080, 1920)
           : const Size(1920, 1080);
       expect(geometry.outputRect.center.dx, output.width / 2);
-      expect(geometry.outputRect.top, output.height * watermarkTopFraction);
+      expect(
+        geometry.outputRect.top,
+        output.height * watermarkTopFractionFor(orientation),
+      );
     }
   });
 
@@ -35,8 +38,8 @@ void main() {
       viewportWidth: 390,
       sourceVideoSize: const Size(1080, 1920),
     );
-    expect(portrait.fontSize, closeTo(61 * 390 / 1080, 0.0001));
-    expect(portrait.strokeWidth, closeTo(6.1 * 390 / 1080, 0.0001));
+    expect(portrait.fontSize, closeTo(44 * 390 / 1080, 0.0001));
+    expect(portrait.strokeWidth, closeTo(4.4 * 390 / 1080, 0.0001));
 
     for (final RecordingOrientation orientation in <RecordingOrientation>[
       RecordingOrientation.landscapeLeft,
@@ -70,8 +73,8 @@ void main() {
         viewportWidth: 390,
         sourceVideoSize: sourceVideoSize,
       );
-      expect(fallback.fontSize, closeTo(61 * 390 / 1080, 0.0001));
-      expect(fallback.strokeWidth, closeTo(6.1 * 390 / 1080, 0.0001));
+      expect(fallback.fontSize, closeTo(44 * 390 / 1080, 0.0001));
+      expect(fallback.strokeWidth, closeTo(4.4 * 390 / 1080, 0.0001));
     }
 
     for (final double viewportWidth in <double>[

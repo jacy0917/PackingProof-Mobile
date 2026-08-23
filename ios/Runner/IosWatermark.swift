@@ -2,7 +2,19 @@ import Foundation
 import QuartzCore
 import UIKit
 
-private let iosWatermarkTopFraction: CGFloat = 0.04
+private let iosPortraitWatermarkTopFraction: CGFloat = 0.10
+private let iosLandscapeWatermarkTopFraction: CGFloat = 0.04
+
+func iosWatermarkTopFraction(forOutputSize outputSize: CGSize) -> CGFloat {
+  outputSize.height > outputSize.width
+    ? iosPortraitWatermarkTopFraction
+    : iosLandscapeWatermarkTopFraction
+}
+
+func iosWatermarkFontSize(forOutputSize outputSize: CGSize) -> CGFloat {
+  let maximum: CGFloat = outputSize.height > outputSize.width ? 44 : 61
+  return max(35, min(maximum, outputSize.height * 0.032))
+}
 
 /// 保持固定 1080x1920 竖屏采集缓冲不变，仅用 MP4 轨道元数据表达最终录像方向。
 func iosRecordingTransform(for recordingOrientation: String) -> CGAffineTransform {
@@ -70,7 +82,7 @@ struct IosWatermarkLayout {
     naturalSize: CGSize,
     preferredTransform: CGAffineTransform,
     textSize: CGSize,
-    topFraction: CGFloat = iosWatermarkTopFraction
+    topFraction: CGFloat? = nil
   ) -> IosWatermarkLayout {
     let renderSize = resolvedRenderSize(
       naturalSize: naturalSize,
@@ -86,7 +98,10 @@ struct IosWatermarkLayout {
         x: (renderSize.width - width) / 2,
         y: max(
           0,
-          renderSize.height - renderSize.height * topFraction - height
+          renderSize.height
+            - renderSize.height
+              * (topFraction ?? iosWatermarkTopFraction(forOutputSize: renderSize))
+            - height
         ),
         width: width,
         height: height
@@ -155,6 +170,16 @@ enum IosLiveWatermarkError: Error {
   case planExpired(requestedSecond: Int64, availableSecond: Int64)
 }
 
+func iosLiveWatermarkErrorIsTransient(_ error: Error) -> Bool {
+  switch error {
+  case IosLiveWatermarkError.planNotReady,
+       IosLiveWatermarkError.planExpired:
+    return true
+  default:
+    return false
+  }
+}
+
 struct IosLiveWatermarkGeometry {
   static func outputSize(
     sourceWidth: Int,
@@ -188,7 +213,10 @@ struct IosLiveWatermarkGeometry {
     CGPoint(
       x: max(0, (outputSize.width - rasterSize.width) / 2),
       y: min(
-        max(0, outputSize.height * iosWatermarkTopFraction),
+        max(
+          0,
+          outputSize.height * iosWatermarkTopFraction(forOutputSize: outputSize)
+        ),
         max(0, outputSize.height - rasterSize.height)
       )
     )
@@ -255,26 +283,14 @@ private struct IosLiveWatermarkPlan {
   let generation: Int64
   let configuration: IosLiveWatermarkPlanConfiguration
   let rasterPixelCount: Int
-  let timestampBlendPixels: [IosLiveWatermarkBlendPixel]
-  let trackingBlendPixels: [IosLiveWatermarkBlendPixel]
-
-  var blendPixelCount: Int {
-    timestampBlendPixels.count + trackingBlendPixels.count
-  }
-}
-
-private struct IosLiveWatermarkStaticLayer {
-  let generation: Int64
-  let configuration: IosLiveWatermarkPlanConfiguration
-  let rasterLayout: IosLiveWatermarkRasterLayout
-  let rasterPixelCount: Int
   let blendPixels: [IosLiveWatermarkBlendPixel]
+
+  var blendPixelCount: Int { blendPixels.count }
 }
 
 private struct IosLiveWatermarkRasterLayout {
   let width: Int
   let height: Int
-  let timestampHeight: Int
   let fontSize: CGFloat
   let padding: CGFloat
 }
@@ -301,10 +317,7 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
   private var requestedPlanWindow: ClosedRange<Int64>?
   private var planFailure: IosLiveWatermarkError?
   private var lastAppliedPlanSecond: Int64?
-  /// 仅在 watermarkQueue 读写；generation/configuration 校验负责淘汰旧段缓存。
-  private var workerStaticLayer: IosLiveWatermarkStaticLayer?
-  private var trackingRasterizationCount = 0
-  private var timestampRasterizationCount = 0
+  private var rasterizationCount = 0
 
   var lastRasterPixelCount: Int {
     planLock.lock()
@@ -365,8 +378,7 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     requestedPlanWindow = (second - 1)...(second + 1)
     planFailure = nil
     lastAppliedPlanSecond = nil
-    trackingRasterizationCount = 0
-    timestampRasterizationCount = 0
+    rasterizationCount = 0
     planLock.unlock()
     cancelledCompletions.forEach { $0(.failure(IosLiveWatermarkError.planNotReady)) }
 
@@ -431,8 +443,7 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     requestedPlanWindow = (second - 1)...(second + 1)
     planFailure = nil
     lastAppliedPlanSecond = nil
-    trackingRasterizationCount = 0
-    timestampRasterizationCount = 0
+    rasterizationCount = 0
     planLock.unlock()
     cancelledCompletions.forEach { $0(.failure(IosLiveWatermarkError.planNotReady)) }
     enqueuePlanRequests([
@@ -526,11 +537,7 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     guard let plan else {
       throw IosLiveWatermarkError.planNotReady
     }
-    try blend(
-      timestampPixels: plan.timestampBlendPixels,
-      trackingPixels: plan.trackingBlendPixels,
-      into: pixelBuffer
-    )
+    try blend(plan.blendPixels, into: pixelBuffer)
   }
 
   func reset() {
@@ -544,8 +551,7 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     requestedPlanWindow = nil
     planFailure = nil
     lastAppliedPlanSecond = nil
-    trackingRasterizationCount = 0
-    timestampRasterizationCount = 0
+    rasterizationCount = 0
     planLock.unlock()
     cancelledCompletions.forEach { $0(.failure(IosLiveWatermarkError.planNotReady)) }
   }
@@ -650,87 +656,35 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     dispatchPrecondition(condition: .onQueue(watermarkQueue))
     let date = Date(timeIntervalSince1970: Double(second))
     let timestamp = timestampText(date: date)
-    let staticLayer = try makeStaticLayer(
-      generation: generation,
-      configuration: configuration,
-      timestamp: timestamp
+    let text = configuration.trackingNumber.isEmpty
+      ? timestamp
+      : "\(timestamp)\n\(configuration.trackingNumber)"
+    let layout = makeRasterLayout(
+      text: text,
+      outputSize: configuration.outputSize
     )
     let raster = try makeRaster(
-      text: timestamp,
-      layout: staticLayer.rasterLayout,
-      height: staticLayer.rasterLayout.timestampHeight
+      text: text,
+      layout: layout,
+      height: layout.height
     )
     recordRasterization(generation: generation, configuration: configuration) {
-      timestampRasterizationCount += 1
+      rasterizationCount += 1
     }
     return IosLiveWatermarkPlan(
       second: second,
       generation: generation,
       configuration: configuration,
-      rasterPixelCount: raster.width * raster.height + staticLayer.rasterPixelCount,
-      timestampBlendPixels: makeBlendPixels(
+      rasterPixelCount: raster.width * raster.height,
+      blendPixels: makeBlendPixels(
         raster,
         outputSize: configuration.outputSize,
         sourceWidth: configuration.sourceWidth,
         sourceHeight: configuration.sourceHeight,
         bytesPerRow: configuration.bytesPerRow,
         orientation: configuration.orientation
-      ),
-      trackingBlendPixels: staticLayer.blendPixels
+      )
     )
-  }
-
-  private func makeStaticLayer(
-    generation: Int64,
-    configuration: IosLiveWatermarkPlanConfiguration,
-    timestamp: String
-  ) throws -> IosLiveWatermarkStaticLayer {
-    dispatchPrecondition(condition: .onQueue(watermarkQueue))
-    if let workerStaticLayer,
-       workerStaticLayer.generation == generation,
-       workerStaticLayer.configuration == configuration {
-      return workerStaticLayer
-    }
-    let layout = makeRasterLayout(
-      timestamp: timestamp,
-      trackingNumber: configuration.trackingNumber,
-      outputSize: configuration.outputSize
-    )
-    let layer: IosLiveWatermarkStaticLayer
-    if configuration.trackingNumber.isEmpty {
-      layer = IosLiveWatermarkStaticLayer(
-        generation: generation,
-        configuration: configuration,
-        rasterLayout: layout,
-        rasterPixelCount: 0,
-        blendPixels: []
-      )
-    } else {
-      let raster = try makeRaster(
-        text: "\n\(configuration.trackingNumber)",
-        layout: layout,
-        height: layout.height
-      )
-      layer = IosLiveWatermarkStaticLayer(
-        generation: generation,
-        configuration: configuration,
-        rasterLayout: layout,
-        rasterPixelCount: raster.width * raster.height,
-        blendPixels: makeBlendPixels(
-          raster,
-          outputSize: configuration.outputSize,
-          sourceWidth: configuration.sourceWidth,
-          sourceHeight: configuration.sourceHeight,
-          bytesPerRow: configuration.bytesPerRow,
-          orientation: configuration.orientation
-        )
-      )
-      recordRasterization(generation: generation, configuration: configuration) {
-        trackingRasterizationCount += 1
-      }
-    }
-    workerStaticLayer = layer
-    return layer
   }
 
   private func recordRasterization(
@@ -847,16 +801,10 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     return lastAppliedPlanSecond
   }
 
-  var trackingRasterizationCountForTesting: Int {
+  var rasterizationCountForTesting: Int {
     planLock.lock()
     defer { planLock.unlock() }
-    return trackingRasterizationCount
-  }
-
-  var timestampRasterizationCountForTesting: Int {
-    planLock.lock()
-    defer { planLock.unlock() }
-    return timestampRasterizationCount
+    return rasterizationCount
   }
 
   private func timestampText(date: Date) -> String {
@@ -864,12 +812,11 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
   }
 
   private func watermarkFontSize(outputSize: CGSize) -> CGFloat {
-    max(35, min(61, outputSize.height * 0.032))
+    iosWatermarkFontSize(forOutputSize: outputSize)
   }
 
   private func makeRasterLayout(
-    timestamp: String,
-    trackingNumber: String,
+    text: String,
     outputSize: CGSize
   ) -> IosLiveWatermarkRasterLayout {
     let fontSize = watermarkFontSize(outputSize: outputSize)
@@ -879,22 +826,8 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     let lineHeight = fontSize * 1.25
     paragraph.minimumLineHeight = lineHeight
     paragraph.maximumLineHeight = lineHeight
-    let text = trackingNumber.isEmpty
-      ? timestamp
-      : "\(timestamp)\n\(trackingNumber)"
     let measurement = NSAttributedString(
       string: text,
-      attributes: [.font: font, .paragraphStyle: paragraph]
-    ).boundingRect(
-      with: CGSize(
-        width: max(1, outputSize.width),
-        height: CGFloat.greatestFiniteMagnitude
-      ),
-      options: [.usesLineFragmentOrigin, .usesFontLeading],
-      context: nil
-    )
-    let timestampMeasurement = NSAttributedString(
-      string: timestamp,
       attributes: [.font: font, .paragraphStyle: paragraph]
     ).boundingRect(
       with: CGSize(
@@ -911,10 +844,6 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     return IosLiveWatermarkRasterLayout(
       width: width,
       height: height,
-      timestampHeight: max(
-        1,
-        Int(ceil(timestampMeasurement.height + padding * 2))
-      ),
       fontSize: fontSize,
       padding: padding
     )
@@ -1044,8 +973,7 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
   }
 
   private func blend(
-    timestampPixels: [IosLiveWatermarkBlendPixel],
-    trackingPixels: [IosLiveWatermarkBlendPixel],
+    _ pixels: [IosLiveWatermarkBlendPixel],
     into pixelBuffer: CVPixelBuffer
   ) throws {
     let lockResult = CVPixelBufferLockBaseAddress(pixelBuffer, [])
@@ -1057,8 +985,7 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
       throw IosLiveWatermarkError.missingBaseAddress
     }
     let destination = baseAddress.assumingMemoryBound(to: UInt8.self)
-    blend(trackingPixels, into: destination)
-    blend(timestampPixels, into: destination)
+    blend(pixels, into: destination)
   }
 
   private func blend(

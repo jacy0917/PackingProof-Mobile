@@ -6,6 +6,23 @@ import UIKit
 import XCTest
 
 final class IosWatermarkRasterTests: XCTestCase {
+  func testPlanReadinessErrorsRemainRetryable() {
+    XCTAssertTrue(
+      iosLiveWatermarkErrorIsTransient(IosLiveWatermarkError.planNotReady)
+    )
+    XCTAssertTrue(
+      iosLiveWatermarkErrorIsTransient(
+        IosLiveWatermarkError.planExpired(
+          requestedSecond: 12,
+          availableSecond: 10
+        )
+      )
+    )
+    XCTAssertFalse(
+      iosLiveWatermarkErrorIsTransient(IosLiveWatermarkError.rasterizationFailed)
+    )
+  }
+
   func testAttributedTextUsesFixedPreviewLineHeight() throws {
     let fontSize: CGFloat = 40
     let text = IosWatermarkStyle.attributedText(
@@ -219,8 +236,13 @@ final class IosWatermarkRasterTests: XCTestCase {
         orientation: orientation
       )
       XCTAssertEqual(bounds.midX, output.width / 2, accuracy: 2, orientation)
-      XCTAssertGreaterThanOrEqual(bounds.minY, output.height * 0.04, orientation)
-      XCTAssertLessThanOrEqual(bounds.minY, output.height * 0.04 + 26, orientation)
+      let topFraction = iosWatermarkTopFraction(forOutputSize: output)
+      XCTAssertGreaterThanOrEqual(bounds.minY, output.height * topFraction, orientation)
+      XCTAssertLessThanOrEqual(
+        bounds.minY,
+        output.height * topFraction + 26,
+        orientation
+      )
       XCTAssertGreaterThan(bounds.brightPixels, 40, orientation)
       XCTAssertGreaterThan(bounds.darkPixels, 40, orientation)
     }
@@ -287,7 +309,7 @@ final class IosWatermarkRasterTests: XCTestCase {
     }
   }
 
-  func testLiveWatermarkRasterOriginIsExactlyTopFourPercentAndCentered() {
+  func testLiveWatermarkRasterOriginUsesOrientationSpecificTopMarginAndCenters() {
     for output in [
       CGSize(width: 1080, height: 1920),
       CGSize(width: 1920, height: 1080),
@@ -298,7 +320,10 @@ final class IosWatermarkRasterTests: XCTestCase {
         rasterSize: raster
       )
       XCTAssertEqual(origin.x + raster.width / 2, output.width / 2)
-      XCTAssertEqual(origin.y, output.height * 0.04)
+      XCTAssertEqual(
+        origin.y,
+        output.height * iosWatermarkTopFraction(forOutputSize: output)
+      )
     }
   }
 
@@ -341,7 +366,7 @@ final class IosWatermarkRasterTests: XCTestCase {
     )
   }
 
-  func testLiveRendererRasterizesTrackingOnlyOnceAcrossSixtySeconds() throws {
+  func testLiveRendererPublishesOneCompleteRasterPerSecond() throws {
     let second: Int64 = 1_776_768_896
     let buffer = try makePixelBuffer(width: 1080, height: 1920)
     fill(buffer, blue: 80, green: 96, red: 112)
@@ -366,12 +391,11 @@ final class IosWatermarkRasterTests: XCTestCase {
       renderer.waitForPendingPlansForTesting()
     }
 
-    XCTAssertEqual(renderer.trackingRasterizationCountForTesting, 1)
-    XCTAssertEqual(renderer.timestampRasterizationCountForTesting, 61)
+    XCTAssertEqual(renderer.rasterizationCountForTesting, 61)
     XCTAssertLessThanOrEqual(renderer.preparedSecondsForTesting.count, 2)
   }
 
-  func testLiveRendererSkipsStaticRasterForEmptyTrackingNumber() throws {
+  func testLiveRendererRasterizesBoundedPlansForEmptyTrackingNumber() throws {
     let date = Date(timeIntervalSince1970: 1_776_768_896)
     let buffer = try makePixelBuffer(width: 1080, height: 1920)
     let renderer = IosLiveWatermarkRenderer(
@@ -386,8 +410,7 @@ final class IosWatermarkRasterTests: XCTestCase {
     )
     renderer.waitForPendingPlansForTesting()
 
-    XCTAssertEqual(renderer.trackingRasterizationCountForTesting, 0)
-    XCTAssertEqual(renderer.timestampRasterizationCountForTesting, 2)
+    XCTAssertEqual(renderer.rasterizationCountForTesting, 2)
   }
 
   func testLiveRendererReusesPreviousPlanUntilNextSecondIsReady() throws {
@@ -494,8 +517,7 @@ final class IosWatermarkRasterTests: XCTestCase {
     }
 
     XCTAssertEqual(renderer.preparedSecondsForTesting, [second, second + 1])
-    XCTAssertEqual(renderer.trackingRasterizationCountForTesting, 1)
-    XCTAssertEqual(renderer.timestampRasterizationCountForTesting, 2)
+    XCTAssertEqual(renderer.rasterizationCountForTesting, 2)
     XCTAssertEqual(renderer.pendingPlanRequestCountForTesting, 0)
     XCTAssertEqual(renderer.scheduledPlanCountForTesting, 0)
   }
@@ -776,7 +798,7 @@ final class IosWatermarkRasterTests: XCTestCase {
     )
 
     for fixture in fixtures {
-      let fontSize = max(35, min(61, fixture.expected.height * 0.032))
+      let fontSize = iosWatermarkFontSize(forOutputSize: fixture.expected)
       let firstText = IosWatermarkStyle.attributedText(
         timeline.text(at: 0),
         fontSize: fontSize
@@ -789,7 +811,8 @@ final class IosWatermarkRasterTests: XCTestCase {
       XCTAssertEqual(layout.renderSize, fixture.expected, fixture.name)
       XCTAssertEqual(
         layout.renderSize.height - layout.textFrame.maxY,
-        fixture.expected.height * 0.04,
+        fixture.expected.height
+          * iosWatermarkTopFraction(forOutputSize: fixture.expected),
         accuracy: 0.0001,
         fixture.name
       )
@@ -943,7 +966,7 @@ final class IosWatermarkRasterTests: XCTestCase {
       sourceHeight: sourceHeight,
       orientation: orientation
     )
-    let fontSize = max(35, min(61, outputSize.height * 0.032))
+    let fontSize = iosWatermarkFontSize(forOutputSize: outputSize)
     let font = UIFont.boldSystemFont(ofSize: fontSize)
     let paragraph = NSMutableParagraphStyle()
     paragraph.alignment = .center

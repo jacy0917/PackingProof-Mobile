@@ -210,7 +210,8 @@ class RunnerTests: XCTestCase {
       XCTAssertEqual(layout.textFrame.midX, layout.renderSize.width / 2)
       XCTAssertEqual(
         layout.renderSize.height - layout.textFrame.maxY,
-        layout.renderSize.height * 0.04,
+        layout.renderSize.height
+          * iosWatermarkTopFraction(forOutputSize: layout.renderSize),
         accuracy: 0.0001
       )
     }

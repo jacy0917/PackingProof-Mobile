@@ -2,7 +2,13 @@ import 'dart:math' as math;
 import 'package:flutter/widgets.dart';
 import '../models/recording_orientation.dart';
 
-const double watermarkTopFraction = 0.04;
+const double portraitWatermarkTopFraction = 0.10;
+const double landscapeWatermarkTopFraction = 0.04;
+
+double watermarkTopFractionFor(RecordingOrientation orientation) =>
+    orientation == RecordingOrientation.portrait
+    ? portraitWatermarkTopFraction
+    : landscapeWatermarkTopFraction;
 
 /// 以录像变换为唯一真相的水印几何结果。
 class WatermarkGeometry {
@@ -55,7 +61,13 @@ WatermarkPreviewMetrics watermarkPreviewMetrics({
   final double outputHeight = orientation == RecordingOrientation.portrait
       ? portraitHeight
       : portraitWidth;
-  final double outputFontSize = (outputHeight * 0.032).clamp(35, 61);
+  final double maximumFontSize = orientation == RecordingOrientation.portrait
+      ? 44
+      : 61;
+  final double outputFontSize = (outputHeight * 0.032).clamp(
+    35,
+    maximumFontSize,
+  );
   final double previewScale = viewportWidth / portraitWidth;
   return WatermarkPreviewMetrics(
     fontSize: outputFontSize * previewScale,
@@ -77,7 +89,7 @@ WatermarkGeometry watermarkGeometry({
   final Rect target = Rect.fromLTWH(
     math.max(0, (output.width - width) / 2),
     math.min(
-      output.height * watermarkTopFraction,
+      output.height * watermarkTopFractionFor(orientation),
       math.max(0, output.height - height),
     ),
     width,

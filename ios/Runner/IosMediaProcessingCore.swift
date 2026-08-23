@@ -133,7 +133,7 @@ final class IosMediaProcessingCore {
           naturalSize: sourceVideo.naturalSize,
           preferredTransform: sourceVideo.preferredTransform
         )
-        let fontSize = max(35, min(61, renderSize.height * 0.032))
+        let fontSize = iosWatermarkFontSize(forOutputSize: renderSize)
         let timeline = IosWatermarkTimeline(
           startedAtMs: request.startedAtMs,
           trackingNumber: request.trackingNumber
