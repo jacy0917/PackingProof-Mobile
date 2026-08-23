@@ -524,6 +524,8 @@ final class IosCameraHostApi:
   private let eventApi: CameraEventApi
   private let textures: FlutterTextureRegistry
   private let audioSessionCoordinator: IosSharedAudioSessionCoordinator
+  private let recordingActivityState: IosRecordingActivityState
+  private let recordingActivityOwner = UUID()
   private let session = AVCaptureSession()
   private let sessionQueue = DispatchQueue(label: "packingproof.camera.session")
   private let metadataQueue = DispatchQueue(label: "packingproof.camera.metadata")
@@ -595,11 +597,13 @@ final class IosCameraHostApi:
   init(
     eventApi: CameraEventApi,
     textures: FlutterTextureRegistry,
-    audioSessionCoordinator: IosSharedAudioSessionCoordinator = .shared
+    audioSessionCoordinator: IosSharedAudioSessionCoordinator = .shared,
+    recordingActivityState: IosRecordingActivityState = .shared
   ) {
     self.eventApi = eventApi
     self.textures = textures
     self.audioSessionCoordinator = audioSessionCoordinator
+    self.recordingActivityState = recordingActivityState
     super.init()
     updateTextureId(textures.register(self))
     runtimeErrorObserver = NotificationCenter.default.addObserver(
@@ -613,6 +617,7 @@ final class IosCameraHostApi:
   }
 
   deinit {
+    recordingActivityState.setActive(false, owner: recordingActivityOwner)
     markDisposed()
     recordingLifecycle.dispose()
     firstWrittenFrameTiming.cancelIfNeeded()
@@ -779,6 +784,11 @@ final class IosCameraHostApi:
         completion(.failure(self.recordingRequestError(rejection, for: .start)))
         return
       }
+      // Publish work activity before session/writer preparation so cleanup
+      // cannot contend with the first recording startup path.
+      self.recordingActivityState.setActive(
+        true, owner: self.recordingActivityOwner
+      )
       self.recordAudio = recordAudio
       do {
         try self.recordPerformanceStage(
@@ -814,8 +824,15 @@ final class IosCameraHostApi:
             path: path,
             startedAtMs: startedAt
           )))
+        } else {
+          self.recordingActivityState.setActive(
+            false, owner: self.recordingActivityOwner
+          )
         }
       } catch {
+        self.recordingActivityState.setActive(
+          false, owner: self.recordingActivityOwner
+        )
         if self.recordingLifecycle.complete(request, succeeded: false) {
           self.finishPerformanceOperation(
             timing,
@@ -1036,6 +1053,9 @@ final class IosCameraHostApi:
         guard let self else {
           return
         }
+        self.recordingActivityState.setActive(
+          false, owner: self.recordingActivityOwner
+        )
         switch finishResult {
         case .success(let watermarkDisposition):
           guard self.recordingLifecycle.complete(request, succeeded: true) else {
@@ -1430,6 +1450,7 @@ final class IosCameraHostApi:
   }
 
   func dispose(completion: @escaping (Result<Void, Error>) -> Void) {
+    recordingActivityState.setActive(false, owner: recordingActivityOwner)
     markDisposed()
     recordingLifecycle.dispose()
     firstWrittenFrameTiming.cancelIfNeeded()
@@ -1461,6 +1482,7 @@ final class IosCameraHostApi:
 
   /// 终止前同步停止相机并解除纹理注册，保证之后 Flutter 引擎可安全销毁。
   func prepareForTermination() {
+    recordingActivityState.setActive(false, owner: recordingActivityOwner)
     markDisposed()
     recordingLifecycle.dispose()
     firstWrittenFrameTiming.cancelIfNeeded()

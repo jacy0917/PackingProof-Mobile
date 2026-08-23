@@ -522,7 +522,8 @@ final class IosBackupJobStore {
     let cursorClause = afterId == nil ? "" : " AND id > ?"
     let sql = "SELECT * FROM backup_jobs WHERE local_deleted_at IS NULL "
       + "AND state NOT IN ('pending', 'uploading')\(cursorClause) "
-      + "AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i WHERE (i.job_id = backup_jobs.id OR i.original_path = backup_jobs.file_path) AND i.phase IN ('claimed','moving','renamed')) "
+      + "AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i WHERE i.job_id = backup_jobs.id AND i.phase IN ('claimed','moving','renamed')) "
+      + "AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i WHERE i.original_path = backup_jobs.file_path AND i.phase IN ('claimed','moving','renamed')) "
       + "ORDER BY id ASC LIMIT \(limit)"
     var stmt: OpaquePointer?
     try prepare(sql, statement: &stmt, operation: "分页查询清理候选")
@@ -566,10 +567,11 @@ final class IosBackupJobStore {
       let current = checkpoint!
       let cursorClause = current.afterId == nil ? "" : " AND id > ?"
       let predicate = "local_deleted_at IS NULL AND state NOT IN ('pending', 'uploading') "
-        + "AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i WHERE (i.job_id = backup_jobs.id OR i.original_path = backup_jobs.file_path) AND i.phase IN ('claimed','moving','renamed'))"
+        + "AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i WHERE i.job_id = backup_jobs.id AND i.phase IN ('claimed','moving','renamed')) "
+        + "AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i WHERE i.original_path = backup_jobs.file_path AND i.phase IN ('claimed','moving','renamed'))"
       var statement: OpaquePointer?
       try prepare(
-        "SELECT * FROM backup_jobs WHERE \(predicate)\(cursorClause) ORDER BY id ASC LIMIT \(limit)",
+        "SELECT * FROM backup_jobs WHERE \(predicate)\(cursorClause) ORDER BY id ASC LIMIT \(limit + 1)",
         statement: &statement, operation: "读取清理分片"
       )
       defer { sqlite3_finalize(statement) }
@@ -585,18 +587,8 @@ final class IosBackupJobStore {
         }
         jobs.append(try jobFromRow(statement))
       }
-      var hasMore = false
-      if jobs.count == limit, let lastId = jobs.last?["id"] as? String {
-        var moreStatement: OpaquePointer?
-        try prepare(
-          "SELECT EXISTS(SELECT 1 FROM backup_jobs WHERE \(predicate) AND id > ? LIMIT 1)",
-          statement: &moreStatement, operation: "检查后续清理分片"
-        )
-        defer { sqlite3_finalize(moreStatement) }
-        try bindText(moreStatement, 1, lastId)
-        hasMore = sqlite3_step(moreStatement) == SQLITE_ROW
-          && integer(moreStatement, 0) != 0
-      }
+      let hasMore = jobs.count > limit
+      if hasMore { jobs.removeLast() }
       try execute("COMMIT", operation: "提交读取清理分片")
       return IosBackupCleanupSlice(
         generation: current.generation,
@@ -1147,7 +1139,7 @@ final class IosBackupJobStore {
     if try !columnExistsUnlocked(table: "backup_jobs", column: "revision") {
       try execute("ALTER TABLE backup_jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0", operation: "升级任务修订号")
     }
-    try execute("DROP INDEX IF EXISTS idx_backup_jobs_resumable_scan; CREATE INDEX IF NOT EXISTS idx_backup_jobs_file_path ON backup_jobs(file_path); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state ON backup_jobs(state); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state_id ON backup_jobs(state, id); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state_local_revision ON backup_jobs(state, local_deleted_at, revision DESC); CREATE INDEX IF NOT EXISTS idx_backup_jobs_failure_revision ON backup_jobs(state, failure_kind, revision DESC); CREATE INDEX IF NOT EXISTS idx_backup_jobs_storage_recovery ON backup_jobs(state, local_deleted_at, COALESCE(file_created_at, '9999-12-31T23:59:59Z'), id); CREATE INDEX IF NOT EXISTS idx_backup_jobs_revision ON backup_jobs(revision); CREATE INDEX IF NOT EXISTS idx_backup_jobs_cleanup ON backup_jobs(local_deleted_at, state, scheduled_cleanup_at);", operation: "创建备份索引")
+    try execute("DROP INDEX IF EXISTS idx_backup_jobs_resumable_scan; DROP INDEX IF EXISTS idx_backup_jobs_cleanup; CREATE INDEX IF NOT EXISTS idx_backup_jobs_file_path ON backup_jobs(file_path); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state ON backup_jobs(state); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state_id ON backup_jobs(state, id); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state_local_revision ON backup_jobs(state, local_deleted_at, revision DESC); CREATE INDEX IF NOT EXISTS idx_backup_jobs_failure_revision ON backup_jobs(state, failure_kind, revision DESC); CREATE INDEX IF NOT EXISTS idx_backup_jobs_storage_recovery ON backup_jobs(state, local_deleted_at, COALESCE(file_created_at, '9999-12-31T23:59:59Z'), id); CREATE INDEX IF NOT EXISTS idx_backup_jobs_revision ON backup_jobs(revision); CREATE INDEX IF NOT EXISTS idx_backup_jobs_cleanup_scan ON backup_jobs(id) WHERE local_deleted_at IS NULL AND state NOT IN ('pending', 'uploading');", operation: "创建备份索引")
     try execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_cleanup_intents_active_job ON backup_cleanup_intents(job_id) WHERE phase IN ('claimed','moving','renamed')", operation: "创建清理意图索引")
     try execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_cleanup_intents_active_path ON backup_cleanup_intents(original_path) WHERE phase IN ('claimed','moving','renamed')", operation: "创建清理路径索引")
     for key in ["global_revision", "completed_revision", "cleanup_high_watermark", "cleanup_ack_revision", "cleanup_input_sequence"] {

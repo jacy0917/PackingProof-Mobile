@@ -4,6 +4,32 @@ import Foundation
 import Network
 import UIKit
 
+/// Process-local work signal shared by camera and maintenance services.
+/// Owners are independent so releasing an older camera instance cannot clear
+/// the active state published by a newer instance.
+final class IosRecordingActivityState: @unchecked Sendable {
+  static let shared = IosRecordingActivityState()
+
+  private let lock = NSLock()
+  private var activeOwners: Set<UUID> = []
+
+  func setActive(_ active: Bool, owner: UUID) {
+    lock.lock()
+    if active {
+      activeOwners.insert(owner)
+    } else {
+      activeOwners.remove(owner)
+    }
+    lock.unlock()
+  }
+
+  var isActive: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return !activeOwners.isEmpty
+  }
+}
+
 private struct BackupTransferError: Error {
   let statusCode: Int
   let errorCode: String
@@ -414,10 +440,15 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private let storageReclaimOperationOverride:
     (() async throws -> [String?: Any?])?
   private let cleanupOperationOverride: (() async throws -> Void)?
+  private let cleanupConfigurationOverride: (() -> Bool)?
   private let cleanupRetryDelaysNanoseconds: [UInt64]
+  private let recordingActivityState: IosRecordingActivityState
+  private let cleanupWorkPauseNanoseconds: UInt64
+  private let cleanupSliceIntervalNanoseconds: UInt64
   private let afterCleanupRunnerDecisionForTesting: (() -> Void)?
   private let beforeCleanupRetrySleepForTesting: ((Int, UInt64) -> Void)?
   private let beforeCleanupFileProofForTesting: (([String: Any]) -> Void)?
+  private let beforeCleanupCandidateForTesting: (([String: Any]) -> Void)?
   private let beforeCleanupIntentClaimForTesting: (([String: Any]) -> Void)?
   private let beforeCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)?
   private let afterCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)?
@@ -435,7 +466,6 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private let hostResolver = IosLanBackupHostResolver()
   private var cleanupRunning = false
   private var cleanupRequested = false
-  private var cleanupRestartAfterSweep = false
   private var cleanupSliceHasMore = false
   private var cleanupRetryAttempt = 0
   private var cleanupRunnerToken: UInt64 = 0
@@ -467,6 +497,8 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private static let cleanupRetryDelaysNanoseconds: [UInt64] = [
     1, 2, 4, 8, 16,
   ].map { $0 * 1_000_000_000 }
+  private static let cleanupWorkPauseNanoseconds: UInt64 = 250_000_000
+  private static let cleanupSliceIntervalNanoseconds: UInt64 = 100_000_000
   private static let summaryProgressThrottle: TimeInterval = 1
   private static let isoFormatter = ISO8601DateFormatter()
 
@@ -488,6 +520,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
 
   private enum CleanupRunnerDecision {
     case retry(UInt64)
+    case continueAfter(UInt64)
     case finished(exhausted: Bool)
   }
 
@@ -508,9 +541,14 @@ final class IosBackupHostApi: BackupNativeHostApi {
     storageReclaimOperationOverride:
       (() async throws -> [String?: Any?])? = nil,
     cleanupOperationOverride: (() async throws -> Void)? = nil,
+    cleanupConfigurationOverride: (() -> Bool)? = nil,
     cleanupRetryDelaysNanoseconds: [UInt64]? = nil,
+    recordingActivityState: IosRecordingActivityState = .shared,
+    cleanupWorkPauseNanoseconds: UInt64? = nil,
+    cleanupSliceIntervalNanoseconds: UInt64? = nil,
     afterCleanupRunnerDecisionForTesting: (() -> Void)? = nil,
     beforeCleanupRetrySleepForTesting: ((Int, UInt64) -> Void)? = nil,
+    beforeCleanupCandidateForTesting: (([String: Any]) -> Void)? = nil,
     beforeCleanupFileProofForTesting: (([String: Any]) -> Void)? = nil,
     beforeCleanupIntentClaimForTesting: (([String: Any]) -> Void)? = nil,
     beforeCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil,
@@ -530,11 +568,18 @@ final class IosBackupHostApi: BackupNativeHostApi {
     self.uploadOperationOverride = uploadOperationOverride
     self.storageReclaimOperationOverride = storageReclaimOperationOverride
     self.cleanupOperationOverride = cleanupOperationOverride
+    self.cleanupConfigurationOverride = cleanupConfigurationOverride
     self.cleanupRetryDelaysNanoseconds =
       cleanupRetryDelaysNanoseconds ?? Self.cleanupRetryDelaysNanoseconds
+    self.recordingActivityState = recordingActivityState
+    self.cleanupWorkPauseNanoseconds =
+      cleanupWorkPauseNanoseconds ?? Self.cleanupWorkPauseNanoseconds
+    self.cleanupSliceIntervalNanoseconds =
+      cleanupSliceIntervalNanoseconds ?? Self.cleanupSliceIntervalNanoseconds
     self.afterCleanupRunnerDecisionForTesting =
       afterCleanupRunnerDecisionForTesting
     self.beforeCleanupRetrySleepForTesting = beforeCleanupRetrySleepForTesting
+    self.beforeCleanupCandidateForTesting = beforeCleanupCandidateForTesting
     self.beforeCleanupFileProofForTesting = beforeCleanupFileProofForTesting
     self.beforeCleanupIntentClaimForTesting = beforeCleanupIntentClaimForTesting
     self.beforeCleanupRenameForTesting = beforeCleanupRenameForTesting
@@ -577,7 +622,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
         backed: (request["backedRetentionDays"] as? Int) ?? -1
       )
       triggerCleanup()
-      requestUploadDispatch()
+      if hasConfiguredBackupHost() { requestUploadDispatch() }
       completion(.success(try currentSummary()))
     } catch {
       completion(.failure(error))
@@ -684,12 +729,13 @@ final class IosBackupHostApi: BackupNativeHostApi {
       defaults.set(stored, forKey: keys.connection)
       defaults.set(connection["deviceName"] as? String, forKey: keys.deviceName)
       if connection["recoverIncompatibleFailuresOnly"] as? Bool == true,
-         let computerId = connection["computerId"] as? String,
-         try jobStore.get().recoverIncompatibleFailures(
-           destinationComputerId: computerId
-         ) > 0 {
-        requestUploadDispatch()
+         let computerId = connection["computerId"] as? String {
+        _ = try jobStore.get().recoverIncompatibleFailures(
+          destinationComputerId: computerId
+        )
       }
+      triggerCleanup()
+      requestUploadDispatch()
       emitSummary()
       completion(.success(()))
     } catch {
@@ -1060,6 +1106,9 @@ final class IosBackupHostApi: BackupNativeHostApi {
     guard !intents.isEmpty else { return (false, false) }
     var unresolved = false
     for intent in intents {
+      if recordingActivityState.isActive {
+        return (true, true)
+      }
       unresolved = !(try resumeCleanupIntent(intent)) || unresolved
     }
     var hasMore = false
@@ -2335,14 +2384,40 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func triggerCleanup() {
+    guard cleanupMaintenanceNeeded() else {
+      withCleanupLock { lastCleanupAt = Date() }
+      return
+    }
     withCleanupLock {
       guard cleanupRunnerTask == nil else {
         cleanupRequested = true
-        cleanupRestartAfterSweep = true
         return
       }
       startCleanupRunnerUnlocked()
     }
+  }
+
+  private func hasConfiguredBackupHost() -> Bool {
+    if let cleanupConfigurationOverride {
+      return cleanupConfigurationOverride()
+    }
+    guard let connection = defaults.dictionary(forKey: keys.connection),
+          let baseUrl = connection["baseUrl"] as? String,
+          let components = URLComponents(string: baseUrl),
+          ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
+          !(components.host ?? "").isEmpty,
+          !(connection["computerId"] as? String ?? "").isEmpty,
+          let accessKey = try? credentialStore.load(),
+          !accessKey.isEmpty else {
+      return false
+    }
+    return true
+  }
+
+  private func cleanupMaintenanceNeeded() -> Bool {
+    if hasConfiguredBackupHost() { return true }
+    guard case .success(let store) = jobStore else { return false }
+    return ((try? store.cleanupIntents(limit: 1, recoverableOnly: true))?.isEmpty == false)
   }
 
   /// Must be called with cleanupLock held.
@@ -2352,8 +2427,19 @@ final class IosBackupHostApi: BackupNativeHostApi {
     cleanupRunning = true
     cleanupRequested = false
     lastCleanupAt = Date()
-    cleanupRunnerTask = Task.detached { [weak self] in
+    let activityState = recordingActivityState
+    let workPause = cleanupWorkPauseNanoseconds
+    cleanupRunnerTask = Task.detached(priority: .utility) { [weak self] in
       while !Task.isCancelled {
+        while activityState.isActive {
+          do {
+            try await Task.sleep(nanoseconds: workPause)
+          } catch {
+            self?.finishCleanupRunner(token: token)
+            return
+          }
+          guard self?.cleanupRunnerIsCurrent(token: token) == true else { return }
+        }
         let failed = await { [weak self] () async -> Bool? in
           guard let self else { return nil }
           self.withCleanupLock { self.cleanupSliceHasMore = false }
@@ -2373,6 +2459,14 @@ final class IosBackupHostApi: BackupNativeHostApi {
         case .retry(let delay):
           let attempt = self?.withCleanupLock { self?.cleanupRetryAttempt ?? 0 } ?? 0
           self?.beforeCleanupRetrySleepForTesting?(attempt, delay)
+          do {
+            try await Task.sleep(nanoseconds: delay)
+          } catch {
+            self?.finishCleanupRunner(token: token)
+            return
+          }
+          guard self?.cleanupRunnerIsCurrent(token: token) == true else { return }
+        case .continueAfter(let delay):
           do {
             try await Task.sleep(nanoseconds: delay)
           } catch {
@@ -2400,10 +2494,9 @@ final class IosBackupHostApi: BackupNativeHostApi {
         let attempt = cleanupRetryAttempt
         guard attempt < cleanupRetryDelaysNanoseconds.count else {
           cleanupRetryAttempt = 0
-          if cleanupRequested || cleanupRestartAfterSweep {
-            cleanupRestartAfterSweep = false
-            handoffCleanupRunnerUnlocked(token: token)
-            return .finished(exhausted: false)
+          if cleanupRequested {
+            cleanupRequested = false
+            return .continueAfter(cleanupSliceIntervalNanoseconds)
           }
           finalizeCleanupRunnerUnlocked(token: token)
           return .finished(exhausted: true)
@@ -2413,17 +2506,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
       }
       cleanupRetryAttempt = 0
       if cleanupSliceHasMore {
-        handoffCleanupRunnerUnlocked(token: token)
-        return .finished(exhausted: false)
-      }
-      if cleanupRestartAfterSweep {
-        cleanupRestartAfterSweep = false
-        handoffCleanupRunnerUnlocked(token: token)
-        return .finished(exhausted: false)
+        cleanupRequested = false
+        return .continueAfter(cleanupSliceIntervalNanoseconds)
       }
       if cleanupRequested {
-        handoffCleanupRunnerUnlocked(token: token)
-        return .finished(exhausted: false)
+        cleanupRequested = false
+        return .continueAfter(cleanupSliceIntervalNanoseconds)
       }
       finalizeCleanupRunnerUnlocked(token: token)
       return .finished(exhausted: false)
@@ -2432,15 +2520,6 @@ final class IosBackupHostApi: BackupNativeHostApi {
 
   private func cleanupRunnerIsCurrent(token: UInt64) -> Bool {
     withCleanupLock { cleanupRunnerToken == token && cleanupRunnerTask != nil }
-  }
-
-  /// Must be called with cleanupLock held.
-  private func handoffCleanupRunnerUnlocked(token: UInt64) {
-    guard cleanupRunnerToken == token, cleanupRunnerTask != nil else { return }
-    cleanupRunnerToken &+= 1
-    cleanupRunnerTask = nil
-    cleanupRunning = false
-    startCleanupRunnerUnlocked()
   }
 
   /// Must be called with cleanupLock held.
@@ -2476,11 +2555,26 @@ final class IosBackupHostApi: BackupNativeHostApi {
     }
   }
 
+  func triggerCleanupForTesting() {
+    triggerCleanup()
+  }
+
   private func performCleanupUncoordinated() async throws {
+    if recordingActivityState.isActive {
+      withCleanupLock { cleanupSliceHasMore = true }
+      return
+    }
+    let configured = hasConfiguredBackupHost()
     let recovery = try recoverCleanupIntentsSlice()
     if recovery.processedAny {
-      withCleanupLock { cleanupSliceHasMore = true }
-      if !recovery.hasMore { requestUploadDispatch() }
+      withCleanupLock {
+        cleanupSliceHasMore = recovery.hasMore || configured
+      }
+      if configured && !recovery.hasMore { requestUploadDispatch() }
+      return
+    }
+    guard configured else {
+      withCleanupLock { cleanupSliceHasMore = false }
       return
     }
     let root = recordingsDirectory().path + "/"
@@ -2524,6 +2618,15 @@ final class IosBackupHostApi: BackupNativeHostApi {
     }
     var changed = false
     for job in jobsApplyingFailureOverrides(slice.jobs) {
+      if recordingActivityState.isActive {
+        // Do not advance the persistent cursor past unprocessed jobs. Jobs
+        // already completed in this slice are safe to evaluate again because
+        // generation checks and cleanup intents make the operations idempotent.
+        withCleanupLock { cleanupSliceHasMore = true }
+        if changed { emitProgressSummary() }
+        return
+      }
+      beforeCleanupCandidateForTesting?(job)
       guard try jobStore.get().isCleanupGenerationCurrent(slice.generation) else {
         break
       }
@@ -2669,6 +2772,11 @@ final class IosBackupHostApi: BackupNativeHostApi {
     withCleanupLock { cleanupSliceHasMore = hasMore }
 
     if changed {
+      emitProgressSummary()
+    }
+    if !hasMore {
+      // A throttled progress event may still be pending. Force one final
+      // snapshot so the UI eventually observes the completed sweep.
       emitSummary()
     }
   }

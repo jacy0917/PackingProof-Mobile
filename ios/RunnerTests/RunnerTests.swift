@@ -64,6 +64,25 @@ private final class FirstWrittenFrameFinishProbe: @unchecked Sendable {
   }
 }
 
+private final class LockedTestCounter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedValue = 0
+
+  func increment() -> Int {
+    lock.lock()
+    storedValue += 1
+    let result = storedValue
+    lock.unlock()
+    return result
+  }
+
+  var value: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return storedValue
+  }
+}
+
 class RunnerTests: XCTestCase {
 
   func testEndingMaxVolumeKeepsRunningCameraAudioSessionActive() throws {
@@ -1147,6 +1166,54 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(storageCount, 2_500)
   }
 
+  func testCleanupSliceQueryPlanUsesKeysetAndBothIntentIndexes() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    _ = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let plan = try backupStoreQueryPlan(
+      """
+      SELECT * FROM backup_jobs
+      WHERE local_deleted_at IS NULL
+        AND state NOT IN ('pending', 'uploading')
+        AND id > 'cursor'
+        AND NOT EXISTS (
+          SELECT 1 FROM backup_cleanup_intents i
+          WHERE i.job_id = backup_jobs.id
+            AND i.phase IN ('claimed','moving','renamed')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM backup_cleanup_intents i
+          WHERE i.original_path = backup_jobs.file_path
+            AND i.phase IN ('claimed','moving','renamed')
+        )
+      ORDER BY id ASC LIMIT 101
+      """,
+      databaseURL: fixture.databaseURL
+    )
+    let details = plan.joined(separator: "\n")
+    XCTAssertTrue(details.contains("idx_backup_jobs_cleanup_scan"), details)
+    XCTAssertTrue(details.contains("idx_backup_cleanup_intents_active_job"), details)
+    XCTAssertTrue(details.contains("idx_backup_cleanup_intents_active_path"), details)
+    XCTAssertFalse(details.contains("USE TEMP B-TREE"), details)
+    XCTAssertFalse(details.contains("SCAN backup_jobs"), details)
+  }
+
+  func testRecordingActivityOwnersCannotClearEachOther() {
+    let state = IosRecordingActivityState()
+    let oldOwner = UUID()
+    let newOwner = UUID()
+
+    state.setActive(true, owner: oldOwner)
+    state.setActive(true, owner: newOwner)
+    state.setActive(false, owner: oldOwner)
+
+    XCTAssertTrue(state.isActive)
+    state.setActive(false, owner: newOwner)
+    XCTAssertFalse(state.isActive)
+  }
+
   func testFiftyThousandCleanupCandidatesUseBoundedPersistentSlices() throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
@@ -1513,7 +1580,10 @@ class RunnerTests: XCTestCase {
     }
 
     await fulfillment(of: [candidateReached], timeout: 5)
-    XCTAssertTrue(try store.cleanupIntents(recoverableOnly: true).isEmpty)
+    let remainingRecoveryIds = Set(
+      try store.cleanupIntents(recoverableOnly: true).map(\.jobId)
+    ).filter { $0.hasPrefix("trigger-recovery-") }
+    XCTAssertTrue(remainingRecoveryIds.isEmpty)
     await fulfillment(of: [candidateCommitted], timeout: 2)
     XCTAssertNotNil(try store.readJob(id: candidateId)?["localDeletedAt"])
   }
@@ -2204,6 +2274,7 @@ class RunnerTests: XCTestCase {
 
     let recoveredApi = makeBackupApi(
       defaults: fixture.defaults, store: fixture.store,
+      cleanupConfigured: nil,
       recordingsRoot: fixture.root.appendingPathComponent("recordings")
     )
     try await recoveredApi.performCleanup()
@@ -2472,6 +2543,171 @@ class RunnerTests: XCTestCase {
     let counts = await tracker.counts()
     XCTAssertGreaterThanOrEqual(counts.started, 2)
     XCTAssertEqual(counts.maximumActive, 1)
+  }
+
+  func testCleanupRunnerPausesDuringRecordingAndResumesAutomatically() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let activity = IosRecordingActivityState()
+    let owner = UUID()
+    let tracker = AsyncMaintenanceTracker()
+    let resumed = expectation(description: "工作结束后清理自动恢复")
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      cleanupOperationOverride: {
+        _ = await tracker.begin()
+        await tracker.finish()
+        resumed.fulfill()
+      },
+      recordingActivityState: activity,
+      cleanupWorkPauseNanoseconds: 5_000_000,
+      cleanupSliceIntervalNanoseconds: 1_000_000
+    )
+    activity.setActive(true, owner: owner)
+
+    api.triggerCleanupForTesting()
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let pausedCounts = await tracker.counts()
+    XCTAssertEqual(pausedCounts.started, 0)
+
+    activity.setActive(false, owner: owner)
+    await fulfillment(of: [resumed], timeout: 2)
+    let resumedCounts = await tracker.counts()
+    XCTAssertEqual(resumedCounts.started, 1)
+  }
+
+  func testUnconfiguredBackupSkipsTenThousandCleanupAndSummaryTriggers()
+    async throws
+  {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let tracker = AsyncMaintenanceTracker()
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      cleanupOperationOverride: {
+        _ = await tracker.begin()
+        await tracker.finish()
+      },
+      cleanupConfigured: nil
+    )
+
+    api.initialize(request: [
+      "unbackedRetentionDays": 30, "backedRetentionDays": 7,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    for index in 0..<10_000 {
+      if index.isMultiple(of: 2) {
+        api.triggerCleanupForTesting()
+      } else {
+        api.summary { result in
+          if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+        }
+      }
+    }
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    let counts = await tracker.counts()
+    XCTAssertEqual(counts.started, 0)
+  }
+
+  func testTenThousandCleanupTriggersDuringRecordingSharePausedRunner()
+    async throws
+  {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let activity = IosRecordingActivityState()
+    let owner = UUID()
+    let tracker = AsyncMaintenanceTracker()
+    let resumed = expectation(description: "暂停 runner 恢复并合并触发")
+    resumed.expectedFulfillmentCount = 2
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      cleanupOperationOverride: {
+        _ = await tracker.begin()
+        await tracker.finish()
+        resumed.fulfill()
+      },
+      recordingActivityState: activity,
+      cleanupWorkPauseNanoseconds: 5_000_000,
+      cleanupSliceIntervalNanoseconds: 1_000_000
+    )
+    activity.setActive(true, owner: owner)
+
+    for _ in 0..<10_000 { api.triggerCleanupForTesting() }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let pausedCounts = await tracker.counts()
+    XCTAssertEqual(pausedCounts.started, 0)
+
+    activity.setActive(false, owner: owner)
+    await fulfillment(of: [resumed], timeout: 2)
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let counts = await tracker.counts()
+    XCTAssertEqual(counts.started, 2)
+    XCTAssertEqual(counts.maximumActive, 1)
+  }
+
+  func testCleanupStartingBeforeRecordingDoesNotAdvancePastUnprocessedJobs()
+    async throws
+  {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    for id in ["mid-slice-001", "mid-slice-002"] {
+      var job = makeBackupJob(id: id)
+      job["state"] = "paused"
+      try store.upsert(job)
+    }
+    let activity = IosRecordingActivityState()
+    let owner = UUID()
+    let firstCandidateEntered = expectation(description: "清理已进入首个候选")
+    let hookCount = LockedTestCounter()
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      recordingActivityState: activity,
+      cleanupWorkPauseNanoseconds: 5_000_000,
+      cleanupSliceIntervalNanoseconds: 1_000_000,
+      beforeCleanupCandidateForTesting: { _ in
+        let isFirst = hookCount.increment() == 1
+        if isFirst {
+          activity.setActive(true, owner: owner)
+          firstCandidateEntered.fulfill()
+        }
+      }
+    )
+
+    api.initialize(request: [
+      "unbackedRetentionDays": 30, "backedRetentionDays": 7,
+    ]) { result in
+      if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+    }
+    await fulfillment(of: [firstCandidateEntered], timeout: 2)
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    let persisted = try store.cleanupCandidateJobsSlice(
+      unbackedRetentionDays: 30, backedRetentionDays: 7
+    )
+    XCTAssertEqual(
+      persisted.jobs.compactMap { $0["id"] as? String },
+      ["mid-slice-001", "mid-slice-002"]
+    )
+    XCTAssertEqual(hookCount.value, 1)
+    activity.setActive(false, owner: owner)
   }
 
   func testCleanupDispatcherRetriesOneFailureThenStopsAfterSuccess() async throws {
@@ -3655,6 +3891,42 @@ class RunnerTests: XCTestCase {
     }
   }
 
+  private func backupStoreQueryPlan(
+    _ sql: String, databaseURL: URL
+  ) throws -> [String] {
+    var database: OpaquePointer?
+    let openCode = sqlite3_open_v2(
+      databaseURL.path,
+      &database,
+      SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+      nil
+    )
+    guard openCode == SQLITE_OK else {
+      sqlite3_close(database)
+      throw IosBackupStoreError(
+        operation: "测试打开查询计划", code: openCode, message: "无法打开测试数据库"
+      )
+    }
+    defer { sqlite3_close(database) }
+    var statement: OpaquePointer?
+    let prepareCode = sqlite3_prepare_v2(
+      database, "EXPLAIN QUERY PLAN \(sql)", -1, &statement, nil
+    )
+    guard prepareCode == SQLITE_OK else {
+      sqlite3_finalize(statement)
+      throw IosBackupStoreError(
+        operation: "测试准备查询计划", code: prepareCode, message: "无法生成查询计划"
+      )
+    }
+    defer { sqlite3_finalize(statement) }
+    var result: [String] = []
+    while sqlite3_step(statement) == SQLITE_ROW {
+      guard let value = sqlite3_column_text(statement, 3) else { continue }
+      result.append(String(cString: value))
+    }
+    return result
+  }
+
   private func makeBackupApi(
     defaults: UserDefaults,
     store: IosBackupJobStore,
@@ -3666,9 +3938,14 @@ class RunnerTests: XCTestCase {
     storageReclaimOperationOverride:
       (() async throws -> [String?: Any?])? = nil,
     cleanupOperationOverride: (() async throws -> Void)? = nil,
+    cleanupConfigured: Bool? = true,
     cleanupRetryDelaysNanoseconds: [UInt64]? = nil,
+    recordingActivityState: IosRecordingActivityState = IosRecordingActivityState(),
+    cleanupWorkPauseNanoseconds: UInt64? = nil,
+    cleanupSliceIntervalNanoseconds: UInt64? = nil,
     afterCleanupRunnerDecisionForTesting: (() -> Void)? = nil,
     beforeCleanupRetrySleepForTesting: ((Int, UInt64) -> Void)? = nil,
+    beforeCleanupCandidateForTesting: (([String: Any]) -> Void)? = nil,
     recordingsRoot: URL? = nil,
     beforeCleanupIntentClaimForTesting: (([String: Any]) -> Void)? = nil,
     afterCleanupCommitForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil
@@ -3689,10 +3966,17 @@ class RunnerTests: XCTestCase {
       uploadOperationOverride: uploadOperationOverride,
       storageReclaimOperationOverride: storageReclaimOperationOverride,
       cleanupOperationOverride: cleanupOperationOverride,
+      cleanupConfigurationOverride: cleanupConfigured.map { value in
+        { value }
+      },
       cleanupRetryDelaysNanoseconds: cleanupRetryDelaysNanoseconds,
+      recordingActivityState: recordingActivityState,
+      cleanupWorkPauseNanoseconds: cleanupWorkPauseNanoseconds,
+      cleanupSliceIntervalNanoseconds: cleanupSliceIntervalNanoseconds,
       afterCleanupRunnerDecisionForTesting:
         afterCleanupRunnerDecisionForTesting,
       beforeCleanupRetrySleepForTesting: beforeCleanupRetrySleepForTesting,
+      beforeCleanupCandidateForTesting: beforeCleanupCandidateForTesting,
       beforeCleanupIntentClaimForTesting: beforeCleanupIntentClaimForTesting,
       afterCleanupCommitForTesting: afterCleanupCommitForTesting
     )
