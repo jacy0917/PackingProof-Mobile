@@ -612,10 +612,18 @@ class SessionRepository {
     return _loadRecentSessionsUnlocked();
   });
 
-  Future<List<RecordingSession>> loadPendingWatermarkSessions() async {
+  Future<List<RecordingSession>> loadPendingWatermarkSessions({
+    int limit = 1,
+    int? afterStartedAt,
+    String? afterId,
+  }) async {
     await initialize();
     final List<RecordingSession> sessions = await _recordingDatabase
-        .loadPendingWatermarkSessions();
+        .loadPendingWatermarkSessions(
+          limit: limit,
+          afterStartedAt: afterStartedAt,
+          afterId: afterId,
+        );
     return _resolveAndRepair(sessions);
   }
 
@@ -629,6 +637,32 @@ class SessionRepository {
       sessionId: sessionId,
       expectedAttempt: expectedAttempt,
       maximumAttempts: maximumAttempts,
+    );
+  }
+
+  Future<RecordingSession?> failProcessingWatermark({
+    required String sessionId,
+    required String ownerId,
+    required String operationId,
+  }) async {
+    await initialize();
+    return _recordingDatabase.failProcessingWatermark(
+      sessionId: sessionId,
+      ownerId: ownerId,
+      operationId: operationId,
+    );
+  }
+
+  Future<RecordingSession?> finalizeWatermarkClaim({
+    required RecordingSession session,
+    required String ownerId,
+    required String operationId,
+  }) async {
+    await initialize();
+    return _recordingDatabase.finalizeWatermarkClaim(
+      session: session,
+      ownerId: ownerId,
+      operationId: operationId,
     );
   }
 

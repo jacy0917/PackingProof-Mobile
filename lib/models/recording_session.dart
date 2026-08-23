@@ -3,7 +3,7 @@ import 'order_info.dart';
 import 'recording_operation_mode.dart';
 import 'recording_orientation.dart';
 
-enum WatermarkProcessingStatus { pending, completed, failed }
+enum WatermarkProcessingStatus { pending, processing, completed, failed }
 
 extension WatermarkProcessingStatusValue on WatermarkProcessingStatus {
   String get storageValue => name;
@@ -12,6 +12,7 @@ extension WatermarkProcessingStatusValue on WatermarkProcessingStatus {
 WatermarkProcessingStatus watermarkProcessingStatusFromStorage(Object? value) {
   return switch (value) {
     'pending' => WatermarkProcessingStatus.pending,
+    'processing' => WatermarkProcessingStatus.processing,
     'failed' => WatermarkProcessingStatus.failed,
     _ => WatermarkProcessingStatus.completed,
   };

@@ -111,7 +111,13 @@ void main() {
     expect(sessions.single.recordingOrientation, RecordingOrientation.portrait);
     expect(sessions.single.watermarkAttemptCount, 0);
     expect(
-      await database.queryBackupBatch(page: 1, pageSize: 10),
+      await database.queryBackupRows(
+        afterUpdatedAt: null,
+        afterId: null,
+        highUpdatedAt: null,
+        highId: null,
+        pageSize: 10,
+      ),
       hasLength(1),
     );
   });
@@ -151,11 +157,14 @@ void main() {
     }
     await database.upsertSessions(sessions);
 
-    final List<RecordingSession> backup = await database.queryBackupBatch(
-      page: 1,
+    final List<RecordingBackupRow> backup = await database.queryBackupRows(
+      afterUpdatedAt: null,
+      afterId: null,
+      highUpdatedAt: null,
+      highId: null,
       pageSize: 10,
     );
-    expect(backup.map((session) => session.id), <String>[
+    expect(backup.map((RecordingBackupRow row) => row.id), <String>[
       'completed',
       'failed',
     ]);
@@ -251,5 +260,275 @@ void main() {
     expect(claim.session.watermarkStatus, WatermarkProcessingStatus.failed);
     expect(await database.loadPendingWatermarkSessions(), isEmpty);
     expect(await source.exists(), isTrue);
+  });
+
+  test('原子 claim 转为 processing 且重启将遗留处理恢复为失败', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-watermark-processing-recovery-',
+    );
+    final String path = '${root.path}/recordings.db';
+    final File source = File('${root.path}/processing.mp4');
+    await source.writeAsBytes(<int>[1, 2, 3]);
+    final RecordingDatabase first = RecordingDatabase(
+      path: path,
+      watermarkOwnerIdForTesting: 'old-process',
+    );
+    await first.upsertSessions(<RecordingSession>[
+      RecordingSession(
+        id: 'processing-recovery',
+        filePath: source.path,
+        startedAt: DateTime.utc(2026, 8, 21, 10),
+        endedAt: DateTime.utc(2026, 8, 21, 10, 0, 1),
+        markers: const <Never>[],
+        watermarkStatus: WatermarkProcessingStatus.pending,
+      ),
+    ]);
+    final WatermarkAttemptClaim claim = (await first
+        .claimPendingWatermarkAttempt(
+          sessionId: 'processing-recovery',
+          expectedAttempt: 0,
+          maximumAttempts: 1,
+        ))!;
+    expect(claim.claimed, isTrue);
+    expect(claim.session.watermarkStatus, WatermarkProcessingStatus.processing);
+    expect(
+      await first.claimPendingWatermarkAttempt(
+        sessionId: 'processing-recovery',
+        expectedAttempt: 1,
+        maximumAttempts: 1,
+      ),
+      isNull,
+    );
+    await first.close();
+
+    final RecordingDatabase reopened = RecordingDatabase(
+      path: path,
+      watermarkOwnerIdForTesting: 'new-process',
+    );
+    addTearDown(() async {
+      await reopened.close();
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    await reopened.initialize();
+    final RecordingSession recovered = (await reopened.findActiveByIds(<String>{
+      'processing-recovery',
+    })).single;
+    expect(recovered.watermarkStatus, WatermarkProcessingStatus.failed);
+    expect(await source.exists(), isTrue);
+    expect(
+      (await reopened.queryBackupRows(
+        afterUpdatedAt: null,
+        afterId: null,
+        highUpdatedAt: null,
+        highId: null,
+        pageSize: 10,
+      )).map((RecordingBackupRow row) => row.id),
+      <String>['processing-recovery'],
+    );
+  });
+
+  test('同进程第二个数据库实例不误恢复或重复领取活跃 processing', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-watermark-same-process-',
+    );
+    final String path = '${root.path}/recordings.db';
+    final File source = File('${root.path}/processing.mp4');
+    await source.writeAsBytes(<int>[1, 2, 3]);
+    final RecordingDatabase first = RecordingDatabase(
+      path: path,
+      watermarkOwnerIdForTesting: 'same-process',
+    );
+    final RecordingDatabase second = RecordingDatabase(
+      path: path,
+      watermarkOwnerIdForTesting: 'same-process',
+    );
+    addTearDown(() async {
+      await first.close();
+      await second.close();
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final RecordingSession pending = RecordingSession(
+      id: 'same-process-claim',
+      filePath: source.path,
+      startedAt: DateTime.utc(2026, 8, 21, 10),
+      endedAt: DateTime.utc(2026, 8, 21, 10, 0, 1),
+      markers: const <Never>[],
+      watermarkStatus: WatermarkProcessingStatus.pending,
+    );
+    await first.upsertSessions(<RecordingSession>[pending]);
+    expect(
+      (await first.claimPendingWatermarkAttempt(
+        sessionId: pending.id,
+        expectedAttempt: 0,
+        maximumAttempts: 1,
+      ))?.session.watermarkStatus,
+      WatermarkProcessingStatus.processing,
+    );
+
+    await second.initialize();
+    final RecordingSession current = (await second.findActiveByIds(<String>{
+      pending.id,
+    })).single;
+    expect(current.watermarkStatus, WatermarkProcessingStatus.processing);
+    expect(
+      await second.claimPendingWatermarkAttempt(
+        sessionId: pending.id,
+        expectedAttempt: 1,
+        maximumAttempts: 1,
+      ),
+      isNull,
+    );
+  });
+
+  test('失败提交必须匹配 claim owner 与 operation', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-watermark-claim-cas-',
+    );
+    final RecordingDatabase database = RecordingDatabase(
+      path: '${root.path}/recordings.db',
+      watermarkOwnerIdForTesting: 'current-process',
+    );
+    addTearDown(() async {
+      await database.close();
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final File source = File('${root.path}/source.mp4');
+    await source.writeAsBytes(<int>[1, 2, 3]);
+    final RecordingSession pending = RecordingSession(
+      id: 'claim-cas',
+      filePath: source.path,
+      startedAt: DateTime.utc(2026, 8, 23, 10),
+      endedAt: DateTime.utc(2026, 8, 23, 10, 0, 1),
+      markers: const <Never>[],
+      watermarkStatus: WatermarkProcessingStatus.pending,
+    );
+    await database.upsertSessions(<RecordingSession>[pending]);
+    final WatermarkAttemptClaim claim = (await database
+        .claimPendingWatermarkAttempt(
+          sessionId: pending.id,
+          expectedAttempt: 0,
+          maximumAttempts: 1,
+        ))!;
+
+    expect(
+      await database.failProcessingWatermark(
+        sessionId: pending.id,
+        ownerId: 'wrong-owner',
+        operationId: claim.operationId!,
+      ),
+      isNull,
+    );
+    expect(
+      (await database.findActiveByIds(<String>{
+        pending.id,
+      })).single.watermarkStatus,
+      WatermarkProcessingStatus.processing,
+    );
+    final RecordingSession failed = (await database.failProcessingWatermark(
+      sessionId: pending.id,
+      ownerId: claim.ownerId!,
+      operationId: claim.operationId!,
+    ))!;
+    expect(failed.watermarkStatus, WatermarkProcessingStatus.failed);
+  });
+
+  test('processing 期间已删除记录拒绝迟到完成提交', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-watermark-delete-cas-',
+    );
+    final RecordingDatabase database = RecordingDatabase(
+      path: '${root.path}/recordings.db',
+      watermarkOwnerIdForTesting: 'current-process',
+    );
+    addTearDown(() async {
+      await database.close();
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final File source = File('${root.path}/source.mp4');
+    final File output = File('${root.path}/output.mp4');
+    await source.writeAsBytes(<int>[1, 2, 3]);
+    await output.writeAsBytes(<int>[4, 5, 6]);
+    final RecordingSession pending = RecordingSession(
+      id: 'delete-cas',
+      filePath: source.path,
+      startedAt: DateTime.utc(2026, 8, 23, 10),
+      endedAt: DateTime.utc(2026, 8, 23, 10, 0, 1),
+      markers: const <Never>[],
+      watermarkStatus: WatermarkProcessingStatus.pending,
+    );
+    await database.upsertSessions(<RecordingSession>[pending]);
+    final WatermarkAttemptClaim claim = (await database
+        .claimPendingWatermarkAttempt(
+          sessionId: pending.id,
+          expectedAttempt: 0,
+          maximumAttempts: 1,
+        ))!;
+    await database.markDeleted(<RecordingSession>[
+      claim.session,
+    ], reason: 'test');
+
+    expect(
+      await database.finalizeWatermarkClaim(
+        session: claim.session.copyWith(
+          filePath: output.path,
+          watermarkStatus: WatermarkProcessingStatus.completed,
+        ),
+        ownerId: claim.ownerId!,
+        operationId: claim.operationId!,
+      ),
+      isNull,
+    );
+    expect(await database.findActiveByIds(<String>{pending.id}), isEmpty);
+  });
+
+  test('10000 条待处理水印只读取有界批次且命中专用索引', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-watermark-scale-',
+    );
+    final RecordingDatabase database = RecordingDatabase(
+      path: '${root.path}/recordings.db',
+    );
+    addTearDown(() async {
+      await database.close();
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final DateTime startedAt = DateTime.utc(2026, 8, 21, 10);
+    for (var start = 0; start < 10000; start += 200) {
+      await database.upsertSessions(
+        List<RecordingSession>.generate(200, (int offset) {
+          final int index = start + offset;
+          return RecordingSession(
+            id: 'pending-${index.toString().padLeft(5, '0')}',
+            filePath: '${root.path}/pending-$index.mp4',
+            startedAt: startedAt.add(Duration(milliseconds: index)),
+            endedAt: startedAt.add(Duration(milliseconds: index + 1)),
+            markers: const <Never>[],
+            watermarkStatus: WatermarkProcessingStatus.pending,
+          );
+        }),
+      );
+    }
+
+    final List<RecordingSession> first = await database
+        .loadPendingWatermarkSessions(limit: 2);
+    final List<String> plan = await database
+        .explainPendingWatermarkQueryForTesting();
+
+    expect(first.map((RecordingSession session) => session.id), <String>[
+      'pending-00000',
+      'pending-00001',
+    ]);
+    final List<RecordingSession> afterFirst = await database
+        .loadPendingWatermarkSessions(
+          limit: 2,
+          afterStartedAt: first.last.startedAt.millisecondsSinceEpoch,
+          afterId: first.last.id,
+        );
+    expect(afterFirst.map((RecordingSession session) => session.id), <String>[
+      'pending-00002',
+      'pending-00003',
+    ]);
+    expect(plan.join('\n'), contains('idx_recording_pending_watermark'));
+    expect(plan.join('\n').toUpperCase(), isNot(contains('TEMP B-TREE')));
   });
 }

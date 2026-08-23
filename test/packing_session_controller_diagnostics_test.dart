@@ -156,7 +156,7 @@ void main() {
     expect(await source.exists(), isTrue);
   });
 
-  test('iOS 系统中断水印最多恢复三次后标记失败', () async {
+  test('iOS 系统中断水印立即标记失败且不自动替换原片', () async {
     final SessionRepository repository = testRepository(root);
     final File source = File('${root.path}/interrupted-original.mp4');
     await source.writeAsBytes(<int>[1, 2, 3]);
@@ -183,33 +183,116 @@ void main() {
     );
     trackController(controller);
 
-    for (int attempt = 1; attempt <= 3; attempt++) {
-      final RecordingSession current = (await repository.loadSessions(
-        includeMissingFiles: true,
-      )).single;
-      await controller.watermarkAndBackupForTesting(
-        source.path,
-        current,
-        current.recordingOrientation,
-      );
-      final RecordingSession updated = (await repository.loadSessions(
-        includeMissingFiles: true,
-      )).single;
-      expect(updated.watermarkAttemptCount, attempt);
-      expect(
-        updated.watermarkStatus,
-        attempt < 3
-            ? WatermarkProcessingStatus.pending
-            : WatermarkProcessingStatus.failed,
-      );
-    }
+    final RecordingSession current = (await repository.loadSessions(
+      includeMissingFiles: true,
+    )).single;
+    await controller.watermarkAndBackupForTesting(
+      source.path,
+      current,
+      current.recordingOrientation,
+    );
+    final RecordingSession updated = (await repository.loadSessions(
+      includeMissingFiles: true,
+    )).single;
+    expect(updated.watermarkAttemptCount, 1);
+    expect(updated.watermarkStatus, WatermarkProcessingStatus.failed);
 
     expect(await source.exists(), isTrue);
     final String log = await File(
       '${root.path}/diagnostics/runtime.jsonl',
     ).readAsString();
-    expect(_countOccurrences(log, '"kind":"watermark_retry_pending"'), 2);
+    expect(_countOccurrences(log, '"kind":"watermark_retry_pending"'), 0);
     expect(_countOccurrences(log, '"kind":"watermark_failed"'), 1);
+  });
+
+  test('dispatcher 遇到系统中断后终结失败且不再重试', () async {
+    final SessionRepository repository = testRepository(root);
+    final File source = File('${root.path}/dispatcher-interrupted.mp4');
+    await source.writeAsBytes(<int>[1, 2, 3]);
+    await repository.addSession(
+      _pendingWatermarkSession(
+        id: 'dispatcher-interrupted',
+        filePath: source.path,
+      ),
+    );
+    final PackingSessionController controller = PackingSessionController(
+      repository: repository,
+      speechService: _FakeSpeechSink(),
+      videoWatermarkService: _InterruptedWatermarkSink(),
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+    trackController(controller);
+
+    await controller.resumePendingWatermarksForTesting();
+    await _waitForWatermarkStatus(repository, WatermarkProcessingStatus.failed);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(
+      (await repository.loadSessions(
+        includeMissingFiles: true,
+      )).single.watermarkAttemptCount,
+      1,
+    );
+
+    await controller.resumePendingWatermarksForTesting();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(
+      (await repository.loadSessions(
+        includeMissingFiles: true,
+      )).single.watermarkAttemptCount,
+      1,
+    );
+  });
+
+  test('队首水印中断不阻塞本轮后续录像', () async {
+    final SessionRepository repository = testRepository(root);
+    final DateTime startedAt = DateTime(2026, 8, 21, 10);
+    final List<RecordingSession> sessions = <RecordingSession>[];
+    for (var index = 0; index < 2; index++) {
+      final File source = File('${root.path}/fair-pending-$index.mp4');
+      await source.writeAsBytes(<int>[index]);
+      sessions.add(
+        RecordingSession(
+          id: 'fair-pending-$index',
+          filePath: source.path,
+          startedAt: startedAt.add(Duration(seconds: index)),
+          endedAt: startedAt.add(Duration(seconds: index + 1)),
+          markers: const <Never>[],
+          watermarkStatus: WatermarkProcessingStatus.pending,
+        ),
+      );
+    }
+    await repository.addSessions(sessions);
+    final _InterruptFirstWatermarkSink watermark =
+        _InterruptFirstWatermarkSink();
+    final PackingSessionController controller = PackingSessionController(
+      repository: repository,
+      speechService: _FakeSpeechSink(),
+      videoWatermarkService: watermark,
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+    trackController(controller);
+
+    await controller.resumePendingWatermarksForTesting();
+    await _waitForCompletedSession(repository, 'fair-pending-1');
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    final Map<String, RecordingSession> saved = <String, RecordingSession>{
+      for (final RecordingSession session in await repository.loadSessions(
+        includeMissingFiles: true,
+      ))
+        session.id: session,
+    };
+    expect(watermark.applyCalls, 2);
+    expect(saved['fair-pending-0']!.watermarkAttemptCount, 1);
+    expect(
+      saved['fair-pending-0']!.watermarkStatus,
+      WatermarkProcessingStatus.failed,
+    );
+    expect(
+      saved['fair-pending-1']!.watermarkStatus,
+      WatermarkProcessingStatus.completed,
+    );
   });
 
   test('重启恢复待处理水印时保留录像方向且只导出一次', () async {
@@ -297,7 +380,7 @@ void main() {
       includeMissingFiles: true,
     )).single;
     expect(saved.filePath, source.path);
-    expect(saved.watermarkStatus, WatermarkProcessingStatus.pending);
+    expect(saved.watermarkStatus, WatermarkProcessingStatus.failed);
     expect(saved.watermarkAttemptCount, 1);
     expect(await source.exists(), isTrue);
     final List<FileSystemEntity> finalizedFiles = await Directory(
@@ -387,6 +470,50 @@ void main() {
     expect(await File(saved.filePath).exists(), isTrue);
   });
 
+  test('processing 期间删除不得被迟到水印成片复活', () async {
+    final SessionRepository repository = testRepository(root);
+    final File source = File('${root.path}/delete-race-original.mp4');
+    await source.writeAsBytes(<int>[1, 2, 3]);
+    final RecordingSession session = _pendingWatermarkSession(
+      id: 'session-delete-race',
+      filePath: source.path,
+    );
+    await repository.addSession(session);
+    final _LateOutputWatermarkSink watermark = _LateOutputWatermarkSink();
+    final PackingSessionController controller = PackingSessionController(
+      repository: repository,
+      speechService: _FakeSpeechSink(),
+      videoWatermarkService: watermark,
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+    trackController(controller);
+
+    final Future<void> processing = controller.watermarkAndBackupForTesting(
+      source.path,
+      session,
+    );
+    await watermark.started.future;
+    await repository.deleteSessions(<String>{session.id});
+    watermark.release();
+    await processing;
+
+    expect(
+      await repository.findActiveSessionsByIds(<String>{session.id}),
+      isEmpty,
+    );
+    final List<FileSystemEntity> published = await Directory(
+      '${root.path}/recordings',
+    ).list(recursive: true).toList();
+    expect(
+      published.where(
+        (FileSystemEntity entity) =>
+            entity is File && entity.path.endsWith('.mp4'),
+      ),
+      isEmpty,
+    );
+  });
+
   test('成片落库后原片清理异常不得把已完成状态回退为失败', () async {
     final SessionRepository repository = _CleanupFailingRepository(root);
     final File source = File('${root.path}/cleanup-failed-original.mp4');
@@ -419,7 +546,7 @@ void main() {
     expect(log, isNot(contains('"kind":"watermark_failed"')));
   });
 
-  test('返回前台时导出仍活跃则在中断后补跑一次且不并发', () async {
+  test('返回前台时导出仍活跃但中断后终结失败且不重试', () async {
     final SessionRepository repository = testRepository(root);
     final File source = File('${root.path}/queued-resume-original.mp4');
     await source.writeAsBytes(<int>[1, 2, 3]);
@@ -446,19 +573,19 @@ void main() {
     await controller.resumePendingWatermarksForTesting();
     watermark.releaseFirst(interrupted: true);
     await first;
-    await watermark.secondStarted.future;
     await _waitForRuntimeKind(
       File('${root.path}/diagnostics/runtime.jsonl'),
-      'watermark_completed',
+      'watermark_failed',
     );
+    await Future<void>.delayed(const Duration(milliseconds: 50));
 
     final RecordingSession saved = (await repository.loadSessions(
       includeMissingFiles: true,
     )).single;
-    expect(watermark.applyCalls, 2);
+    expect(watermark.applyCalls, 1);
     expect(watermark.maximumConcurrentCalls, 1);
-    expect(saved.watermarkStatus, WatermarkProcessingStatus.completed);
-    expect(saved.watermarkAttemptCount, 2);
+    expect(saved.watermarkStatus, WatermarkProcessingStatus.failed);
+    expect(saved.watermarkAttemptCount, 1);
   });
 
   test('返回前台时导出仍活跃但首次成功则不重复导出', () async {
@@ -531,6 +658,49 @@ void main() {
     await first;
   });
 
+  test('积压水印由唯一 dispatcher 串行处理且不预创建无界任务', () async {
+    final SessionRepository repository = testRepository(root);
+    final DateTime startedAt = DateTime(2026, 8, 21, 10);
+    final List<RecordingSession> sessions = <RecordingSession>[];
+    for (var index = 0; index < 20; index++) {
+      final File source = File('${root.path}/pending-$index.mp4');
+      await source.writeAsBytes(<int>[index]);
+      sessions.add(
+        RecordingSession(
+          id: 'pending-${index.toString().padLeft(2, '0')}',
+          filePath: source.path,
+          startedAt: startedAt.add(Duration(seconds: index)),
+          endedAt: startedAt.add(Duration(seconds: index + 1)),
+          markers: const <Never>[],
+          watermarkStatus: WatermarkProcessingStatus.pending,
+        ),
+      );
+    }
+    await repository.addSessions(sessions);
+    final _SerialBlockingWatermarkSink watermark = _SerialBlockingWatermarkSink(
+      expectedCalls: sessions.length,
+    );
+    final PackingSessionController controller = PackingSessionController(
+      repository: repository,
+      speechService: _FakeSpeechSink(),
+      videoWatermarkService: watermark,
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+    trackController(controller);
+
+    await controller.resumePendingWatermarksForTesting();
+    await watermark.firstStarted.future;
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(watermark.applyCalls, 1);
+    expect(watermark.maximumConcurrentCalls, 1);
+
+    watermark.release();
+    await watermark.allCompleted.future;
+    expect(watermark.applyCalls, sessions.length);
+    expect(watermark.maximumConcurrentCalls, 1);
+  });
+
   test('shutdown 可重复调用并等待异步资源关闭', () async {
     final Completer<void> disposeBlocker = Completer<void>();
     final _FakeSpeechSink speech = _FakeSpeechSink(
@@ -556,6 +726,45 @@ void main() {
     await first;
     controller.dispose();
     expect(speech.disposeCount, 1);
+  });
+
+  test('shutdown 对永不返回的水印导出与取消仍有界结束', () async {
+    final SessionRepository repository = testRepository(root);
+    final File source = File('${root.path}/shutdown-watermark-original.mp4');
+    await source.writeAsBytes(<int>[1, 2, 3]);
+    final RecordingSession session = _pendingWatermarkSession(
+      id: 'session-shutdown-watermark',
+      filePath: source.path,
+    );
+    await repository.addSession(session);
+    final _NeverReturningCancellableWatermarkSink watermark =
+        _NeverReturningCancellableWatermarkSink();
+    final PackingSessionController controller = PackingSessionController(
+      repository: repository,
+      speechService: _FakeSpeechSink(),
+      videoWatermarkService: watermark,
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+
+    final Future<void> processing = controller.watermarkAndBackupForTesting(
+      source.path,
+      session,
+    );
+    await watermark.started.future;
+    await controller.shutdown().timeout(const Duration(seconds: 3));
+    await processing.timeout(const Duration(seconds: 1));
+    controller.dispose();
+
+    expect(watermark.cancelCalls, 1);
+    final SessionRepository verifier = testRepository(root);
+    final RecordingSession saved = (await verifier.loadSessions(
+      includeMissingFiles: true,
+    )).single;
+    await verifier.dispose();
+    expect(saved.watermarkStatus, WatermarkProcessingStatus.failed);
+    expect(saved.filePath, source.path);
+    expect(await source.exists(), isTrue);
   });
 
   test('备份触发原因决定是否强制重启上传', () {
@@ -925,6 +1134,40 @@ Future<String> _waitForRuntimeKind(
   fail('runtime.jsonl 未在 $timeout 内记录 $kind 事件');
 }
 
+Future<void> _waitForWatermarkStatus(
+  SessionRepository repository,
+  WatermarkProcessingStatus expected,
+) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    final List<RecordingSession> sessions = await repository.loadSessions(
+      includeMissingFiles: true,
+    );
+    if (sessions.single.watermarkStatus == expected) return;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  throw StateError('未等待到水印状态 $expected');
+}
+
+Future<void> _waitForCompletedSession(
+  SessionRepository repository,
+  String sessionId,
+) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    final List<RecordingSession> sessions = await repository.loadSessions(
+      includeMissingFiles: true,
+    );
+    if (sessions.any(
+      (RecordingSession session) =>
+          session.id == sessionId &&
+          session.watermarkStatus == WatermarkProcessingStatus.completed,
+    )) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  throw StateError('未等待到水印完成 $sessionId');
+}
+
 int _countOccurrences(String content, String needle) {
   int count = 0;
   int index = 0;
@@ -1034,6 +1277,53 @@ class _RecordingWatermarkSink
   }
 }
 
+class _LateOutputWatermarkSink implements VideoWatermarkSink {
+  final Completer<void> started = Completer<void>();
+  final Completer<void> _release = Completer<void>();
+
+  void release() => _release.complete();
+
+  @override
+  Future<String> apply({
+    required String inputPath,
+    required DateTime startedAt,
+    required String trackingNumber,
+    RecordingVideoCodec videoCodec = RecordingVideoCodec.hevc,
+  }) async {
+    final List<int> input = await File(inputPath).readAsBytes();
+    started.complete();
+    await _release.future;
+    final File output = File('$inputPath-watermarked.mp4');
+    await output.writeAsBytes(input);
+    return output.path;
+  }
+}
+
+class _NeverReturningCancellableWatermarkSink
+    implements VideoWatermarkSink, CancellableVideoWatermarkSink {
+  final Completer<void> started = Completer<void>();
+  final Completer<String> _operation = Completer<String>();
+  final Completer<void> _cancellation = Completer<void>();
+  int cancelCalls = 0;
+
+  @override
+  Future<String> apply({
+    required String inputPath,
+    required DateTime startedAt,
+    required String trackingNumber,
+    RecordingVideoCodec videoCodec = RecordingVideoCodec.hevc,
+  }) {
+    started.complete();
+    return _operation.future;
+  }
+
+  @override
+  Future<void> cancel() {
+    cancelCalls++;
+    return _cancellation.future;
+  }
+}
+
 class _InterruptedWatermarkSink implements VideoWatermarkSink {
   @override
   Future<String> apply({
@@ -1050,30 +1340,42 @@ class _FailingFinalUpdateRepository extends SessionRepository {
   _FailingFinalUpdateRepository(Directory root) : super(rootDirectory: root);
 
   @override
-  Future<List<RecordingSession>> updateSession(
-    RecordingSession updatedSession,
-  ) {
-    if (updatedSession.watermarkStatus == WatermarkProcessingStatus.completed) {
-      throw StateError('final watermark state persistence failed');
-    }
-    return super.updateSession(updatedSession);
+  Future<RecordingSession?> finalizeWatermarkClaim({
+    required RecordingSession session,
+    required String ownerId,
+    required String operationId,
+  }) {
+    throw StateError('final watermark state persistence failed');
   }
 }
 
 class _PostCommitFailingRepository extends SessionRepository {
   _PostCommitFailingRepository(Directory root) : super(rootDirectory: root);
 
+  bool failNextRefresh = false;
+
   @override
-  Future<List<RecordingSession>> updateSession(
-    RecordingSession updatedSession,
-  ) async {
-    final List<RecordingSession> result = await super.updateSession(
-      updatedSession,
+  Future<RecordingSession?> finalizeWatermarkClaim({
+    required RecordingSession session,
+    required String ownerId,
+    required String operationId,
+  }) async {
+    final RecordingSession? result = await super.finalizeWatermarkClaim(
+      session: session,
+      ownerId: ownerId,
+      operationId: operationId,
     );
-    if (updatedSession.watermarkStatus == WatermarkProcessingStatus.completed) {
+    failNextRefresh = true;
+    return result;
+  }
+
+  @override
+  Future<List<RecordingSession>> loadRecentSessions() {
+    if (failNextRefresh) {
+      failNextRefresh = false;
       throw StateError('recent sessions reload failed after commit');
     }
-    return result;
+    return super.loadRecentSessions();
   }
 }
 
@@ -1084,18 +1386,18 @@ class _UnknownPostCommitRepository extends SessionRepository {
   int staleWriteCount = 0;
 
   @override
-  Future<List<RecordingSession>> updateSession(
-    RecordingSession updatedSession,
-  ) async {
-    if (updatedSession.watermarkStatus == WatermarkProcessingStatus.completed) {
-      await super.updateSession(updatedSession);
-      completedCommitted = true;
-      throw StateError('final state committed before reload failure');
-    }
-    if (completedCommitted) {
-      staleWriteCount++;
-    }
-    return super.updateSession(updatedSession);
+  Future<RecordingSession?> finalizeWatermarkClaim({
+    required RecordingSession session,
+    required String ownerId,
+    required String operationId,
+  }) async {
+    await super.finalizeWatermarkClaim(
+      session: session,
+      ownerId: ownerId,
+      operationId: operationId,
+    );
+    completedCommitted = true;
+    throw StateError('final state committed before confirmation failure');
   }
 
   @override
@@ -1171,5 +1473,65 @@ class _QueuedResumeWatermarkSink implements VideoWatermarkSink {
     } finally {
       _concurrentCalls--;
     }
+  }
+}
+
+class _SerialBlockingWatermarkSink implements VideoWatermarkSink {
+  _SerialBlockingWatermarkSink({required this.expectedCalls});
+
+  final int expectedCalls;
+  final Completer<void> firstStarted = Completer<void>();
+  final Completer<void> allCompleted = Completer<void>();
+  final Completer<void> _release = Completer<void>();
+  int applyCalls = 0;
+  int _concurrentCalls = 0;
+  int maximumConcurrentCalls = 0;
+
+  void release() => _release.complete();
+
+  @override
+  Future<String> apply({
+    required String inputPath,
+    required DateTime startedAt,
+    required String trackingNumber,
+    RecordingVideoCodec videoCodec = RecordingVideoCodec.hevc,
+  }) async {
+    applyCalls++;
+    _concurrentCalls++;
+    if (_concurrentCalls > maximumConcurrentCalls) {
+      maximumConcurrentCalls = _concurrentCalls;
+    }
+    if (!firstStarted.isCompleted) firstStarted.complete();
+    try {
+      await _release.future;
+      final File output = File('$inputPath-watermarked.mp4');
+      await File(inputPath).copy(output.path);
+      return output.path;
+    } finally {
+      _concurrentCalls--;
+      if (applyCalls == expectedCalls && !allCompleted.isCompleted) {
+        allCompleted.complete();
+      }
+    }
+  }
+}
+
+class _InterruptFirstWatermarkSink implements VideoWatermarkSink {
+  int applyCalls = 0;
+
+  @override
+  Future<String> apply({
+    required String inputPath,
+    required DateTime startedAt,
+    required String trackingNumber,
+    RecordingVideoCodec videoCodec = RecordingVideoCodec.hevc,
+  }) async {
+    applyCalls++;
+    if (applyCalls == 1) {
+      throw PlatformException(code: 'watermark_interrupted');
+    }
+    final File output = File('$inputPath-watermarked.mp4');
+    await File(inputPath).copy(output.path);
+    return output.path;
   }
 }

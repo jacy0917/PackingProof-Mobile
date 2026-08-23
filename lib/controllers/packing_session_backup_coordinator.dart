@@ -54,7 +54,8 @@ mixin _PackingSessionBackupCoordinator on ChangeNotifier {
     final List<RecordingSession> finalized = sessions
         .where(
           (RecordingSession session) =>
-              session.watermarkStatus != WatermarkProcessingStatus.pending,
+              session.watermarkStatus != WatermarkProcessingStatus.pending &&
+              session.watermarkStatus != WatermarkProcessingStatus.processing,
         )
         .toList(growable: false);
     if (finalized.isEmpty) return;

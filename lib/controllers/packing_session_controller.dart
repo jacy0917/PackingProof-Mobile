@@ -1055,10 +1055,7 @@ class PackingSessionController extends ChangeNotifier
         );
     _sessions = await _repository.addSession(session);
     if (nativeWatermarkNeedsPostProcess(stopped.watermarkDisposition)) {
-      final RecordingOrientation recordingOrientation = _recordingOrientation;
-      _runInBackground(
-        _watermarkAndBackup(savedPath, session, recordingOrientation),
-      );
+      await _resumePendingWatermarks();
     } else {
       _runInBackground(
         _enqueueBackupIfNeeded(savedPath, <RecordingSession>[session]),
@@ -1302,10 +1299,7 @@ class PackingSessionController extends ChangeNotifier
         );
     _sessions = await _repository.addSession(completed);
     if (nativeWatermarkNeedsPostProcess(split.watermarkDisposition)) {
-      final RecordingOrientation recordingOrientation = _recordingOrientation;
-      _runInBackground(
-        _watermarkAndBackup(savedPath, completed, recordingOrientation),
-      );
+      await _resumePendingWatermarks();
     } else {
       _runInBackground(
         _enqueueBackupIfNeeded(savedPath, <RecordingSession>[completed]),
@@ -1359,10 +1353,7 @@ class PackingSessionController extends ChangeNotifier
         orderInfo: _activeOrderInfo,
       );
       _sessions = await _repository.addSession(completed);
-      final RecordingOrientation recordingOrientation = _recordingOrientation;
-      _runInBackground(
-        _watermarkAndBackup(savedPath, completed, recordingOrientation),
-      );
+      await _resumePendingWatermarks();
 
       _timeline.reset();
       _timeline.start(boundaryAt);
@@ -1662,6 +1653,7 @@ class PackingSessionController extends ChangeNotifier
 
   Future<void> _shutdown() async {
     _disposed = true;
+    await _cancelWatermarkForShutdown();
     if (isWorking) {
       try {
         await stopWork();

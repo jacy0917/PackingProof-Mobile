@@ -10,24 +10,32 @@ final class _WatermarkFinalizationStateUnknownException implements Exception {
 
 /// 发布水印成片并将最终可用文件衔接到备份队列。
 mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
-  static const int _maximumWatermarkAttempts = 3;
+  static const int _maximumWatermarkAttempts = 1;
+  static const Duration _watermarkCancellationTimeout = Duration(seconds: 2);
 
   VideoWatermarkSink get _videoWatermarkService;
   ContinuousCameraInitialization? get _nativeInitialization;
   RecordingVideoCodec get _preferredVideoCodec;
   String _firstTrackingNumber(List<RecordingSession> sessions);
+  @override
+  Future<void> _backupAllRepositorySessions(String reason);
   final Set<String> _activeWatermarkSessionIds = <String>{};
-  final Set<String> _queuedWatermarkResumeSessionIds = <String>{};
+  Future<void>? _pendingWatermarkDispatcher;
+  bool _pendingWatermarkDrainRequested = false;
+  final Completer<void> _watermarkShutdown = Completer<void>();
 
-  Future<void> _watermarkAndBackup(
+  Future<bool> _watermarkAndBackup(
     String savedPath,
     RecordingSession session,
     RecordingOrientation recordingOrientation,
   ) async {
-    if (!_activeWatermarkSessionIds.add(session.id)) return;
+    if (!_activeWatermarkSessionIds.add(session.id)) return false;
     final Stopwatch stopwatch = Stopwatch()..start();
     var processingSession = session;
+    String? claimOwnerId;
+    String? claimOperationId;
     var inputBytes = 0;
+    var continueDrain = true;
     try {
       try {
         if (session.watermarkStatus == WatermarkProcessingStatus.pending) {
@@ -56,9 +64,11 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
               );
             }
             if (!_disposed) notifyListeners();
-            return;
+            return claim?.exhausted ?? false;
           }
           processingSession = claim.session;
+          claimOwnerId = claim.ownerId;
+          claimOperationId = claim.operationId;
           _sessions = await _repository.loadRecentSessions();
         }
         inputBytes = await _watermarkFileBytes(savedPath);
@@ -76,29 +86,39 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
         final String trackingNumber = _firstTrackingNumber(<RecordingSession>[
           processingSession,
         ]);
-        final String watermarkedPath =
-            await (_videoWatermarkService is OrientedVideoWatermarkSink
-                ? (_videoWatermarkService as OrientedVideoWatermarkSink)
-                      .applyWithOrientation(
-                        inputPath: savedPath,
-                        startedAt: processingSession.startedAt,
-                        trackingNumber: trackingNumber,
-                        // 相机可能因设备不支持偏好编码而回退，水印必须跟随实际录制的编码。
-                        videoCodec: recordingVideoCodecFromMime(
-                          _nativeInitialization?.videoMime,
-                          fallback: _preferredVideoCodec,
-                        ),
-                        recordingOrientation: recordingOrientation,
-                      )
-                : _videoWatermarkService.apply(
+        final Future<String> watermarkOperation =
+            _videoWatermarkService is OrientedVideoWatermarkSink
+            ? (_videoWatermarkService as OrientedVideoWatermarkSink)
+                  .applyWithOrientation(
                     inputPath: savedPath,
                     startedAt: processingSession.startedAt,
                     trackingNumber: trackingNumber,
+                    // 相机可能因设备不支持偏好编码而回退，水印必须跟随实际录制的编码。
                     videoCodec: recordingVideoCodecFromMime(
                       _nativeInitialization?.videoMime,
                       fallback: _preferredVideoCodec,
                     ),
-                  ));
+                    recordingOrientation: recordingOrientation,
+                  )
+            : _videoWatermarkService.apply(
+                inputPath: savedPath,
+                startedAt: processingSession.startedAt,
+                trackingNumber: trackingNumber,
+                videoCodec: recordingVideoCodecFromMime(
+                  _nativeInitialization?.videoMime,
+                  fallback: _preferredVideoCodec,
+                ),
+              );
+        final String watermarkedPath =
+            await Future.any<String>(<Future<String>>[
+              watermarkOperation,
+              _watermarkShutdown.future.then<String>((_) {
+                throw PlatformException(
+                  code: 'watermark_cancelled',
+                  message: '控制器关闭，水印导出已取消',
+                );
+              }),
+            ]);
         final String finalPath = await _repository.finalizeVideo(
           sourcePath: watermarkedPath,
           sessionId: processingSession.id,
@@ -111,11 +131,29 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
           watermarkStatus: WatermarkProcessingStatus.completed,
         );
         if (processingSession.watermarkStatus ==
-            WatermarkProcessingStatus.pending) {
+            WatermarkProcessingStatus.processing) {
+          final String ownerId = claimOwnerId ?? '';
+          final String operationId = claimOperationId ?? '';
+          if (ownerId.isEmpty || operationId.isEmpty) {
+            throw const _WatermarkFinalizationPersistenceException();
+          }
           try {
-            _sessions = await _repository.updateSession(finalized);
+            final RecordingSession? persisted = await _repository
+                .finalizeWatermarkClaim(
+                  session: finalized,
+                  ownerId: ownerId,
+                  operationId: operationId,
+                );
+            if (persisted == null) {
+              if (finalPath != savedPath) {
+                await _repository.deleteFileIfUnreferenced(finalPath);
+              }
+              throw const _WatermarkFinalizationPersistenceException();
+            }
+            await _refreshRecentSessionsAfterWatermark(persisted);
           } on Object {
-            // upsert 可能已提交、仅后续 recent reload 失败；先重读再决定补偿。
+            // 条件提交可能已成功、仅后续 recent reload 失败；先按 ID
+            // 重读，绝不使用通用 upsert 复活并发删除的记录。
             late final List<RecordingSession> latestSessions;
             try {
               latestSessions = await _repository.findActiveSessionsByIds(
@@ -132,7 +170,7 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
                       WatermarkProcessingStatus.completed,
             );
             if (completedWasPersisted) {
-              _sessions = await _repository.loadRecentSessions();
+              await _refreshRecentSessionsAfterWatermark(finalized);
             } else if (finalPath != savedPath) {
               // 只有确认 DB 未指向新成片时才清理，绝不删原片或状态不明的成片。
               try {
@@ -188,40 +226,76 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
             },
           );
           if (!_disposed) notifyListeners();
-          return;
+          if (!_disposed) {
+            _runInBackground(
+              _backupAllRepositorySessions('watermark_state_unknown'),
+            );
+          }
+          return false;
         }
         final bool retryable = _isRetryableWatermarkError(error);
-        final bool retryPending =
-            retryable &&
-            processingSession.watermarkAttemptCount < _maximumWatermarkAttempts;
         var statusPersisted =
             processingSession.watermarkStatus !=
-            WatermarkProcessingStatus.pending;
-        RecordingSession? failedSession =
+            WatermarkProcessingStatus.processing;
+        RecordingSession? backupSession =
             processingSession.watermarkStatus ==
                 WatermarkProcessingStatus.failed
             ? processingSession
             : null;
         if (processingSession.watermarkStatus ==
-            WatermarkProcessingStatus.pending) {
-          final RecordingSession updated = processingSession.copyWith(
-            watermarkStatus: retryPending
-                ? WatermarkProcessingStatus.pending
-                : WatermarkProcessingStatus.failed,
-          );
+            WatermarkProcessingStatus.processing) {
+          final String ownerId = claimOwnerId ?? '';
+          final String operationId = claimOperationId ?? '';
           try {
-            _sessions = await _repository.updateSession(updated);
-            statusPersisted = true;
-            if (updated.watermarkStatus == WatermarkProcessingStatus.failed) {
-              failedSession = updated;
+            final RecordingSession? persisted =
+                ownerId.isEmpty || operationId.isEmpty
+                ? null
+                : await _repository.failProcessingWatermark(
+                    sessionId: processingSession.id,
+                    ownerId: ownerId,
+                    operationId: operationId,
+                  );
+            statusPersisted = persisted != null;
+            if (persisted != null) {
+              backupSession = persisted;
+              await _refreshRecentSessionsAfterWatermark(persisted);
             }
           } on Object {
-            statusPersisted = false;
+            try {
+              final List<RecordingSession> latest = await _repository
+                  .findActiveSessionsByIds(<String>{processingSession.id});
+              RecordingSession? persisted = latest.isEmpty
+                  ? null
+                  : latest.single;
+              if (persisted?.watermarkStatus ==
+                      WatermarkProcessingStatus.processing &&
+                  ownerId.isNotEmpty &&
+                  operationId.isNotEmpty) {
+                persisted = await _repository.failProcessingWatermark(
+                  sessionId: processingSession.id,
+                  ownerId: ownerId,
+                  operationId: operationId,
+                );
+              }
+              statusPersisted =
+                  persisted != null &&
+                  persisted.watermarkStatus !=
+                      WatermarkProcessingStatus.pending &&
+                  persisted.watermarkStatus !=
+                      WatermarkProcessingStatus.processing;
+              if (statusPersisted) {
+                backupSession = persisted;
+                await _refreshRecentSessionsAfterWatermark(persisted);
+              }
+            } on Object {
+              statusPersisted = false;
+            }
           }
         }
-        // 可恢复的系统中断保持 pending，返回前台后重试；其余失败不进入备份。
+        // 任意导出异常都终结为 failed 并备份原片；同一 sessionId 不再
+        // 自动生成另一个版本，保持一条录像一个不可变备份事实。
         await _logWatermarkEvent(
-          kind: retryPending ? 'watermark_retry_pending' : 'watermark_failed',
+          kind: 'watermark_failed',
           extra: <String, Object?>{
             'sessionId': session.id,
             'orientation': recordingOrientation.storageValue,
@@ -234,23 +308,58 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
             'statusPersisted': statusPersisted,
           },
         );
-        if (statusPersisted && failedSession != null) {
+        if (statusPersisted && backupSession != null) {
           await _enqueueBackupIfNeeded(
-            failedSession.filePath,
-            <RecordingSession>[failedSession],
+            backupSession.filePath,
+            <RecordingSession>[backupSession],
           );
         }
       }
       if (!_disposed) notifyListeners();
     } finally {
       _activeWatermarkSessionIds.remove(session.id);
-      await _resumeQueuedWatermarkIfNeeded(session.id);
+      if (_pendingWatermarkDrainRequested) {
+        await _resumePendingWatermarks();
+      }
     }
+    return continueDrain;
   }
 
   bool _isRetryableWatermarkError(Object error) =>
       error is _WatermarkFinalizationPersistenceException ||
       (error is PlatformException && error.code == 'watermark_interrupted');
+
+  Future<void> _cancelWatermarkForShutdown() async {
+    if (!_watermarkShutdown.isCompleted) _watermarkShutdown.complete();
+    final VideoWatermarkSink service = _videoWatermarkService;
+    if (service is! CancellableVideoWatermarkSink) return;
+    try {
+      await (service as CancellableVideoWatermarkSink).cancel().timeout(
+        _watermarkCancellationTimeout,
+      );
+    } on Object {
+      // Dart 关闭信号已保证迟到回调不再发布到数据库；
+      // 原生取消失败或无响应不得让控制器关闭无界等待。
+    }
+  }
+
+  Future<void> _refreshRecentSessionsAfterWatermark(
+    RecordingSession persisted,
+  ) async {
+    try {
+      _sessions = await _repository.loadRecentSessions();
+    } on Object {
+      final int index = _sessions.indexWhere(
+        (RecordingSession current) => current.id == persisted.id,
+      );
+      if (index < 0) return;
+      final List<RecordingSession> updated = List<RecordingSession>.of(
+        _sessions,
+      );
+      updated[index] = persisted;
+      _sessions = updated;
+    }
+  }
 
   Future<int> _watermarkFileBytes(String path) async {
     try {
@@ -273,39 +382,54 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
   }
 
   Future<void> _resumePendingWatermarks() async {
-    final List<RecordingSession> pending = await _repository
-        .loadPendingWatermarkSessions();
-    for (final RecordingSession session in pending) {
-      if (_activeWatermarkSessionIds.contains(session.id)) {
-        _queuedWatermarkResumeSessionIds.add(session.id);
-        continue;
+    if (_disposed) return;
+    _pendingWatermarkDrainRequested = true;
+    if (_pendingWatermarkDispatcher != null) return;
+    late final Future<void> dispatcher;
+    dispatcher = _drainPendingWatermarks().whenComplete(() {
+      if (identical(_pendingWatermarkDispatcher, dispatcher)) {
+        _pendingWatermarkDispatcher = null;
+        if (_pendingWatermarkDrainRequested &&
+            _activeWatermarkSessionIds.isEmpty &&
+            !_disposed) {
+          unawaited(_resumePendingWatermarks());
+        }
       }
-      _runInBackground(
-        _watermarkAndBackup(
-          session.filePath,
-          session,
-          session.recordingOrientation,
-        ),
-      );
-    }
+    });
+    _pendingWatermarkDispatcher = dispatcher;
+    _runInBackground(dispatcher);
   }
 
-  Future<void> _resumeQueuedWatermarkIfNeeded(String sessionId) async {
-    if (!_queuedWatermarkResumeSessionIds.remove(sessionId) || _disposed) {
-      return;
-    }
-    final List<RecordingSession> pending = await _repository
-        .loadPendingWatermarkSessions();
-    for (final RecordingSession session in pending) {
-      if (session.id != sessionId) continue;
-      _runInBackground(
-        _watermarkAndBackup(
-          session.filePath,
-          session,
-          session.recordingOrientation,
-        ),
+  Future<void> _drainPendingWatermarks() async {
+    int? afterStartedAt;
+    String? afterId;
+    // 活跃的直接导出退出时负责重新唤醒；此处不能提前清掉请求，
+    // 否则 dispatcher 先返回、直接导出后返回时会丢失这次 wakeup。
+    if (_activeWatermarkSessionIds.isNotEmpty) return;
+    _pendingWatermarkDrainRequested = false;
+    while (!_disposed) {
+      // Native and startup recovery share one CPU/disk-heavy exporter. A
+      // direct export already in flight will request another drain on exit.
+      if (_activeWatermarkSessionIds.isNotEmpty) return;
+      final List<RecordingSession> pending = await _repository
+          .loadPendingWatermarkSessions(
+            limit: 1,
+            afterStartedAt: afterStartedAt,
+            afterId: afterId,
+          );
+      if (pending.isEmpty) return;
+      final RecordingSession session = pending.single;
+      final bool continueDrain = await _watermarkAndBackup(
+        session.filePath,
+        session,
+        session.recordingOrientation,
       );
-      return;
+      if (!continueDrain) {
+        // 本轮跳过被系统中断或已由其他实例领取的任务，继续处理后续
+        // 录像；下次前台恢复从队首重新尝试，既不热循环也不饿死队尾。
+        afterStartedAt = session.startedAt.millisecondsSinceEpoch;
+        afterId = session.id;
+      }
     }
   }
 
@@ -314,7 +438,9 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
     String savedPath,
     RecordingSession session, [
     RecordingOrientation recordingOrientation = RecordingOrientation.portrait,
-  ]) => _watermarkAndBackup(savedPath, session, recordingOrientation);
+  ]) async {
+    await _watermarkAndBackup(savedPath, session, recordingOrientation);
+  }
 
   @visibleForTesting
   Future<void> resumePendingWatermarksForTesting() =>

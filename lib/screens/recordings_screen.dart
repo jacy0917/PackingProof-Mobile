@@ -120,7 +120,8 @@ String? recordingWatermarkPlaybackBlockMessage(
   required bool localAvailable,
 }) {
   if (!localAvailable ||
-      session.watermarkStatus != WatermarkProcessingStatus.pending) {
+      (session.watermarkStatus != WatermarkProcessingStatus.pending &&
+          session.watermarkStatus != WatermarkProcessingStatus.processing)) {
     return null;
   }
   return '水印处理中，完成后即可播放';

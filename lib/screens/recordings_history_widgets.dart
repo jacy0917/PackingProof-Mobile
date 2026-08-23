@@ -181,6 +181,8 @@ class _RecordingThumbnail extends StatelessWidget {
             : switch (watermarkStatus) {
                 WatermarkProcessingStatus.pending =>
                   Icons.hourglass_top_rounded,
+                WatermarkProcessingStatus.processing =>
+                  Icons.hourglass_top_rounded,
                 WatermarkProcessingStatus.failed => Icons.error_outline_rounded,
                 WatermarkProcessingStatus.completed => Icons.play_arrow_rounded,
               },
@@ -466,6 +468,11 @@ class RecordingWatermarkStatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) => switch (status) {
     WatermarkProcessingStatus.pending => const _StatusChip(
+      key: Key('recording-watermark-pending-chip'),
+      label: '水印处理中',
+      tone: _StatusChipTone.backupUploading,
+    ),
+    WatermarkProcessingStatus.processing => const _StatusChip(
       key: Key('recording-watermark-pending-chip'),
       label: '水印处理中',
       tone: _StatusChipTone.backupUploading,

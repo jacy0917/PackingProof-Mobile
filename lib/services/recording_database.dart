@@ -57,11 +57,15 @@ class WatermarkAttemptClaim {
     required this.session,
     required this.claimed,
     required this.exhausted,
+    this.ownerId,
+    this.operationId,
   });
 
   final RecordingSession session;
   final bool claimed;
   final bool exhausted;
+  final String? ownerId;
+  final String? operationId;
 }
 
 class LocalRecordingStatistics {
@@ -105,6 +109,8 @@ class RecordingDatabase {
     this.beforeExclusiveMaterializationCreateForTesting,
     this.beforeSharedFileCopyChunkForTesting,
     this.afterDatabaseOpenForTesting,
+    this.watermarkOwnerIdForTesting,
+    this.beforeInterruptedWatermarkRecoveryForTesting,
   });
 
   final String path;
@@ -124,6 +130,11 @@ class RecordingDatabase {
   final Future<void> Function()? beforeSharedFileCopyChunkForTesting;
   @visibleForTesting
   final Future<void> Function()? afterDatabaseOpenForTesting;
+  @visibleForTesting
+  final String? watermarkOwnerIdForTesting;
+  @visibleForTesting
+  final Future<void> Function(Database database)?
+  beforeInterruptedWatermarkRecoveryForTesting;
   Database? _database;
   Future<Database>? _databaseOpenInFlight;
   Future<void>? _initializationInFlight;
@@ -132,8 +143,11 @@ class RecordingDatabase {
   final _AsyncMutex _sharedFileMigrationMutex = _AsyncMutex();
   Completer<void> _sharedFileMigrationCancellation = Completer<void>();
   bool _closing = false;
+  bool _watermarkRecoveryCompleted = false;
 
-  static const int _schemaVersion = 3;
+  static const int _schemaVersion = 4;
+  static final String _watermarkProcessOwnerId =
+      '${DateTime.now().microsecondsSinceEpoch}-${Object().hashCode}';
   static const String _sharedFileMigrationKey =
       'shared_file_materialization_v1';
   static const String _recordingFileOwnersReadyKey =
@@ -146,6 +160,9 @@ class RecordingDatabase {
   static const int _sharedFileMigrationBatchSize = 1;
   static const int _sharedFileCopyChunkSize = 1024 * 1024;
   static const int _minimumRecordingFreeBytes = 2 * 1024 * 1024 * 1024;
+  static const String _backupCursorIndex = 'idx_recording_backup_cursor';
+  static const String _pendingWatermarkIndex =
+      'idx_recording_pending_watermark';
 
   static const List<String> _sessionPayloadColumns = <String>[
     'payload_json',
@@ -184,6 +201,7 @@ class RecordingDatabase {
       throw StateError('录像数据库在打开期间被关闭');
     }
     _database = opened;
+    _watermarkRecoveryCompleted = false;
     return opened;
   }
 
@@ -217,7 +235,10 @@ class RecordingDatabase {
           updated_at INTEGER NOT NULL,
           recording_orientation TEXT NOT NULL DEFAULT 'portrait',
           watermark_status TEXT NOT NULL DEFAULT 'completed',
-          watermark_attempt_count INTEGER NOT NULL DEFAULT 0
+          watermark_attempt_count INTEGER NOT NULL DEFAULT 0,
+          watermark_owner_id TEXT NOT NULL DEFAULT '',
+          watermark_operation_id TEXT NOT NULL DEFAULT '',
+          watermark_claimed_at INTEGER
         )
       ''');
       await db.execute('''
@@ -254,6 +275,8 @@ class RecordingDatabase {
         'CREATE INDEX idx_recording_order '
         'ON recording_sessions(order_id)',
       );
+      await _createBackupCursorIndex(db);
+      await _createPendingWatermarkIndex(db);
     },
     onUpgrade: (Database db, int oldVersion, int newVersion) async {
       if (oldVersion < 2) {
@@ -280,6 +303,23 @@ class RecordingDatabase {
         await _createRecordingFileOwnersTable(db);
         await _createActiveTimeIndex(db);
       }
+      if (oldVersion < 4) {
+        await db.execute(
+          "ALTER TABLE recording_sessions ADD COLUMN watermark_owner_id "
+          "TEXT NOT NULL DEFAULT ''",
+        );
+        await db.execute(
+          "ALTER TABLE recording_sessions ADD COLUMN watermark_operation_id "
+          "TEXT NOT NULL DEFAULT ''",
+        );
+        await db.execute(
+          'ALTER TABLE recording_sessions ADD COLUMN watermark_claimed_at INTEGER',
+        );
+        // schema v3 databases already skipped the oldVersion < 3 block. Both
+        // indexes are therefore unconditional parts of the v4 contract.
+        await _createBackupCursorIndex(db);
+        await _createPendingWatermarkIndex(db);
+      }
     },
   );
 
@@ -304,6 +344,13 @@ class RecordingDatabase {
     // already reports schema v3 but predates the bounded migration table.
     await _createRecordingFileOwnersTable(db);
     await _createActiveTimeIndex(db);
+    await _createBackupCursorIndex(db);
+    await _createPendingWatermarkIndex(db);
+    if (!_watermarkRecoveryCompleted) {
+      await beforeInterruptedWatermarkRecoveryForTesting?.call(db);
+      await _recoverInterruptedWatermarkClaims(db);
+      _watermarkRecoveryCompleted = true;
+    }
     if (!await _sharedFileMigrationCompleted(db)) {
       _startSharedFileMigrationWorker(db);
     }
@@ -321,6 +368,39 @@ class RecordingDatabase {
     'CREATE INDEX IF NOT EXISTS idx_recording_active_time '
     'ON recording_sessions(is_deleted, started_at DESC, id DESC)',
   );
+
+  static Future<void> _createBackupCursorIndex(DatabaseExecutor db) =>
+      db.execute(
+        'CREATE INDEX IF NOT EXISTS $_backupCursorIndex '
+        'ON recording_sessions(updated_at ASC, id ASC) '
+        "WHERE is_deleted = 0 AND watermark_status IN ('completed', 'failed')",
+      );
+
+  static Future<void> _createPendingWatermarkIndex(DatabaseExecutor db) =>
+      db.execute(
+        'CREATE INDEX IF NOT EXISTS $_pendingWatermarkIndex '
+        'ON recording_sessions(watermark_status, is_deleted, started_at, id)',
+      );
+
+  String get _watermarkOwnerId =>
+      watermarkOwnerIdForTesting ?? _watermarkProcessOwnerId;
+
+  Future<void> _recoverInterruptedWatermarkClaims(Database db) async {
+    await db.update(
+      'recording_sessions',
+      <String, Object?>{
+        'watermark_status': WatermarkProcessingStatus.failed.storageValue,
+        'watermark_owner_id': '',
+        'watermark_operation_id': '',
+        'watermark_claimed_at': null,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where:
+          "is_deleted = 0 AND watermark_status = 'processing' "
+          'AND watermark_owner_id != ?',
+      whereArgs: <Object?>[_watermarkOwnerId],
+    );
+  }
 
   @visibleForTesting
   Future<void> setUpdatedAtForTesting({
@@ -686,22 +766,24 @@ class RecordingDatabase {
     ];
     final List<Object?> args = <Object?>[];
     if (afterUpdatedAt != null && afterId != null) {
-      conditions.add('(updated_at > ? OR (updated_at = ? AND id > ?))');
+      // Android API 24 ships SQLite 3.9 without row-value comparisons. The
+      // explicit range anchor also keeps deep pages as an index seek.
+      conditions.add('updated_at >= ?');
+      conditions.add('(updated_at > ? OR id > ?)');
       args.addAll(<Object?>[afterUpdatedAt, afterUpdatedAt, afterId]);
     }
     if (highUpdatedAt != null && highId != null) {
-      conditions.add('(updated_at < ? OR (updated_at = ? AND id <= ?))');
+      conditions.add('updated_at <= ?');
+      conditions.add('(updated_at < ? OR id <= ?)');
       args.addAll(<Object?>[highUpdatedAt, highUpdatedAt, highId]);
     }
     final String where = conditions.join(' AND ');
     final int normalizedSize = pageSize.clamp(1, 1000);
-    final List<Map<String, Object?>> rows = await db.query(
-      'recording_sessions',
-      columns: <String>[..._sessionPayloadColumns, 'updated_at', 'id'],
-      where: where,
-      whereArgs: args,
-      orderBy: 'updated_at ASC, id ASC',
-      limit: normalizedSize,
+    final List<Map<String, Object?>> rows = await db.rawQuery(
+      'SELECT ${<String>[..._sessionPayloadColumns, 'updated_at', 'id'].join(', ')} '
+      'FROM recording_sessions INDEXED BY $_backupCursorIndex '
+      'WHERE $where ORDER BY updated_at ASC, id ASC LIMIT ?',
+      <Object?>[...args, normalizedSize],
     );
     return rows
         .map(
@@ -716,18 +798,56 @@ class RecordingDatabase {
 
   Future<({int updatedAt, String id})?> loadBackupHighWatermark() async {
     final Database db = await _db;
-    final List<Map<String, Object?>> rows = await db.query(
-      'recording_sessions',
-      columns: <String>['updated_at', 'id'],
-      where: "is_deleted = 0 AND watermark_status IN ('completed', 'failed')",
-      orderBy: 'updated_at DESC, id DESC',
-      limit: 1,
+    final List<Map<String, Object?>> rows = await db.rawQuery(
+      'SELECT updated_at, id '
+      'FROM recording_sessions INDEXED BY $_backupCursorIndex '
+      "WHERE is_deleted = 0 AND watermark_status IN ('completed', 'failed') "
+      'ORDER BY updated_at DESC, id DESC LIMIT 1',
     );
     if (rows.isEmpty) return null;
     return (
       updatedAt: rows.first['updated_at']! as int,
       id: rows.first['id']! as String,
     );
+  }
+
+  @visibleForTesting
+  Future<List<String>> explainBackupCursorQueryForTesting({
+    int? afterUpdatedAt,
+    String? afterId,
+  }) async {
+    final Database db = await _db;
+    final bool hasCursor = afterUpdatedAt != null && afterId != null;
+    final String cursorClause = hasCursor
+        ? ' AND updated_at >= ? AND (updated_at > ? OR id > ?)'
+        : '';
+    final List<Map<String, Object?>> rows = await db.rawQuery(
+      'EXPLAIN QUERY PLAN SELECT updated_at, id FROM recording_sessions '
+      'INDEXED BY $_backupCursorIndex '
+      "WHERE is_deleted = 0 AND watermark_status IN ('completed', 'failed')"
+      '$cursorClause ORDER BY updated_at ASC, id ASC LIMIT 100',
+      hasCursor
+          ? <Object?>[afterUpdatedAt, afterUpdatedAt, afterId]
+          : const <Object?>[],
+    );
+    return rows
+        .map((Map<String, Object?> row) => row['detail']?.toString() ?? '')
+        .toList(growable: false);
+  }
+
+  @visibleForTesting
+  Future<List<String>> explainWatermarkRecoveryQueryForTesting() async {
+    final Database db = await _db;
+    final List<Map<String, Object?>> rows = await db.rawQuery(
+      'EXPLAIN QUERY PLAN SELECT id FROM recording_sessions '
+      'INDEXED BY $_pendingWatermarkIndex '
+      "WHERE is_deleted = 0 AND watermark_status = 'processing' "
+      'AND watermark_owner_id != ? LIMIT 1',
+      <Object?>[_watermarkOwnerId],
+    );
+    return rows
+        .map((Map<String, Object?> row) => row['detail']?.toString() ?? '')
+        .toList(growable: false);
   }
 
   Future<LocalRecordingStatistics> loadLocalRecordingStatistics() async {
@@ -914,15 +1034,45 @@ class RecordingDatabase {
     return rows.map(_sessionFromRow).toList(growable: false);
   }
 
-  Future<List<RecordingSession>> loadPendingWatermarkSessions() async {
+  Future<List<RecordingSession>> loadPendingWatermarkSessions({
+    int limit = 1,
+    int? afterStartedAt,
+    String? afterId,
+  }) async {
+    if ((afterStartedAt == null) != (afterId == null)) {
+      throw ArgumentError('水印游标时间与 ID 必须同时提供');
+    }
     final Database db = await _db;
-    final List<Map<String, Object?>> rows = await db.query(
-      'recording_sessions',
-      columns: _sessionPayloadColumns,
-      where: "is_deleted = 0 AND watermark_status = 'pending'",
-      orderBy: 'started_at ASC, id ASC',
+    final int normalizedLimit = limit.clamp(1, 100);
+    final bool hasCursor = afterStartedAt != null;
+    final List<Map<String, Object?>> rows = await db.rawQuery(
+      'SELECT ${_sessionPayloadColumns.join(', ')} FROM recording_sessions '
+      'INDEXED BY $_pendingWatermarkIndex '
+      "WHERE watermark_status = 'pending' AND is_deleted = 0 "
+      '${hasCursor ? 'AND (started_at > ? OR (started_at = ? AND id > ?)) ' : ''}'
+      'ORDER BY started_at ASC, id ASC LIMIT ?',
+      <Object?>[
+        if (hasCursor) afterStartedAt,
+        if (hasCursor) afterStartedAt,
+        if (hasCursor) afterId,
+        normalizedLimit,
+      ],
     );
     return rows.map(_sessionFromRow).toList(growable: false);
+  }
+
+  @visibleForTesting
+  Future<List<String>> explainPendingWatermarkQueryForTesting() async {
+    final Database db = await _db;
+    final List<Map<String, Object?>> rows = await db.rawQuery(
+      'EXPLAIN QUERY PLAN SELECT id FROM recording_sessions '
+      'INDEXED BY $_pendingWatermarkIndex '
+      "WHERE watermark_status = 'pending' AND is_deleted = 0 "
+      'ORDER BY started_at ASC, id ASC LIMIT 1',
+    );
+    return rows
+        .map((Map<String, Object?> row) => row.values.join(' '))
+        .toList(growable: false);
   }
 
   Future<WatermarkAttemptClaim?> claimPendingWatermarkAttempt({
@@ -980,13 +1130,20 @@ class RecordingDatabase {
         );
       }
       final RecordingSession claimed = current.copyWith(
+        watermarkStatus: WatermarkProcessingStatus.processing,
         watermarkAttemptCount: current.watermarkAttemptCount + 1,
       );
+      final String operationId =
+          '$_watermarkOwnerId:$sessionId:${DateTime.now().microsecondsSinceEpoch}';
       final int updated = await txn.update(
         'recording_sessions',
         <String, Object?>{
           'payload_json': jsonEncode(claimed.toJson()),
+          'watermark_status': claimed.watermarkStatus.storageValue,
           'watermark_attempt_count': claimed.watermarkAttemptCount,
+          'watermark_owner_id': _watermarkOwnerId,
+          'watermark_operation_id': operationId,
+          'watermark_claimed_at': now,
           'updated_at': now,
         },
         where:
@@ -999,6 +1156,8 @@ class RecordingDatabase {
           session: claimed,
           claimed: true,
           exhausted: false,
+          ownerId: _watermarkOwnerId,
+          operationId: operationId,
         );
       }
       final RecordingSession? latest = await loadCurrent();
@@ -1009,6 +1168,112 @@ class RecordingDatabase {
               claimed: false,
               exhausted: false,
             );
+    });
+  }
+
+  Future<RecordingSession?> finalizeWatermarkClaim({
+    required RecordingSession session,
+    required String ownerId,
+    required String operationId,
+  }) async {
+    final Database db = await _db;
+    final _RecordingFileMetadata metadata = await _readFileMetadata(
+      File(session.filePath),
+    );
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    final Map<String, Object?> row = await _sessionRow(
+      session,
+      fileMetadata: metadata,
+      now: now,
+    );
+    return db.transaction((Transaction txn) async {
+      final List<Map<String, Object?>> current = await txn.query(
+        'recording_sessions',
+        columns: const <String>['id'],
+        where:
+            "id = ? AND is_deleted = 0 AND watermark_status = 'processing' "
+            'AND watermark_owner_id = ? AND watermark_operation_id = ?',
+        whereArgs: <Object?>[session.id, ownerId, operationId],
+        limit: 1,
+      );
+      if (current.isEmpty) return null;
+      await _claimFileOwnership(
+        txn,
+        sessionId: session.id,
+        filePath: session.filePath,
+      );
+      final int updated = await txn.update(
+        'recording_sessions',
+        <String, Object?>{
+          'file_path': row['file_path'],
+          'started_at': row['started_at'],
+          'ended_at': row['ended_at'],
+          'tracking_number': row['tracking_number'],
+          'order_id': row['order_id'],
+          'search_text': row['search_text'],
+          'payload_json': row['payload_json'],
+          'file_size_bytes': row['file_size_bytes'],
+          'missing_at': row['missing_at'],
+          'updated_at': now,
+          'recording_orientation': row['recording_orientation'],
+          'watermark_status': row['watermark_status'],
+          'watermark_attempt_count': row['watermark_attempt_count'],
+          'watermark_owner_id': '',
+          'watermark_operation_id': '',
+          'watermark_claimed_at': null,
+        },
+        where:
+            "id = ? AND is_deleted = 0 AND watermark_status = 'processing' "
+            'AND watermark_owner_id = ? AND watermark_operation_id = ?',
+        whereArgs: <Object?>[session.id, ownerId, operationId],
+      );
+      return updated == 1 ? session : null;
+    });
+  }
+
+  Future<RecordingSession?> failProcessingWatermark({
+    required String sessionId,
+    required String ownerId,
+    required String operationId,
+  }) async {
+    final Database db = await _db;
+    return db.transaction((Transaction txn) async {
+      Future<RecordingSession?> loadCurrent() async {
+        final List<Map<String, Object?>> rows = await txn.query(
+          'recording_sessions',
+          columns: _sessionPayloadColumns,
+          where: 'id = ? AND is_deleted = 0',
+          whereArgs: <Object?>[sessionId],
+          limit: 1,
+        );
+        return rows.isEmpty ? null : _sessionFromRow(rows.single);
+      }
+
+      final RecordingSession? current = await loadCurrent();
+      if (current == null ||
+          current.watermarkStatus != WatermarkProcessingStatus.processing) {
+        return current;
+      }
+      final RecordingSession failed = current.copyWith(
+        watermarkStatus: WatermarkProcessingStatus.failed,
+      );
+      final int updated = await txn.update(
+        'recording_sessions',
+        <String, Object?>{
+          'payload_json': jsonEncode(failed.toJson()),
+          'watermark_status': failed.watermarkStatus.storageValue,
+          'watermark_owner_id': '',
+          'watermark_operation_id': '',
+          'watermark_claimed_at': null,
+          'updated_at': DateTime.now().millisecondsSinceEpoch,
+        },
+        where:
+            "id = ? AND is_deleted = 0 AND watermark_status = 'processing' "
+            'AND watermark_owner_id = ? AND watermark_operation_id = ?',
+        whereArgs: <Object?>[sessionId, ownerId, operationId],
+      );
+      if (updated != 1) return null;
+      return loadCurrent();
     });
   }
 
