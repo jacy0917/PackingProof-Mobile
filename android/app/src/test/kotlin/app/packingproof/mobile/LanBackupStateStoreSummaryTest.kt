@@ -68,6 +68,47 @@ class LanBackupStateStoreSummaryTest {
     }
 
     @Test
+    fun updatingJobPreservesReferencedRows() {
+        val source = source("referenced-row.mp4")
+        val job = store.upsertJob(source.path, sessions("session-referenced-row")).job
+        val database = context.openOrCreateDatabase("lan_backup.db", Context.MODE_PRIVATE, null)
+        try {
+            database.setForeignKeyConstraintsEnabled(true)
+            database.execSQL(
+                """
+                CREATE TABLE backup_job_reference (
+                    job_id TEXT PRIMARY KEY,
+                    FOREIGN KEY(job_id) REFERENCES backup_jobs(id) ON DELETE CASCADE
+                )
+                """.trimIndent(),
+            )
+            database.execSQL(
+                "INSERT INTO backup_job_reference(job_id) VALUES(?)",
+                arrayOf(job.getString("id")),
+            )
+        } finally {
+            database.close()
+        }
+
+        val updated = store.updateJob(job.getString("id"), job.getString("generation")) {
+            it.put("state", "uploading")
+            true
+        }
+
+        assertNotNull(updated)
+        context.openOrCreateDatabase("lan_backup.db", Context.MODE_PRIVATE, null).use { reopened ->
+            val referenceCount = reopened.rawQuery(
+                "SELECT COUNT(*) FROM backup_job_reference WHERE job_id = ?",
+                arrayOf(job.getString("id")),
+            ).use { cursor ->
+                cursor.moveToFirst()
+                cursor.getLong(0)
+            }
+            assertEquals(1L, referenceCount)
+        }
+    }
+
+    @Test
     fun summaryIsFixedSizeAndPathLookupIsBounded() {
         val first = source("first.mp4")
         val second = source("second.mp4")

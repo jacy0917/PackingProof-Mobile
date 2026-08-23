@@ -723,12 +723,16 @@ internal class LanBackupStateStore(private val context: Context) : AutoCloseable
         try {
             revision = nextRevisionUnlocked()
             job.put("revision", revision)
-            db.insertWithOnConflict(
+            val row = lanBackupJobToRow(job).toContentValues()
+            val updated = db.update(
                 LanBackupJobDatabase.TABLE,
-                null,
-                lanBackupJobToRow(job).toContentValues(),
-                SQLiteDatabase.CONFLICT_REPLACE,
+                row,
+                "id = ?",
+                arrayOf(job.getString("id")),
             )
+            if (updated == 0) {
+                db.insertOrThrow(LanBackupJobDatabase.TABLE, null, row)
+            }
             adjustSummaryCountersUnlocked(previous, job)
             if (previous?.optString("state") == "completed" || job.optString("state") == "completed") {
                 setMetaValueUnlocked("completed_revision", revision)
