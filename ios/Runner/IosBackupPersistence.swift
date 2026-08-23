@@ -500,6 +500,25 @@ final class IosBackupJobStore {
     return (try metaValueUnlocked("global_revision"), jobs)
   }
 
+  func latestJob(filePathSuffix: String) throws -> [String: Any]? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard !filePathSuffix.isEmpty else { return nil }
+    let escaped = filePathSuffix
+      .replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "%", with: "\\%")
+      .replacingOccurrences(of: "_", with: "\\_")
+    var stmt: OpaquePointer?
+    try prepare(
+      "\(summaryJobSelect) WHERE file_path LIKE ? ESCAPE '\\' ORDER BY last_modified DESC, revision DESC LIMIT 1",
+      statement: &stmt, operation: "按录像相对路径查询任务"
+    )
+    defer { sqlite3_finalize(stmt) }
+    try bindText(stmt, 1, "%\(escaped)")
+    guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+    return summaryJobFromRow(stmt)
+  }
+
   /// 原子领取一条待上传任务。SQLite 是等待队列的唯一事实源；调用方只为
   /// 实际领取到的任务创建上传 Task，不能为其余 pending 行建立等待 Task。
   func claimNextUploadJob() throws -> [String: Any]? {
@@ -537,7 +556,9 @@ final class IosBackupJobStore {
     lock.lock()
     defer { lock.unlock() }
     let sourceStates = enabled ? "'paused'" : "'pending','uploading'"
-    let failureGuard = enabled ? " AND failure_kind IS NULL" : ""
+    let failureGuard = enabled
+      ? " AND (failure_kind IS NULL OR failure_kind = 'storage_unavailable')"
+      : ""
     var countStatement: OpaquePointer?
     try prepare(
       "SELECT COUNT(*) FROM backup_jobs WHERE state IN (\(sourceStates))\(failureGuard)",

@@ -1030,7 +1030,7 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(summary["failedCount"] as? Int64, 2)
   }
 
-  func testEnablingUploadsDoesNotReviveStructuredFailurePause() throws {
+  func testEnablingUploadsOnlyRevivesRecoverableStoragePause() throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
     let store = try IosBackupJobStore(
@@ -1044,15 +1044,24 @@ class RunnerTests: XCTestCase {
     credentialPaused["failureKind"] = "credential_invalid"
     credentialPaused["errorMessage"] = "需要重新配对"
     try store.upsert(credentialPaused)
+    var storagePaused = makeBackupJob(id: "storage-paused")
+    storagePaused["state"] = "paused"
+    storagePaused["failureKind"] = "storage_unavailable"
+    storagePaused["errorMessage"] = "无法读取录像文件信息"
+    try store.upsert(storagePaused)
 
-    XCTAssertEqual(try store.setUploadsEnabled(true), 1)
+    XCTAssertEqual(try store.setUploadsEnabled(true), 2)
     XCTAssertEqual(try store.readJob(id: "user-paused")?["state"] as? String, "pending")
+    let recovered = try XCTUnwrap(store.readJob(id: "storage-paused"))
+    XCTAssertEqual(recovered["state"] as? String, "pending")
+    XCTAssertNil(recovered["failureKind"] as? String)
+    XCTAssertNil(recovered["errorMessage"] as? String)
     let preserved = try XCTUnwrap(store.readJob(id: "credential-paused"))
     XCTAssertEqual(preserved["state"] as? String, "paused")
     XCTAssertEqual(preserved["failureKind"] as? String, "credential_invalid")
     XCTAssertEqual(preserved["errorMessage"] as? String, "需要重新配对")
     let summary = try store.summaryValues()
-    XCTAssertEqual(summary["pendingCount"] as? Int64, 1)
+    XCTAssertEqual(summary["pendingCount"] as? Int64, 2)
     XCTAssertEqual(summary["pausedCount"] as? Int64, 1)
   }
 
@@ -1096,6 +1105,27 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(result.jobs.count, 1)
     XCTAssertEqual(result.jobs.first?["id"] as? String, "path-b")
     XCTAssertGreaterThan(result.revision, 0)
+  }
+
+  func testBackupJobLookupMatchesEscapedHistoricalContainerSuffix() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    var historical = makeBackupJob(id: "historical-container")
+    historical["filePath"] = "/private/old/Application/OLD/Documents/recordings/day/video_100%.mp4"
+    try store.upsert(historical)
+
+    let matched = try store.latestJob(
+      filePathSuffix: "/Documents/recordings/day/video_100%.mp4"
+    )
+    XCTAssertEqual(matched?["id"] as? String, "historical-container")
+    XCTAssertNil(
+      try store.latestJob(
+        filePathSuffix: "/Documents/recordings/day/videoX100Y.mp4"
+      )
+    )
   }
 
   func testClaimNextUploadJobUsesSqliteQueueAndSkipsPausedJobs() throws {
@@ -3915,6 +3945,56 @@ class RunnerTests: XCTestCase {
         operation: "测试写入", code: executeCode, message: "无法修改测试数据库"
       )
     }
+  }
+
+  func testBackupRecordingPathRelocatesLegacyContainerPath() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "backup-path-relocation-\(UUID().uuidString)", isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let documents = root.appendingPathComponent("Documents", isDirectory: true)
+    let target = documents.appendingPathComponent(
+      "recordings/2026-08-23/example.mp4"
+    )
+    try FileManager.default.createDirectory(
+      at: target.deletingLastPathComponent(), withIntermediateDirectories: true
+    )
+    try Data(repeating: 7, count: 32).write(to: target)
+    let legacy = "/var/mobile/Containers/Data/Application/OLD-CONTAINER/" +
+      "Documents/recordings/2026-08-23/example.mp4"
+
+    let resolved = try IosBackupRecordingPath.resolve(
+      storedPath: legacy, documentsDirectory: documents
+    )
+
+    XCTAssertEqual(resolved.standardizedFileURL, target.standardizedFileURL)
+    XCTAssertEqual(try IosBackupFileSnapshot.read(from: resolved).byteCount, 32)
+  }
+
+  func testBackupRecordingPathRejectsTraversalOutsideRecordings() throws {
+    let documents = FileManager.default.temporaryDirectory
+      .appendingPathComponent("Documents-\(UUID().uuidString)", isDirectory: true)
+    let legacy = "/var/mobile/Containers/Data/Application/OLD-CONTAINER/" +
+      "Documents/recordings/../../outside.mp4"
+
+    XCTAssertThrowsError(
+      try IosBackupRecordingPath.resolve(
+        storedPath: legacy, documentsDirectory: documents
+      )
+    )
+  }
+
+  func testBackupRecordingIdentityIgnoresContainerUuid() {
+    let suffix = "Documents/recordings/2026-08-23/example.mp4"
+    let first = IosBackupRecordingPath.stableIdentity(
+      storedPath: "/var/mobile/Containers/Data/Application/FIRST/\(suffix)"
+    )
+    let second = IosBackupRecordingPath.stableIdentity(
+      storedPath: "/var/mobile/Containers/Data/Application/SECOND/\(suffix)"
+    )
+
+    XCTAssertEqual(first, "Documents/recordings/2026-08-23/example.mp4")
+    XCTAssertEqual(first, second)
   }
 
   private func backupStoreQueryPlan(

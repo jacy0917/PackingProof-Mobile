@@ -57,6 +57,72 @@ struct BackupSourceError: Error, LocalizedError {
   var errorDescription: String? { message }
 }
 
+enum IosBackupRecordingPath {
+  static func resolve(
+    storedPath: String,
+    documentsDirectory: URL? = nil
+  ) throws -> URL {
+    let stored = URL(fileURLWithPath: storedPath).standardizedFileURL
+    if FileManager.default.fileExists(atPath: stored.path) { return stored }
+    let documents = try resolvedDocumentsDirectory(documentsDirectory)
+    let relative = try recordingsRelativeComponents(stored)
+    let recordingsRoot = documents.appendingPathComponent(
+      "recordings", isDirectory: true
+    ).standardizedFileURL
+    let candidate = relative.reduce(recordingsRoot) {
+      $0.appendingPathComponent($1, isDirectory: false)
+    }.standardizedFileURL
+    guard isContained(candidate, by: recordingsRoot) else {
+      throw BackupSourceError(message: "备份录像路径超出录像目录")
+    }
+    return candidate
+  }
+
+  static func stableIdentity(
+    storedPath: String,
+    documentsDirectory: URL? = nil
+  ) -> String {
+    let stored = URL(fileURLWithPath: storedPath).standardizedFileURL
+    guard let relative = try? recordingsRelativeComponents(stored) else {
+      return stored.path
+    }
+    return (["Documents", "recordings"] + relative).joined(separator: "/")
+  }
+
+  private static func resolvedDocumentsDirectory(_ override: URL?) throws -> URL {
+    if let override { return override.standardizedFileURL }
+    guard let documents = FileManager.default.urls(
+      for: .documentDirectory, in: .userDomainMask
+    ).first else {
+      throw BackupSourceError(message: "无法获取录像文件位置")
+    }
+    return documents.standardizedFileURL
+  }
+
+  private static func recordingsRelativeComponents(_ url: URL) throws -> [String] {
+    let components = url.pathComponents
+    guard let documentsIndex = components.lastIndex(of: "Documents"),
+          documentsIndex + 2 < components.count,
+          components[documentsIndex + 1] == "recordings"
+    else {
+      throw BackupSourceError(message: "无法获取录像文件位置")
+    }
+    let relative = Array(components[(documentsIndex + 2)...])
+    guard !relative.isEmpty,
+          relative.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
+    else {
+      throw BackupSourceError(message: "备份录像路径无效")
+    }
+    return relative
+  }
+
+  private static func isContained(_ candidate: URL, by directory: URL) -> Bool {
+    let root = directory.resolvingSymlinksInPath().standardizedFileURL.path
+    let path = candidate.resolvingSymlinksInPath().standardizedFileURL.path
+    return path.hasPrefix(root + "/")
+  }
+}
+
 struct IosBackupFileSnapshot: Equatable {
   let byteCount: Int64
   let modifiedAtMilliseconds: Int64
@@ -666,10 +732,22 @@ final class IosBackupHostApi: BackupNativeHostApi {
     let unique = paths.filter { seen.insert($0).inserted }
     completion(Result {
       let result = try jobStore.get().jobsForPaths(unique)
-      let found = Set(result.jobs.compactMap { $0["filePath"] as? String })
+      var jobs = result.jobs
+      var found = Set(jobs.compactMap { $0["filePath"] as? String })
+      for path in unique where !found.contains(path) {
+        let identity = IosBackupRecordingPath.stableIdentity(storedPath: path)
+        guard identity.hasPrefix("Documents/recordings/"),
+              var legacy = try jobStore.get().latestJob(
+                filePathSuffix: "/\(identity)"
+              )
+        else { continue }
+        legacy["filePath"] = path
+        jobs.append(legacy)
+        found.insert(path)
+      }
       return BackupJobsByPathsDto(
         revision: result.revision,
-        jobs: result.jobs.map(jobDto),
+        jobs: jobs.map(jobDto),
         missingPaths: unique.filter { !found.contains($0) }
       )
     })
@@ -820,12 +898,16 @@ final class IosBackupHostApi: BackupNativeHostApi {
     guard !path.isEmpty else {
       throw pigeonError("缺少录像路径", code: "backup_file_path_missing")
     }
-    guard FileManager.default.fileExists(atPath: path) else { return nil }
-    let id = request["id"] as? String ?? stableId(path)
+    let resolvedUrl = try IosBackupRecordingPath.resolve(storedPath: path)
+    guard FileManager.default.fileExists(atPath: resolvedUrl.path) else { return nil }
+    let resolvedPath = resolvedUrl.path
+    let id = request["id"] as? String ?? stableId(
+      IosBackupRecordingPath.stableIdentity(storedPath: path)
+    )
     let startUploadRequested = request["startUpload"] as? Bool != false &&
       defaults.bool(forKey: "ios_backup_auto_enabled")
     let forceRestart = request["forceRestart"] as? Bool == true
-      let attributes = try FileManager.default.attributesOfItem(atPath: path)
+      let attributes = try FileManager.default.attributesOfItem(atPath: resolvedPath)
       let fileSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
       guard fileSize > 0 else { return nil }
       let lastModified = Int64(
@@ -845,7 +927,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
         (existing?["destinationComputerId"] as? String ?? "") == destination
       var job: [String: Any]
       if sameSource, var preserved = existing {
-        preserved["filePath"] = path
+        preserved["filePath"] = resolvedPath
         if let sessions = requested["sessions"] { preserved["sessions"] = sessions }
         let completedWithEvidence = preserved["state"] as? String == "completed" &&
           !(preserved["contentSha256"] as? String ?? "").isEmpty
@@ -864,6 +946,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
         job = preserved
       } else {
         job = requested
+        job["filePath"] = resolvedPath
         job["id"] = id
         job["generation"] = UUID().uuidString
         job["state"] = startUploadRequested ? "pending" : "paused"
@@ -1867,8 +1950,16 @@ final class IosBackupHostApi: BackupNativeHostApi {
       guard let path = job["filePath"] as? String, !path.isEmpty else {
         throw BackupSourceError(message: "备份任务缺少录像文件路径")
       }
+      let resolvedUrl = try IosBackupRecordingPath.resolve(storedPath: path)
+      if resolvedUrl.path != path {
+        let updated = try updateUploadJob(
+          jobId, expectedGeneration: identity.generation
+        ) { current in
+          current["filePath"] = resolvedUrl.path
+        }
+        guard updated else { throw CancellationError() }
+      }
       var baseUrl = storedBaseUrl
-      let url = URL(fileURLWithPath: path)
       guard let accessKey = try credentialStore.load() else {
         throw pigeonError("未找到备份访问密钥", code: "credential_missing")
       }
@@ -1882,7 +1973,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
           code: "backup_session_invalid"
         )
       }
-      let reader = try IosBackupFileReader(url: url)
+      let reader = try IosBackupFileReader(url: resolvedUrl)
       let totalBytes = reader.snapshot.byteCount
       let fileSha256 = try reader.sha256()
       let createBody: [String: Any] = [
