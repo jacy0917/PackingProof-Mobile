@@ -27,17 +27,21 @@ void main() {
     final SessionRepository repository = testRepository(root);
     await repository.initialize();
     final DateTime startedAt = DateTime.utc(2026, 8, 21, 10);
+    final File firstVideo = File('${root.path}/backup-one.mp4');
+    final File secondVideo = File('${root.path}/backup-two.mp4');
+    await firstVideo.writeAsBytes(<int>[1]);
+    await secondVideo.writeAsBytes(<int>[2]);
     await repository.addSessions(<RecordingSession>[
       RecordingSession(
         id: 'backup-one',
-        filePath: '${root.path}/backup-one.mp4',
+        filePath: firstVideo.path,
         startedAt: startedAt,
         endedAt: startedAt.add(const Duration(seconds: 1)),
         markers: const <Never>[],
       ),
       RecordingSession(
         id: 'backup-two',
-        filePath: '${root.path}/backup-two.mp4',
+        filePath: secondVideo.path,
         startedAt: startedAt.add(const Duration(seconds: 2)),
         endedAt: startedAt.add(const Duration(seconds: 3)),
         markers: const <Never>[],
@@ -108,14 +112,19 @@ void main() {
       capabilities: const PlatformCapabilities(<PlatformCapability>{}),
       runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
     );
-    Future<void>? shutdown;
+    await firstRepository.resumeSharedFileMigration();
     final List<String> firstRunIds = <String>[];
+    var processedPages = 0;
     await firstController.processStartupBackupIncrementForTesting((page) async {
+      processedPages++;
+      if (processedPages == 2) {
+        throw StateError('模拟第二页处理前中断');
+      }
       firstRunIds.addAll(page.map((session) => session.id));
-      shutdown ??= firstController.shutdown();
     });
-    await shutdown!;
     expect(firstRunIds, hasLength(100));
+    await firstController.shutdown();
+    firstController.dispose();
 
     final SessionRepository verifier = SessionRepository(rootDirectory: root);
     expect(await verifier.loadBackupRegistrationCursor(), isNotNull);
@@ -130,6 +139,7 @@ void main() {
       capabilities: const PlatformCapabilities(<PlatformCapability>{}),
       runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
     );
+    await secondRepository.resumeSharedFileMigration();
     final List<String> secondRunIds = <String>[];
     await secondController.processStartupBackupIncrementForTesting((
       page,
