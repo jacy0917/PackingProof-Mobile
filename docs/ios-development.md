@@ -66,11 +66,25 @@ xcodebuild test \
 
 ## IPA 构建
 
-`Tools/Build-iOS.sh` 默认使用 `app-store` 导出方式，输出：
+`Tools/Build-iOS.sh` 默认构建 release 并使用 `app-store` 导出方式，输出：
 
 ```text
 dist/ios/PackingProof-Mobile-v<versionName>+<versionCode>.ipa
 ```
+
+需要可从桌面启动且保留性能诊断能力的真机测试包时，使用 Flutter tooling 构建 profile，并采用工程现有的 bundle ID 与签名配置：
+
+```bash
+Tools/Build-iOS.sh --profile development
+```
+
+profile 产物输出为：
+
+```text
+dist/ios/PackingProof-Mobile-profile-v<versionName>+<versionCode>.ipa
+```
+
+脚本仍兼容原有的导出方式与可选缓存清理参数，例如 `Tools/Build-iOS.sh ad-hoc clean`。`clean` 只清理 Flutter 构建缓存；脚本不会安装或卸载 App，也不会删除设备容器或本地录像。
 
 脚本会在调用 Flutter 构建前读取当前 Git revision 和 UTC 构建时间，并同时注入 App 的 `BUILD_REVISION`、`BUILD_TIMESTAMP` 与外部构建清单。设备诊断中的构建身份必须与 `build-manifest.json` 一致；两者任一为空或不一致时，不得用该包作性能或发布验收。
 

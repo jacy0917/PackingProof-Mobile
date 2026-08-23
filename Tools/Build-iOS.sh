@@ -4,8 +4,56 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-EXPORT_METHOD="${1:-app-store}"
-FORCE_CLEAN="${2:-}"
+BUILD_MODE="release"
+EXPORT_METHOD=""
+FORCE_CLEAN=""
+
+usage() {
+  cat <<'EOF'
+用法：Tools/Build-iOS.sh [--profile|--release] [app-store|ad-hoc|development|enterprise] [clean]
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile)
+      BUILD_MODE="profile"
+      ;;
+    --release)
+      BUILD_MODE="release"
+      ;;
+    app-store|ad-hoc|development|enterprise)
+      if [[ -n "$EXPORT_METHOD" ]]; then
+        echo "只能指定一种 iOS 导出方式" >&2
+        usage >&2
+        exit 2
+      fi
+      EXPORT_METHOD="$1"
+      ;;
+    clean)
+      if [[ -n "$FORCE_CLEAN" ]]; then
+        echo "clean 只能指定一次" >&2
+        usage >&2
+        exit 2
+      fi
+      FORCE_CLEAN="clean"
+      ;;
+    *)
+      echo "未知参数：$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [[ -z "$EXPORT_METHOD" ]]; then
+  if [[ "$BUILD_MODE" == "profile" ]]; then
+    EXPORT_METHOD="development"
+  else
+    EXPORT_METHOD="app-store"
+  fi
+fi
 
 VERSION_LINE="$(awk '/^version:/{print $2; exit}' pubspec.yaml)"
 if [[ ! "$VERSION_LINE" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\+([0-9]+)$ ]]; then
@@ -22,7 +70,7 @@ if [[ "$FORCE_CLEAN" == "clean" ]]; then
 fi
 
 flutter pub get
-flutter build ipa --release \
+flutter build ipa "--$BUILD_MODE" \
   --build-name "$VERSION_NAME" \
   --build-number "$VERSION_CODE" \
   --dart-define="BUILD_REVISION=$REVISION" \
@@ -38,7 +86,11 @@ fi
 
 OUTPUT_DIR="$REPO_ROOT/dist/ios"
 mkdir -p "$OUTPUT_DIR"
-OUTPUT_NAME="PackingProof-Mobile-v${VERSION_NAME}+${VERSION_CODE}.ipa"
+if [[ "$BUILD_MODE" == "profile" ]]; then
+  OUTPUT_NAME="PackingProof-Mobile-profile-v${VERSION_NAME}+${VERSION_CODE}.ipa"
+else
+  OUTPUT_NAME="PackingProof-Mobile-v${VERSION_NAME}+${VERSION_CODE}.ipa"
+fi
 OUTPUT_IPA="$OUTPUT_DIR/$OUTPUT_NAME"
 cp "$SOURCE_IPA" "$OUTPUT_IPA"
 
@@ -54,6 +106,7 @@ cat > "$OUTPUT_DIR/build-manifest.json" <<EOF
   "bundleId": "app.packingproof.mobile",
   "revision": "$REVISION",
   "builtAtUtc": "$BUILT_AT",
+  "buildMode": "$BUILD_MODE",
   "exportMethod": "$EXPORT_METHOD",
   "artifacts": [
     {

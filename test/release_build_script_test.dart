@@ -37,19 +37,28 @@ void main() {
     expect(diagnosticScript, contains(r'-ForceClean:$ForceClean'));
   });
 
-  test('iOS 发布构建把可审计的源码版本和构建时间注入 App', () {
+  test('iOS profile 和 release 构建把可审计的构建身份注入 App', () {
     final script = File('Tools/Build-iOS.sh').readAsStringSync();
 
     final revisionIndex = script.indexOf('REVISION="\$(git rev-parse');
     final timestampIndex = script.indexOf('BUILT_AT="\$(date -u');
-    final buildIndex = script.indexOf('flutter build ipa --release');
+    final buildIndex = script.indexOf('flutter build ipa "--\$BUILD_MODE"');
     expect(revisionIndex, greaterThanOrEqualTo(0));
     expect(timestampIndex, greaterThan(revisionIndex));
     expect(buildIndex, greaterThan(timestampIndex));
+    expect(script, contains('BUILD_MODE="release"'));
+    expect(script, contains('--profile)'));
+    expect(script, contains('--release)'));
+    expect(script, contains('EXPORT_METHOD="development"'));
+    expect(script, contains('EXPORT_METHOD="app-store"'));
     expect(script, contains('--dart-define="BUILD_REVISION=\$REVISION"'));
     expect(script, contains('--dart-define="BUILD_TIMESTAMP=\$BUILT_AT"'));
     expect(script, contains('"revision": "\$REVISION"'));
     expect(script, contains('"builtAtUtc": "\$BUILT_AT"'));
+    expect(script, contains('"buildMode": "\$BUILD_MODE"'));
+    expect(script, contains('PackingProof-Mobile-profile-v'));
+    expect(script, isNot(contains('devicectl')));
+    expect(script, isNot(contains('uninstall')));
   });
 
   test('Android 清单配置系统播放器内容提供者', () {
