@@ -32,14 +32,33 @@ void main() {
     }
   });
 
+  test('横左与横右使用完全相同的成片顶部距离', () {
+    final WatermarkGeometry landscapeLeft = watermarkGeometry(
+      orientation: RecordingOrientation.landscapeLeft,
+      videoSize: const Size(1080, 1920),
+      watermarkSize: const Size(300, 80),
+    );
+    final WatermarkGeometry landscapeRight = watermarkGeometry(
+      orientation: RecordingOrientation.landscapeRight,
+      videoSize: const Size(1080, 1920),
+      watermarkSize: const Size(300, 80),
+    );
+
+    expect(landscapeLeft.outputRect.top, landscapeRight.outputRect.top);
+    expect(
+      landscapeLeft.outputRect.top,
+      1080 * landscapeWatermarkTopFraction,
+    );
+  });
+
   test('预览水印按实际采集尺寸映射竖屏与横屏字号描边', () {
     final WatermarkPreviewMetrics portrait = watermarkPreviewMetrics(
       orientation: RecordingOrientation.portrait,
       viewportWidth: 390,
       sourceVideoSize: const Size(1080, 1920),
     );
-    expect(portrait.fontSize, closeTo(40 * 390 / 1080, 0.0001));
-    expect(portrait.strokeWidth, closeTo(4 * 390 / 1080, 0.0001));
+    expect(portrait.fontSize, closeTo(35 * 390 / 1080, 0.0001));
+    expect(portrait.strokeWidth, closeTo(3.5 * 390 / 1080, 0.0001));
 
     for (final RecordingOrientation orientation in <RecordingOrientation>[
       RecordingOrientation.landscapeLeft,
@@ -73,8 +92,8 @@ void main() {
         viewportWidth: 390,
         sourceVideoSize: sourceVideoSize,
       );
-      expect(fallback.fontSize, closeTo(40 * 390 / 1080, 0.0001));
-      expect(fallback.strokeWidth, closeTo(4 * 390 / 1080, 0.0001));
+      expect(fallback.fontSize, closeTo(35 * 390 / 1080, 0.0001));
+      expect(fallback.strokeWidth, closeTo(3.5 * 390 / 1080, 0.0001));
     }
 
     for (final double viewportWidth in <double>[

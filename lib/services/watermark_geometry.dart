@@ -62,7 +62,7 @@ WatermarkPreviewMetrics watermarkPreviewMetrics({
       ? portraitHeight
       : portraitWidth;
   final double maximumFontSize = orientation == RecordingOrientation.portrait
-      ? 40
+      ? 35
       : 61;
   final double outputFontSize = (outputHeight * 0.032).clamp(
     35,

@@ -214,7 +214,7 @@ internal class ReusableWatermarkBitmap(
 
 internal fun watermarkTextSize(videoHeight: Int, recordingOrientation: String): Float {
     require(videoHeight > 0)
-    val maximumTextSize = if (recordingOrientation == "portrait") 40f else 61f
+    val maximumTextSize = if (recordingOrientation == "portrait") 35f else 61f
     return (videoHeight * 0.032f).coerceIn(35f, maximumTextSize)
 }
 
