@@ -2323,6 +2323,7 @@ class RunnerTests: XCTestCase {
       try await fixture.api.performCleanup()
       XCTFail("rename 后注入崩溃必须中断提交")
     } catch {
+      // broad-catch: 测试在下方断言注入错误的具体类型
       XCTAssertTrue(error is MaintenanceTestError)
     }
     XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.file.path))
@@ -2418,6 +2419,7 @@ class RunnerTests: XCTestCase {
             $0["state"] = "pending"
           }
         } catch {
+          // broad-catch: 并发压力测试只记录事务是否按预期被拒绝
           rejected = true
         }
         fixture.api.enqueueJob(
@@ -2543,6 +2545,7 @@ class RunnerTests: XCTestCase {
             try await api.performCleanup()
             return true
           } catch {
+            // broad-catch: 竞态测试把任意清理错误折叠为失败结果后统一断言
             return false
           }
         }
@@ -3122,12 +3125,14 @@ class RunnerTests: XCTestCase {
       _ = try await awaitStorageReclaim(api)
       XCTFail("空间回收错误不得伪装成功")
     } catch {
+      // broad-catch: 测试在下方断言注入错误的具体类型
       XCTAssertTrue(error is MaintenanceTestError)
     }
     do {
       try await api.performCleanup()
       XCTFail("保留策略清理错误不得伪装成功")
     } catch {
+      // broad-catch: 测试在下方断言注入错误的具体类型
       XCTAssertTrue(error is MaintenanceTestError)
     }
   }
@@ -3167,6 +3172,7 @@ class RunnerTests: XCTestCase {
       try await cancelled.value
       XCTFail("取消的等待任务不应执行维护操作")
     } catch {
+      // broad-catch: 测试在下方断言任务取消的具体类型
       XCTAssertTrue(error is CancellationError)
     }
 
@@ -3781,6 +3787,7 @@ class RunnerTests: XCTestCase {
           await tracker.finish()
           return nil
         } catch {
+          // broad-catch: 压力测试把取消转换为 tracker 的取消计数
           await tracker.cancelAndFinish()
           return nil
         }

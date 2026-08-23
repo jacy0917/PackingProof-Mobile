@@ -288,6 +288,7 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
                 await _refreshRecentSessionsAfterWatermark(persisted);
               }
             } on Object {
+              // broad-catch: 持久化失败只降低状态可信度，录像文件仍须保留
               statusPersisted = false;
             }
           }
@@ -338,7 +339,7 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
         _watermarkCancellationTimeout,
       );
     } on Object {
-      // Dart 关闭信号已保证迟到回调不再发布到数据库；
+      // broad-catch: Dart 关闭信号已保证迟到回调不再发布到数据库；
       // 原生取消失败或无响应不得让控制器关闭无界等待。
     }
   }
@@ -349,6 +350,7 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
     try {
       _sessions = await _repository.loadRecentSessions();
     } on Object {
+      // broad-catch: 数据库刷新失败时用已持久化结果更新当前有界缓存
       final int index = _sessions.indexWhere(
         (RecordingSession current) => current.id == persisted.id,
       );

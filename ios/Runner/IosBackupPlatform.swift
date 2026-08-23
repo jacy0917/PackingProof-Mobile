@@ -1397,6 +1397,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
           }
         )
       } catch {
+        // broad-catch: 无法取得可靠文件证明时拒绝清理本地录像
         return .failed
       }
       guard let proof,
@@ -2584,6 +2585,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
           do {
             try await Task.sleep(nanoseconds: workPause)
           } catch {
+            // broad-catch: 睡眠只会因任务取消失败，结束当前清理 runner
             self?.finishCleanupRunner(token: token)
             return
           }
@@ -2611,6 +2613,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
           do {
             try await Task.sleep(nanoseconds: delay)
           } catch {
+            // broad-catch: 重试等待取消后结束当前清理 runner
             self?.finishCleanupRunner(token: token)
             return
           }

@@ -304,6 +304,7 @@ internal class AndroidCameraCapabilityProbePhaseExecutor(
                             compositor.setEncoderEnabled(kind.includeEncoder)
                         }
                     } catch (error: Throwable) {
+                        // broad-catch: 探针必须把任意原生初始化错误映射为失败结果
                         finish(
                             CameraProbeOutcome.CODEC_CONFIG_FAILED.wire,
                             error.message ?: "GL 合成器探针初始化失败",

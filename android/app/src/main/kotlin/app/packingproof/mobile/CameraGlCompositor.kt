@@ -296,6 +296,7 @@ internal class CameraGlCompositor(
                     onActivated()
                 }
             } catch (error: Throwable) {
+                // broad-catch: GL 线程初始化错误交回相机线程统一降级
                 val accepted = handler.post {
                     watermarkTrackingNumber = normalized
                     watermarkEnabled = true
@@ -431,6 +432,7 @@ internal class CameraGlCompositor(
             input.updateTexImage()
             input.getTransformMatrix(textureTransform)
         } catch (error: Throwable) {
+            // broad-catch: 输入纹理异常通过统一失败回调报告并丢弃当前帧
             reportFailure(CameraGlOutput.INPUT, error)
             return
         }
@@ -523,6 +525,7 @@ internal class CameraGlCompositor(
             checkEgl(EGL14.eglSwapBuffers(display, surface), "swap_buffers")
             return CameraGlDrawResult(submitted = true, watermarkRendered = watermarkRendered)
         } catch (error: Throwable) {
+            // broad-catch: EGL/GL 输出异常通过统一失败回调报告
             reportFailure(output, error)
             return CameraGlDrawResult(submitted = false, watermarkRendered = false)
         }
@@ -538,13 +541,13 @@ internal class CameraGlCompositor(
             try {
                 callback(presentationTimeUs, watermarkRendered)
             } catch (_: Throwable) {
-                // Split diagnostics must not interrupt frame delivery.
+                // broad-catch: Split diagnostics must not interrupt frame delivery.
             }
         }
         try {
             onEncodedWatermarkFrame(presentationTimeUs, watermarkRendered)
         } catch (_: Throwable) {
-            // Recording diagnostics must not interrupt frame delivery.
+            // broad-catch: Recording diagnostics must not interrupt frame delivery.
         }
     }
 
@@ -604,6 +607,7 @@ internal class CameraGlCompositor(
                     }
                 }
             } catch (error: Throwable) {
+                // broad-catch: 异步水印生成错误统一关闭水印但保留基础录像
                 val accepted = handler.post {
                     if (generation == watermarkGeneration.get()) failWatermarkOverlay(error)
                 }
@@ -701,6 +705,7 @@ internal class CameraGlCompositor(
             checkGlError("draw watermark")
             true
         } catch (error: Throwable) {
+            // broad-catch: 水印绘制失败时关闭混合并继续基础相机画面
             GLES20.glDisable(GLES20.GL_BLEND)
             failWatermarkOverlay(error)
             false
@@ -748,7 +753,7 @@ internal class CameraGlCompositor(
         try {
             onWatermarkFailure(error)
         } catch (_: Throwable) {
-            // Failure reporting must never interrupt the base camera pass.
+            // broad-catch: Failure reporting must never interrupt the base camera pass.
         }
     }
 
@@ -760,7 +765,7 @@ internal class CameraGlCompositor(
         try {
             onFailure(CameraGlFailure(output, error))
         } catch (_: Throwable) {
-            // A diagnostics callback must never stop camera frame delivery.
+            // broad-catch: A diagnostics callback must never stop camera frame delivery.
         }
     }
 

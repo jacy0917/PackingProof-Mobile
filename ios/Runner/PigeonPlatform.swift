@@ -221,6 +221,7 @@ private final class IosPromptAudioHost: NSObject {
         try stop()
         result(nil)
       } catch {
+        // broad-catch: 原生音频会话错误统一转换为 FlutterError
         result(FlutterError(
           code: "audio_session_release_failed",
           message: error.localizedDescription,
@@ -232,6 +233,7 @@ private final class IosPromptAudioHost: NSObject {
         try dispose()
         result(nil)
       } catch {
+        // broad-catch: 原生音频会话错误统一转换为 FlutterError
         result(FlutterError(
           code: "audio_session_release_failed",
           message: error.localizedDescription,
@@ -353,6 +355,7 @@ extension IosPromptAudioHost: AVAudioPlayerDelegate {
       try releaseAudioSession(for: entry.key)
       completion(nil)
     } catch {
+      // broad-catch: 原生音频会话错误统一转换为 FlutterError
       completion(FlutterError(
         code: "audio_session_release_failed",
         message: error.localizedDescription,

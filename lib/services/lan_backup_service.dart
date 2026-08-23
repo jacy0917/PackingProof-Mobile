@@ -2149,6 +2149,7 @@ bool parseDeviceVideoClippingFeature(String responseBody) {
     return features['libraryScope'] == 'host' &&
         features['deviceVideoClipping'] == true;
   } on Object {
+    // broad-catch: 无效或旧版能力响应按不支持可选编码字段降级
     return false;
   }
 }

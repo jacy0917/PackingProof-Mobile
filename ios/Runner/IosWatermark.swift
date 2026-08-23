@@ -714,6 +714,7 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
           request.completion?(.failure(IosLiveWatermarkError.planNotReady))
         }
       } catch {
+        // broad-catch: 所有计划生成错误都由统一状态机记录并回调
         recordPlanFailure(
           error,
           second: request.second,

@@ -822,6 +822,7 @@ final class IosWatermarkRasterTests: XCTestCase {
           date: date
         )
       } catch {
+        // broad-catch: 并发测试收集所有任务错误并在主测试线程统一断言
         errorLock.lock()
         errors.append(error)
         errorLock.unlock()

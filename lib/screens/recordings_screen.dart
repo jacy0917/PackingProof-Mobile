@@ -1462,6 +1462,7 @@ class _RecordingsScreenState extends State<RecordingsScreen>
                             );
                             return;
                           } on Object {
+                            // broad-catch: 所有文件准备失败都转换成同一用户提示
                             if (!context.mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(content: Text('暂时无法准备独立录像文件')),

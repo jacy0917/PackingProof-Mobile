@@ -614,12 +614,12 @@ class RecordingDatabase {
       try {
         await _initializationInFlight;
       } on Object {
-        // Opening interrupted by close is expected to fail before publishing.
+        // broad-catch: Opening interrupted by close is expected to fail before publishing.
       }
       try {
         await _databaseOpenInFlight;
       } on Object {
-        // The open path closes its unpublished handle when close wins the race.
+        // broad-catch: The open path closes its unpublished handle when close wins the race.
       }
       await _sharedFileMigrationWorker;
       await _sharedFileMigrationMutex.drained;
@@ -1907,7 +1907,7 @@ class RecordingDatabase {
         if (result.completed || !result.progressed) return;
       }
     } on Object {
-      // Migration remains checkpointed and will retry on the next initialize.
+      // broad-catch: Migration remains checkpointed and will retry on the next initialize.
     }
   }
 
@@ -2326,6 +2326,7 @@ class RecordingDatabase {
       if (availableBytes < 0) return false;
       return availableBytes >= sourceSize + _minimumRecordingFreeBytes;
     } on Object {
+      // broad-catch: 无法确认剩余空间时安全拒绝复制，不触碰源录像
       return false;
     }
   }

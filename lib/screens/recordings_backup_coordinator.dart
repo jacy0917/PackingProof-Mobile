@@ -289,7 +289,7 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
       }
       setState(() => _backupJobsByPath = next);
     } on Object {
-      // Keep the last bounded page cache visible; the next summary retries it.
+      // broad-catch: Keep the last bounded page cache visible; the next summary retries it.
     }
   }
 

@@ -1548,6 +1548,7 @@ final class IosCameraHostApi:
             trackingNumber: currentTrackingNumber
           )
         } catch let error where iosLiveWatermarkErrorIsTransient(error) {
+          // broad-catch: 谓词只接收可重试的水印领域错误并保留录像连续性
           transientWatermarkFailure = true
           if writer != nil {
             shouldAppendVideo = false
@@ -2114,6 +2115,7 @@ final class IosCameraHostApi:
           )
           watermarkPrepared = true
         } catch {
+          // broad-catch: 预生成失败记录原因并让后续帧继续尝试
           currentWatermarkError = String(describing: error)
         }
       } else {

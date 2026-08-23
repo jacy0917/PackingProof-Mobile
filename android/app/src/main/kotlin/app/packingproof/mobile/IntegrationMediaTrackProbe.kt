@@ -42,6 +42,7 @@ internal class IntegrationMediaTrackProbe(
         try {
             result.success(inspect(call.argument<String>("path")))
         } catch (_: Throwable) {
+            // broad-catch: 隔离测试桥只向 Flutter 返回类型化探测失败
             result.error("probe_failed", "无法读取隔离测试视频轨道", null)
         }
     }

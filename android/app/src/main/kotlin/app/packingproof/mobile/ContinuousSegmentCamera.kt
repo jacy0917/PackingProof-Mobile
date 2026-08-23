@@ -1403,6 +1403,7 @@ class ContinuousSegmentCamera(
                 "camera GL compositor ready size=${size.width}x${size.height}",
             )
         } catch (error: Throwable) {
+            // broad-catch: 任意合成器初始化错误都必须回退到可录像的直接链路
             fallbackToDirectCameraPipeline(
                 stage = "compositor_init",
                 error = error,
