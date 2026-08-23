@@ -69,7 +69,7 @@ class _ComputerBackupSettings extends StatelessWidget {
                   LanBackupFailureKind.credentialInvalid
         ? LanBackupFailureKind.credentialInvalid
         : classifiedFailure?.failureKind;
-    final int pending = summary.pendingCount;
+    final int pending = snapshot.pendingCount;
     final int progress = ((active?.progress ?? 0) * 100).round();
     final bool paired = snapshot.endpoint != null;
     final String remainingLabel = remainingBackupCount == 0

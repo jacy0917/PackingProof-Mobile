@@ -1650,6 +1650,57 @@ void main() {
     expect(find.text('仓库电脑 · 192.168.1.20'), findsOneWidget);
   });
 
+  testWidgets('电脑备份卡片统计全部未完成任务', (WidgetTester tester) async {
+    final String videoPath = File('pubspec.yaml').absolute.path;
+    final DateTime startedAt = DateTime(2026, 8, 23, 12);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingsScreen(
+          sessions: <RecordingSession>[
+            RecordingSession(
+              id: 'local-1',
+              filePath: videoPath,
+              startedAt: startedAt,
+              endedAt: startedAt.add(const Duration(seconds: 5)),
+              markers: const <BarcodeMarker>[],
+            ),
+          ],
+          workMode: WorkMode.continuousScan,
+          speechEnabled: true,
+          maxVolumeEnabled: true,
+          backupSnapshot: LanBackupSnapshot(
+            endpoint: LanBackupEndpoint(
+              baseUri: Uri.parse('http://192.168.1.20:5280'),
+              accessKey: '',
+              computerId: 'computer-1',
+              computerName: '仓库电脑',
+            ),
+            connectionStatus: LanConnectionStatus.connected,
+            summary: const LanBackupSummary(
+              pendingCount: 1,
+              uploadingCount: 1,
+              pausedCount: 1,
+              failedCount: 1,
+            ),
+          ),
+          onWorkModeChanged: (_) async {},
+          onSpeechEnabledChanged: (_) async {},
+          onMaxVolumeEnabledChanged: (_) async {},
+          onSpeechPreview: () async {},
+          onSessionUpdated: (_) async {},
+          onDeleteSessions: (_) async {},
+          localRecordingFileProbe: (String path) async => (
+            exists: path == videoPath,
+            bytes: path == videoPath ? 1 : 0,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('还有 4 个录像等待备份'), findsOneWidget);
+  });
+
   testWidgets('本机录像全部备份后只显示完成状态', (WidgetTester tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
