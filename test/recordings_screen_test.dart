@@ -1569,6 +1569,10 @@ void main() {
           backupSnapshot: snapshots.value,
           backupListenable: snapshots,
           backupSnapshotProvider: () => snapshots.value,
+          localRecordingFileProbe: (String path) async => (
+            exists: video.existsSync(),
+            bytes: video.existsSync() ? video.lengthSync() : 0,
+          ),
           onWorkModeChanged: (_) async {},
           onSpeechEnabledChanged: (_) async {},
           onMaxVolumeEnabledChanged: (_) async {},
@@ -1578,6 +1582,7 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
 
     expect(find.text('<1 MB'), findsOneWidget);
     video.deleteSync();
@@ -1593,7 +1598,7 @@ void main() {
         ),
       ],
     );
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     expect(find.text('0 MB'), findsOneWidget);
     expect(find.text('<1 MB'), findsNothing);
@@ -1769,6 +1774,10 @@ void main() {
               ),
             ],
           ),
+          localRecordingFileProbe: (String path) async => (
+            exists: true,
+            bytes: 1,
+          ),
           onWorkModeChanged: (_) async {},
           onSpeechEnabledChanged: (_) async {},
           onMaxVolumeEnabledChanged: (_) async {},
@@ -1778,6 +1787,7 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
 
     expect(find.text('1 个未备份'), findsOneWidget);
     await tester.drag(find.byType(ListView), const Offset(0, -460));
@@ -2254,6 +2264,80 @@ void main() {
     expect(requestedPageSizes, contains(10));
     expect(changedPageSizes, <int>[10]);
     expect(find.text('1 / 2 页'), findsOneWidget);
+  });
+
+  testWidgets('加载五页历史使用数据库文件元数据且不探测文件系统', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    final DateTime startedAt = DateTime(2026, 7, 18, 12);
+    final List<RecordingSession> all = List<RecordingSession>.generate(
+      25,
+      (int index) => _session(
+        'metadata-$index',
+        'META-${index + 1}',
+        startedAt.subtract(Duration(minutes: index)),
+        filePath: '/recordings/metadata-$index.mp4',
+      ),
+    );
+    var fileProbeCalls = 0;
+    Future<LocalRecordingPage> loadPage({
+      required int page,
+      required int pageSize,
+    }) async {
+      final int start = (page - 1) * pageSize;
+      final List<RecordingSession> data = all
+          .skip(start)
+          .take(pageSize)
+          .toList(growable: false);
+      return LocalRecordingPage(
+        data: data,
+        page: page,
+        pageSize: pageSize,
+        total: all.length,
+        availableFileBytesById: <String, int>{
+          for (final RecordingSession session in data) session.id: 1024,
+        },
+      );
+    }
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingsScreen(
+          sessions: all,
+          historyPageSize: 5,
+          workMode: WorkMode.continuousScan,
+          speechEnabled: true,
+          maxVolumeEnabled: true,
+          localRecordingFileProbe: (String path) async {
+            fileProbeCalls++;
+            return (exists: true, bytes: 1024);
+          },
+          onLoadLocalRecordings:
+              ({
+                required page,
+                required pageSize,
+                keyword = '',
+                DateTime? start,
+                DateTime? end,
+              }) => loadPage(page: page, pageSize: pageSize),
+          onWorkModeChanged: (_) async {},
+          onSpeechEnabledChanged: (_) async {},
+          onMaxVolumeEnabledChanged: (_) async {},
+          onSpeechPreview: () async {},
+          onSessionUpdated: (_) async {},
+          onDeleteSessions: (_) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    for (var page = 2; page <= 5; page++) {
+      await tester.tap(find.byKey(const Key('recording-page-next')));
+      await tester.pumpAndSettle();
+    }
+
+    expect(find.text('5 / 5 页'), findsOneWidget);
+    expect(fileProbeCalls, 0);
   });
 
   testWidgets('每页条数使用保存的初始值', (WidgetTester tester) async {

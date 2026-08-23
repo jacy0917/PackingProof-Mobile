@@ -17,6 +17,7 @@ class LocalRecordingPage {
     required this.total,
     this.firstCursor,
     this.lastCursor,
+    this.availableFileBytesById,
   });
 
   final List<RecordingSession> data;
@@ -25,6 +26,7 @@ class LocalRecordingPage {
   final int total;
   final LocalRecordingCursor? firstCursor;
   final LocalRecordingCursor? lastCursor;
+  final Map<String, int>? availableFileBytesById;
 
   int get pageCount => total <= 0 ? 0 : (total + pageSize - 1) ~/ pageSize;
 }
@@ -564,7 +566,7 @@ class RecordingDatabase {
     }
     final bool ascending = direction == LocalRecordingPageDirection.newer;
     List<Map<String, Object?>> rows = await db.rawQuery(
-      'SELECT ${<String>[..._sessionPayloadColumns, 'started_at', 'id'].join(', ')} '
+      'SELECT ${<String>[..._sessionPayloadColumns, 'started_at', 'id', 'file_size_bytes', 'missing_at'].join(', ')} '
       'FROM recording_sessions INDEXED BY idx_recording_active_time '
       'WHERE $where '
       'ORDER BY started_at ${ascending ? 'ASC' : 'DESC'}, '
@@ -577,6 +579,12 @@ class RecordingDatabase {
           startedAt: row['started_at']! as int,
           id: row['id']! as String,
         );
+    final Map<String, int> availableFileBytesById = <String, int>{};
+    for (final Map<String, Object?> row in rows) {
+      if (row['missing_at'] != null) continue;
+      final int size = (row['file_size_bytes'] as num?)?.toInt() ?? 0;
+      availableFileBytesById[row['id']! as String] = size < 0 ? 0 : size;
+    }
     return LocalRecordingPage(
       data: rows.map(_sessionFromRow).toList(growable: false),
       page: normalizedPage,
@@ -584,6 +592,7 @@ class RecordingDatabase {
       total: total,
       firstCursor: rows.isEmpty ? null : cursorFor(rows.first),
       lastCursor: rows.isEmpty ? null : cursorFor(rows.last),
+      availableFileBytesById: availableFileBytesById,
     );
   }
 

@@ -41,6 +41,9 @@ part 'recordings_history_widgets.dart';
 
 enum RecordingsScreenMode { history, settings }
 
+typedef LocalRecordingFileProbe =
+    Future<({bool exists, int bytes})> Function(String path);
+
 @visibleForTesting
 String recordingsHistoryTitle(String deviceName, String ipAddress) {
   final String name = deviceName.trim().isEmpty ? '设备' : deviceName.trim();
@@ -228,6 +231,7 @@ class RecordingsScreen extends StatefulWidget {
     this.focusBackupRevision = 0,
     this.capabilities,
     this.recordingStatistics,
+    this.localRecordingFileProbe,
     super.key,
   });
 
@@ -333,6 +337,7 @@ class RecordingsScreen extends StatefulWidget {
   final int focusBackupRevision;
   final PlatformCapabilities? capabilities;
   final LocalRecordingStatistics? recordingStatistics;
+  final LocalRecordingFileProbe? localRecordingFileProbe;
 
   @override
   State<RecordingsScreen> createState() => _RecordingsScreenState();
@@ -360,8 +365,9 @@ class _RecordingsScreenState extends State<RecordingsScreen>
   VideoDecodeSupport? _deviceDecodeSupport;
   @override
   late List<RecordingSession> _sessions;
-  late int _localRecordingBytes;
-  late Set<String> _localRecordingPaths;
+  int _localRecordingBytes = 0;
+  Set<String> _localRecordingPaths = <String>{};
+  int _localRecordingStatsGeneration = 0;
   late UnbackedRetentionPolicy _unbackedRetention;
   late BackedRetentionPolicy _backedRetention;
   late Set<int> _hiddenRemoteIds;
@@ -523,6 +529,7 @@ class _RecordingsScreenState extends State<RecordingsScreen>
 
   @override
   void dispose() {
+    _localRecordingStatsGeneration++;
     _disposeBackupCoordinator();
     _remoteSearchTimer?.cancel();
     _searchController.dispose();
@@ -1610,10 +1617,92 @@ class _RecordingsScreenState extends State<RecordingsScreen>
 
   @override
   void _refreshLocalRecordingStats() {
-    final ({int bytes, Set<String> paths}) summary =
-        _measureLocalRecordingStats(_sessions);
-    _localRecordingBytes = summary.bytes;
-    _localRecordingPaths = summary.paths;
+    final ({int bytes, Set<String> paths})? databaseSummary =
+        _localRecordingStatsFromPages();
+    final int generation = ++_localRecordingStatsGeneration;
+    if (databaseSummary != null) {
+      _localRecordingBytes = databaseSummary.bytes;
+      _localRecordingPaths = databaseSummary.paths;
+      return;
+    }
+    if (widget.onLoadLocalRecordings != null && _localPages.isEmpty) {
+      _localRecordingBytes = 0;
+      _localRecordingPaths = <String>{};
+      return;
+    }
+    final List<String> paths = _sessions
+        .map((RecordingSession session) => session.filePath)
+        .where((String path) => path.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    unawaited(_measureLocalRecordingStatsAsync(paths, generation));
+  }
+
+  ({int bytes, Set<String> paths})? _localRecordingStatsFromPages() {
+    if (_localPages.isEmpty ||
+        _localPages.values.any(
+          (LocalRecordingPage page) => page.availableFileBytesById == null,
+        )) {
+      return null;
+    }
+    int bytes = 0;
+    final Set<String> paths = <String>{};
+    for (final LocalRecordingPage page in _localPages.values) {
+      final Map<String, int> available = page.availableFileBytesById!;
+      for (final RecordingSession session in page.data) {
+        final int? fileBytes = available[session.id];
+        if (fileBytes == null || session.filePath.isEmpty) continue;
+        paths.add(session.filePath);
+        bytes += fileBytes;
+      }
+    }
+    return (bytes: bytes, paths: paths);
+  }
+
+  Future<void> _measureLocalRecordingStatsAsync(
+    List<String> paths,
+    int generation,
+  ) async {
+    int bytes = 0;
+    final Set<String> existingPaths = <String>{};
+    for (var offset = 0; offset < paths.length; offset += 4) {
+      if (!mounted || generation != _localRecordingStatsGeneration) return;
+      final List<String> batch = paths.sublist(
+        offset,
+        offset + 4 < paths.length ? offset + 4 : paths.length,
+      );
+      final List<({String path, bool exists, int bytes})> results =
+          await Future.wait(
+            batch.map((String path) async {
+              final ({bool exists, int bytes}) result =
+                  await _probeLocalRecordingFile(path);
+              return (path: path, exists: result.exists, bytes: result.bytes);
+            }),
+          );
+      for (final ({String path, bool exists, int bytes}) result in results) {
+        if (!result.exists) continue;
+        existingPaths.add(result.path);
+        bytes += result.bytes;
+      }
+    }
+    if (!mounted || generation != _localRecordingStatsGeneration) return;
+    setState(() {
+      _localRecordingBytes = bytes;
+      _localRecordingPaths = existingPaths;
+    });
+  }
+
+  Future<({bool exists, int bytes})> _probeLocalRecordingFile(
+    String path,
+  ) async {
+    final LocalRecordingFileProbe? probe = widget.localRecordingFileProbe;
+    if (probe != null) return probe(path);
+    try {
+      final FileStat stat = await File(path).stat();
+      return (exists: stat.type == FileSystemEntityType.file, bytes: stat.size);
+    } on FileSystemException {
+      return (exists: false, bytes: 0);
+    }
   }
 
   List<RecordingSession> get _existingLocalSessions => _sessions
@@ -1623,29 +1712,6 @@ class _RecordingsScreenState extends State<RecordingsScreen>
             _localRecordingPaths.contains(session.filePath),
       )
       .toList(growable: false);
-
-  static ({int bytes, Set<String> paths}) _measureLocalRecordingStats(
-    Iterable<RecordingSession> sessions,
-  ) {
-    int total = 0;
-    final Set<String> candidates = sessions
-        .map((RecordingSession session) => session.filePath)
-        .where((String path) => path.isNotEmpty)
-        .toSet();
-    final Set<String> existingPaths = <String>{};
-    for (final String path in candidates) {
-      try {
-        final File file = File(path);
-        if (file.existsSync()) {
-          existingPaths.add(path);
-          total += file.lengthSync();
-        }
-      } on FileSystemException {
-        // A file may be removed by the retention worker while this page opens.
-      }
-    }
-    return (bytes: total, paths: existingPaths);
-  }
 
   bool _isJobConfirmedAvailable(LanBackupJob job) {
     final String currentComputerId = _backupSnapshot.endpoint?.computerId ?? '';

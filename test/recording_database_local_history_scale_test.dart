@@ -103,6 +103,45 @@ void main() {
     expect(ids, hasLength(50000));
     expect(ids, containsAll(<String>['history-000000', 'history-049999']));
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('历史分页直接返回数据库中的本地文件可用性与大小', () async {
+    final RecordingDatabase created = RecordingDatabase(path: databasePath);
+    await created.initialize();
+    await created.close();
+    await _seedHistoryRows(databasePath, count: 3);
+    final Database raw = await databaseFactory.openDatabase(
+      databasePath,
+      options: OpenDatabaseOptions(singleInstance: false),
+    );
+    await raw.update(
+      'recording_sessions',
+      <String, Object?>{'file_size_bytes': 4096},
+      where: 'id = ?',
+      whereArgs: <Object?>['history-000002'],
+    );
+    await raw.update(
+      'recording_sessions',
+      <String, Object?>{
+        'file_size_bytes': 8192,
+        'missing_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: <Object?>['history-000001'],
+    );
+    await raw.close();
+
+    final RecordingDatabase database = RecordingDatabase(path: databasePath);
+    addTearDown(database.close);
+    final LocalRecordingPage page = await database.queryActiveSessions(
+      page: 1,
+      pageSize: 100,
+    );
+
+    expect(page.availableFileBytesById, <String, int>{
+      'history-000002': 4096,
+      'history-000000': 0,
+    });
+  });
 }
 
 Future<void> _seedHistoryRows(String path, {required int count}) async {

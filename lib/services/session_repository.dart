@@ -314,6 +314,7 @@ class SessionRepository {
       total: result.total,
       firstCursor: result.firstCursor,
       lastCursor: result.lastCursor,
+      availableFileBytesById: result.availableFileBytesById,
     );
   }
 
@@ -349,6 +350,7 @@ class SessionRepository {
       total: result.total,
       firstCursor: result.firstCursor,
       lastCursor: result.lastCursor,
+      availableFileBytesById: result.availableFileBytesById,
     );
   }
 
