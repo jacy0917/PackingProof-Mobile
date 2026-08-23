@@ -9,6 +9,14 @@ import 'package:sqflite/sqflite.dart';
 import '../models/recording_session.dart';
 import '../models/recording_orientation.dart';
 
+typedef AutomaticCleanupRecord = ({
+  String eventId,
+  String filePath,
+  int fileSizeBytes,
+  DateTime deletedAt,
+  String reason,
+});
+
 class LocalRecordingPage {
   const LocalRecordingPage({
     required this.data,
@@ -1533,47 +1541,90 @@ class RecordingDatabase {
     final String normalizedEventId = eventId.trim();
     if (normalizedEventId.isEmpty || filePath.trim().isEmpty) return;
     final Database db = await _db;
-    final String metadataKey = 'cleanup_audit:$normalizedEventId';
     await db.transaction((Transaction txn) async {
-      final List<Map<String, Object?>> audited = await txn.query(
-        'recording_metadata',
-        columns: <String>['value'],
-        where: 'key = ?',
-        whereArgs: <Object?>[metadataKey],
-        limit: 1,
-      );
-      if (audited.isNotEmpty) return;
-      final List<Map<String, Object?>> rows = await txn.query(
-        'recording_sessions',
-        columns: <String>['id', 'tracking_number'],
-        where: 'is_deleted = 0 AND file_path = ?',
-        whereArgs: <Object?>[filePath],
-      );
-      final int deletedAtMillis = deletedAt.millisecondsSinceEpoch;
-      for (final Map<String, Object?> row in rows) {
-        await txn.insert('recording_delete_logs', <String, Object?>{
-          'file_path': filePath,
-          'session_id': row['id']! as String,
-          'tracking_number': row['tracking_number']! as String,
-          'file_size_bytes': fileSizeBytes < 0 ? 0 : fileSizeBytes,
-          'deleted_at': deletedAtMillis,
-          'reason': reason,
-        });
-      }
-      await txn.update(
-        'recording_sessions',
-        <String, Object?>{
-          'missing_at': deletedAtMillis,
-          'updated_at': DateTime.now().millisecondsSinceEpoch,
-        },
-        where: 'is_deleted = 0 AND file_path = ?',
-        whereArgs: <Object?>[filePath],
-      );
-      await txn.insert('recording_metadata', <String, Object?>{
-        'key': metadataKey,
-        'value': deletedAt.toUtc().toIso8601String(),
-      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      await _recordAutomaticCleanup(txn, (
+        eventId: normalizedEventId,
+        filePath: filePath,
+        fileSizeBytes: fileSizeBytes,
+        deletedAt: deletedAt,
+        reason: reason,
+      ));
     });
+  }
+
+  Future<void> recordAutomaticCleanupPage({
+    required List<AutomaticCleanupRecord> events,
+    required int nextAfterRevision,
+    required String cursorMetadataKey,
+  }) async {
+    if (events.length > 100) {
+      throw ArgumentError.value(events.length, 'events', '单页不能超过 100 条');
+    }
+    if (nextAfterRevision < 0) {
+      throw ArgumentError.value(
+        nextAfterRevision,
+        'nextAfterRevision',
+        '不能小于 0',
+      );
+    }
+    final Database db = await _db;
+    await db.transaction((Transaction txn) async {
+      for (final AutomaticCleanupRecord event in events) {
+        if (event.eventId.trim().isEmpty || event.filePath.trim().isEmpty) {
+          continue;
+        }
+        await _recordAutomaticCleanup(txn, event);
+      }
+      await txn.insert('recording_metadata', <String, Object?>{
+        'key': cursorMetadataKey,
+        'value': nextAfterRevision.toString(),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    });
+  }
+
+  Future<void> _recordAutomaticCleanup(
+    Transaction txn,
+    AutomaticCleanupRecord event,
+  ) async {
+    final String metadataKey = 'cleanup_audit:${event.eventId.trim()}';
+    final List<Map<String, Object?>> audited = await txn.query(
+      'recording_metadata',
+      columns: <String>['value'],
+      where: 'key = ?',
+      whereArgs: <Object?>[metadataKey],
+      limit: 1,
+    );
+    if (audited.isNotEmpty) return;
+    final List<Map<String, Object?>> rows = await txn.query(
+      'recording_sessions',
+      columns: <String>['id', 'tracking_number'],
+      where: 'is_deleted = 0 AND file_path = ?',
+      whereArgs: <Object?>[event.filePath],
+    );
+    final int deletedAtMillis = event.deletedAt.millisecondsSinceEpoch;
+    for (final Map<String, Object?> row in rows) {
+      await txn.insert('recording_delete_logs', <String, Object?>{
+        'file_path': event.filePath,
+        'session_id': row['id']! as String,
+        'tracking_number': row['tracking_number']! as String,
+        'file_size_bytes': event.fileSizeBytes < 0 ? 0 : event.fileSizeBytes,
+        'deleted_at': deletedAtMillis,
+        'reason': event.reason,
+      });
+    }
+    await txn.update(
+      'recording_sessions',
+      <String, Object?>{
+        'missing_at': deletedAtMillis,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'is_deleted = 0 AND file_path = ?',
+      whereArgs: <Object?>[event.filePath],
+    );
+    await txn.insert('recording_metadata', <String, Object?>{
+      'key': metadataKey,
+      'value': event.deletedAt.toUtc().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
   }
 
   Future<int> activeReferenceCount(String filePath) async {

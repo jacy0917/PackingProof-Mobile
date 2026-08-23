@@ -11,6 +11,7 @@ import 'package:packing_proof_mobile/models/speech_prompt.dart';
 import 'package:packing_proof_mobile/platform/platform_capabilities.dart';
 import 'package:packing_proof_mobile/services/diagnostics_log_service.dart';
 import 'package:packing_proof_mobile/services/lan_backup_service.dart';
+import 'package:packing_proof_mobile/services/recording_database.dart';
 import 'package:packing_proof_mobile/services/session_repository.dart';
 import 'package:packing_proof_mobile/services/speech_prompt_service.dart';
 import 'package:packing_proof_mobile/services/video_watermark_service.dart';
@@ -243,16 +244,58 @@ void main() {
     thirdController.dispose();
   });
 
-  test('清理事件在录像数据库提交前失败时不推进游标并可重放', () async {
-    await _verifyCleanupReplayAroundRepositoryFailure(
-      failBeforeRecordingCommit: true,
-    );
+  test('清理事件整页事务失败时不推进游标并可重放', () async {
+    await _verifyCleanupReplayAroundRepositoryFailure();
   });
 
-  test('清理事件在录像数据库提交后游标提交前失败时幂等重放', () async {
-    await _verifyCleanupReplayAroundRepositoryFailure(
-      failBeforeCursorCommit: true,
+  test('100 条清理事件仅使用一次整页数据库提交', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-cleanup-page-',
     );
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final _InterruptingCleanupRepository repository =
+        _InterruptingCleanupRepository(
+          rootDirectory: root,
+          failNextPageCommit: false,
+        );
+    final DateTime deletedAt = DateTime.utc(2026, 8, 23, 14);
+    final _RecordingLanBackupSink backup = _RecordingLanBackupSink()
+      ..cleanupPages.add(
+        LanBackupCleanupPage(
+          latestRevision: 100,
+          nextAfterRevision: 100,
+          hasMore: false,
+          events: List<LanBackupCleanupEvent>.generate(
+            100,
+            (int index) => LanBackupCleanupEvent(
+              revision: index + 1,
+              eventId: 'cleanup-page-$index',
+              jobId: 'cleanup-job-$index',
+              filePath: '${root.path}/missing-$index.mp4',
+              fileSizeBytes: index,
+              deletedAt: deletedAt,
+              reason: '已备份录像保留策略清理',
+            ),
+          ),
+        ),
+      );
+    final PackingSessionController controller = PackingSessionController(
+      repository: repository,
+      speechService: _NoopSpeechSink(),
+      lanBackupService: backup,
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+
+    await controller.drainCleanupEventsForTesting();
+
+    expect(repository.pageCommitCalls, 1);
+    expect(repository.lastPageEventCount, 100);
+    expect(await repository.loadBackupCleanupCursor(), 100);
+    await controller.shutdown();
+    controller.dispose();
   });
 
   test('水印最终失败保持失败状态并立即备份保留文件', () async {
@@ -339,10 +382,7 @@ void main() {
   });
 }
 
-Future<void> _verifyCleanupReplayAroundRepositoryFailure({
-  bool failBeforeRecordingCommit = false,
-  bool failBeforeCursorCommit = false,
-}) async {
+Future<void> _verifyCleanupReplayAroundRepositoryFailure() async {
   final Directory root = await Directory.systemTemp.createTemp(
     'packing-proof-cleanup-replay-',
   );
@@ -354,8 +394,7 @@ Future<void> _verifyCleanupReplayAroundRepositoryFailure({
   final _InterruptingCleanupRepository firstRepository =
       _InterruptingCleanupRepository(
         rootDirectory: root,
-        failBeforeRecordingCommit: failBeforeRecordingCommit,
-        failBeforeCursorCommit: failBeforeCursorCommit,
+        failNextPageCommit: true,
       );
   await firstRepository.addSession(
     RecordingSession(
@@ -395,10 +434,7 @@ Future<void> _verifyCleanupReplayAroundRepositoryFailure({
   await firstController.drainCleanupEventsForTesting();
   expect(await firstRepository.loadBackupCleanupCursor(), 0);
   expect(firstBackup.acknowledgedCleanupRevisions, isEmpty);
-  expect(
-    await firstRepository.loadDeleteLogs(),
-    hasLength(failBeforeRecordingCommit ? 0 : 1),
-  );
+  expect(await firstRepository.loadDeleteLogs(), isEmpty);
   await firstController.shutdown();
   firstController.dispose();
 
@@ -433,41 +469,28 @@ class _BackupCall {
 class _InterruptingCleanupRepository extends SessionRepository {
   _InterruptingCleanupRepository({
     required super.rootDirectory,
-    required this.failBeforeRecordingCommit,
-    required this.failBeforeCursorCommit,
+    required this.failNextPageCommit,
   });
 
-  bool failBeforeRecordingCommit;
-  bool failBeforeCursorCommit;
+  bool failNextPageCommit;
+  int pageCommitCalls = 0;
+  int lastPageEventCount = 0;
 
   @override
-  Future<void> recordAutomaticCleanup({
-    required String eventId,
-    required String filePath,
-    required int fileSizeBytes,
-    required DateTime deletedAt,
-    required String reason,
+  Future<void> recordAutomaticCleanupPage({
+    required List<AutomaticCleanupRecord> events,
+    required int nextAfterRevision,
   }) async {
-    if (failBeforeRecordingCommit) {
-      failBeforeRecordingCommit = false;
-      throw StateError('模拟录像数据库提交前中断');
+    pageCommitCalls++;
+    lastPageEventCount = events.length;
+    if (failNextPageCommit) {
+      failNextPageCommit = false;
+      throw StateError('模拟整页事务提交前中断');
     }
-    await super.recordAutomaticCleanup(
-      eventId: eventId,
-      filePath: filePath,
-      fileSizeBytes: fileSizeBytes,
-      deletedAt: deletedAt,
-      reason: reason,
+    await super.recordAutomaticCleanupPage(
+      events: events,
+      nextAfterRevision: nextAfterRevision,
     );
-  }
-
-  @override
-  Future<void> saveBackupCleanupCursor(int revision) async {
-    if (failBeforeCursorCommit) {
-      failBeforeCursorCommit = false;
-      throw StateError('模拟清理游标提交前中断');
-    }
-    await super.saveBackupCleanupCursor(revision);
   }
 }
 

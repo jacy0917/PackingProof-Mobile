@@ -112,18 +112,22 @@ mixin _PackingSessionBackupCoordinator on ChangeNotifier {
         final LanBackupCleanupPage page = await _lanBackupService.cleanupEvents(
           afterRevision: _cleanupAfterRevision,
         );
-        for (final LanBackupCleanupEvent event in page.events) {
-          await _repository.recordAutomaticCleanup(
-            eventId: event.eventId,
-            filePath: event.filePath,
-            fileSizeBytes: event.fileSizeBytes,
-            deletedAt: event.deletedAt,
-            reason: event.reason,
-          );
-          changed = true;
-        }
         if (page.nextAfterRevision > _cleanupAfterRevision) {
-          await _repository.saveBackupCleanupCursor(page.nextAfterRevision);
+          await _repository.recordAutomaticCleanupPage(
+            events: page.events
+                .map(
+                  (LanBackupCleanupEvent event) => (
+                    eventId: event.eventId,
+                    filePath: event.filePath,
+                    fileSizeBytes: event.fileSizeBytes,
+                    deletedAt: event.deletedAt,
+                    reason: event.reason,
+                  ),
+                )
+                .toList(growable: false),
+            nextAfterRevision: page.nextAfterRevision,
+          );
+          changed = changed || page.events.isNotEmpty;
           _cleanupAfterRevision = page.nextAfterRevision;
           await _lanBackupService.acknowledgeCleanupEvents(
             _cleanupAfterRevision,

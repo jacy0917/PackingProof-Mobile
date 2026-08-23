@@ -421,6 +421,18 @@ class SessionRepository {
     );
   }
 
+  Future<void> recordAutomaticCleanupPage({
+    required List<AutomaticCleanupRecord> events,
+    required int nextAfterRevision,
+  }) async {
+    await initialize();
+    await _recordingDatabase.recordAutomaticCleanupPage(
+      events: events,
+      nextAfterRevision: nextAfterRevision,
+      cursorMetadataKey: backupCleanupCursorKey,
+    );
+  }
+
   Future<BackupRegistrationCursor?> loadBackupRegistrationCursor() async {
     await initialize();
     final String? value = await _recordingDatabase.readMetadataValue(
