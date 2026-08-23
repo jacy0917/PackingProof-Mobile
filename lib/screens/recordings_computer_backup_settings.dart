@@ -437,22 +437,31 @@ class _ComputerBackupSettings extends StatelessWidget {
               ),
           ],
           if (snapshot.endpoint != null) ...<Widget>[
-            Text(
-              key: const Key('connected-computer-summary'),
-              status ?? remainingLabel,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: colors.onSurfaceVariant,
-                fontSize: 12,
-                height: 1.35,
-                fontWeight: FontWeight.w600,
-              ),
+            Stack(
+              clipBehavior: Clip.none,
+              children: <Widget>[
+                Text(
+                  key: const Key('connected-computer-summary'),
+                  status ?? remainingLabel,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: colors.onSurfaceVariant,
+                    fontSize: 12,
+                    height: 1.35,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (active != null && !needsRepair)
+                  Positioned(
+                    key: const Key('backup-progress-slot'),
+                    left: 0,
+                    right: 0,
+                    bottom: -6,
+                    child: LinearProgressIndicator(value: active.progress),
+                  ),
+              ],
             ),
-          ],
-          if (active != null && !needsRepair) ...<Widget>[
-            const SizedBox(height: 8),
-            LinearProgressIndicator(value: active.progress),
           ],
           if (showRetention) ...<Widget>[
             const SizedBox(height: 14),
@@ -563,8 +572,14 @@ class _ComputerBackupSettings extends StatelessWidget {
                           : () => onAutoChanged!(!snapshot.autoEnabled),
                       style: FilledButton.styleFrom(
                         minimumSize: const Size.fromHeight(46),
+                        backgroundColor: snapshot.autoEnabled
+                            ? null
+                            : colors.errorContainer,
+                        foregroundColor: snapshot.autoEnabled
+                            ? null
+                            : colors.onErrorContainer,
                       ),
-                      child: Text(snapshot.autoEnabled ? '暂停自动备份' : '继续自动备份'),
+                      child: Text(snapshot.autoEnabled ? '暂停备份' : '开启备份'),
                     ),
                   ),
                 ],

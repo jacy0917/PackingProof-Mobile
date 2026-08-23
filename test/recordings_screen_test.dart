@@ -1764,25 +1764,13 @@ void main() {
               computerId: 'computer-1',
               computerName: '仓库电脑',
             ),
-            summary: const LanBackupSummary(
-              totalCount: 2,
-              pendingCount: 1,
-              completedCount: 1,
-            ),
+            summary: const LanBackupSummary(totalCount: 1, completedCount: 1),
             connectionStatus: LanConnectionStatus.connected,
           ),
           onLoadBackupJobsForPaths: (Iterable<String> paths) async =>
               _backupJobsForPaths(
                 requestedPaths: paths,
                 jobs: <LanBackupJob>[
-                  LanBackupJob(
-                    id: 'job-pending',
-                    filePath: videoPath,
-                    state: LanBackupJobState.pending,
-                    uploadedBytes: 0,
-                    totalBytes: 1,
-                    destinationComputerId: 'computer-1',
-                  ),
                   LanBackupJob(
                     id: 'job-1',
                     filePath: videoPath,
@@ -1812,7 +1800,7 @@ void main() {
     expect(find.text('备份完成'), findsOneWidget);
     expect(find.byKey(const Key('backup-now-button')), findsOneWidget);
     expect(find.byKey(const Key('auto-backup-button')), findsOneWidget);
-    expect(find.text('暂停自动备份'), findsOneWidget);
+    expect(find.text('暂停备份'), findsOneWidget);
     expect(find.byType(Switch), findsNothing);
     final Rect backupCardRect = tester.getRect(
       find.byKey(const Key('computer-backup-settings')),
@@ -2022,6 +2010,9 @@ void main() {
   });
 
   testWidgets('等待续传不会误显示为正在备份', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
     await tester.pumpWidget(
       MaterialApp(
         home: RecordingsScreen(
@@ -2030,6 +2021,7 @@ void main() {
           speechEnabled: true,
           maxVolumeEnabled: true,
           backupSnapshot: LanBackupSnapshot(
+            autoEnabled: false,
             endpoint: LanBackupEndpoint(
               baseUri: Uri.parse('http://192.168.1.20:5280'),
               accessKey: '',
@@ -2063,6 +2055,23 @@ void main() {
     expect(find.text('网络中断，等待自动续传'), findsOneWidget);
     expect(find.textContaining('正在备份'), findsNothing);
     expect(find.byType(LinearProgressIndicator), findsNothing);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('auto-backup-button')),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('开启备份'), findsOneWidget);
+    final FilledButton autoButton = tester.widget<FilledButton>(
+      find.byKey(const Key('auto-backup-button')),
+    );
+    final ColorScheme colors = Theme.of(
+      tester.element(find.byKey(const Key('auto-backup-button'))),
+    ).colorScheme;
+    expect(
+      autoButton.style?.backgroundColor?.resolve(const <WidgetState>{}),
+      colors.errorContainer,
+    );
   });
 
   testWidgets('设备令牌失效时只显示重新申请并保留原电脑', (WidgetTester tester) async {
