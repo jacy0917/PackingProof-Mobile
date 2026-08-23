@@ -19,8 +19,11 @@ import app.packingproof.mobile.generated.BackupJobsByPathsDto
 import app.packingproof.mobile.generated.BackupSummaryDto
 import app.packingproof.mobile.generated.FlutterError
 
-internal fun availableRecordingStorageBytes(context: Context): Long? = runCatching {
-    StatFs(context.filesDir.path).availableBytes
+internal fun availableRecordingStorageBytes(
+    context: Context,
+    availableBytesForPath: (String) -> Long = { path -> StatFs(path).availableBytes },
+): Long? = runCatching {
+    availableBytesForPath(context.filesDir.path)
 }.getOrNull()
 
 internal class LanBackupPlugin(

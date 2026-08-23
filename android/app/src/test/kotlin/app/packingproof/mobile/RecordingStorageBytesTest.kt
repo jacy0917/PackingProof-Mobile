@@ -1,8 +1,6 @@
 package app.packingproof.mobile
 
-import android.os.StatFs
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -15,10 +13,14 @@ class RecordingStorageBytesTest {
     @Test
     fun readsAvailableBytesFromApplicationFilesVolume() {
         val context = RuntimeEnvironment.getApplication()
+        var queriedPath: String? = null
 
-        val available = availableRecordingStorageBytes(context)
+        val available = availableRecordingStorageBytes(context) { path ->
+            queriedPath = path
+            123456L
+        }
 
-        assertTrue(available != null && available > 0)
-        assertEquals(StatFs(context.filesDir.path).availableBytes, available)
+        assertEquals(context.filesDir.path, queriedPath)
+        assertEquals(123456L, available)
     }
 }
