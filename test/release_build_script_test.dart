@@ -37,6 +37,21 @@ void main() {
     expect(diagnosticScript, contains(r'-ForceClean:$ForceClean'));
   });
 
+  test('iOS 发布构建把可审计的源码版本和构建时间注入 App', () {
+    final script = File('Tools/Build-iOS.sh').readAsStringSync();
+
+    final revisionIndex = script.indexOf('REVISION="\$(git rev-parse');
+    final timestampIndex = script.indexOf('BUILT_AT="\$(date -u');
+    final buildIndex = script.indexOf('flutter build ipa --release');
+    expect(revisionIndex, greaterThanOrEqualTo(0));
+    expect(timestampIndex, greaterThan(revisionIndex));
+    expect(buildIndex, greaterThan(timestampIndex));
+    expect(script, contains('--dart-define="BUILD_REVISION=\$REVISION"'));
+    expect(script, contains('--dart-define="BUILD_TIMESTAMP=\$BUILT_AT"'));
+    expect(script, contains('"revision": "\$REVISION"'));
+    expect(script, contains('"builtAtUtc": "\$BUILT_AT"'));
+  });
+
   test('Android 清单配置系统播放器内容提供者', () {
     final manifest = File(
       'android/app/src/main/AndroidManifest.xml',

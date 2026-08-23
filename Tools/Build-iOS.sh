@@ -14,6 +14,8 @@ if [[ ! "$VERSION_LINE" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\+([0-9]+)$ ]]; then
 fi
 VERSION_NAME="${BASH_REMATCH[1]}"
 VERSION_CODE="${BASH_REMATCH[2]}"
+REVISION="$(git rev-parse --short=8 HEAD)"
+BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 if [[ "$FORCE_CLEAN" == "clean" ]]; then
   flutter clean
@@ -23,6 +25,8 @@ flutter pub get
 flutter build ipa --release \
   --build-name "$VERSION_NAME" \
   --build-number "$VERSION_CODE" \
+  --dart-define="BUILD_REVISION=$REVISION" \
+  --dart-define="BUILD_TIMESTAMP=$BUILT_AT" \
   --export-method "$EXPORT_METHOD"
 
 IPA_DIR="$REPO_ROOT/build/ios/ipa"
@@ -38,8 +42,6 @@ OUTPUT_NAME="PackingProof-Mobile-v${VERSION_NAME}+${VERSION_CODE}.ipa"
 OUTPUT_IPA="$OUTPUT_DIR/$OUTPUT_NAME"
 cp "$SOURCE_IPA" "$OUTPUT_IPA"
 
-REVISION="$(git rev-parse --short=8 HEAD)"
-BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SHA256="$(shasum -a 256 "$OUTPUT_IPA" | awk '{print $1}')"
 BYTES="$(stat -f%z "$OUTPUT_IPA")"
 
