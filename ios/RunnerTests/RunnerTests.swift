@@ -3260,7 +3260,9 @@ class RunnerTests: XCTestCase {
   }
 
   func testEnqueueReplacesCallerProvidedGeneration() async throws {
-    let fixture = try makeRetentionCleanupFixture(id: "generation-enqueue")
+    let fixture = try makeRetentionCleanupFixture(
+      id: "generation-enqueue", autoEnabled: true
+    )
     defer { removeRetentionCleanupFixture(fixture) }
     let request: [String?: Any?] = [
       "id": "generation-enqueue",
@@ -3268,6 +3270,7 @@ class RunnerTests: XCTestCase {
       "filePath": fixture.file.path,
       "lastModified": fixture.job["lastModified"],
       "sessions": fixture.job["sessions"],
+      "startUpload": false,
     ]
 
     try await awaitVoidResult { completion in
@@ -3287,6 +3290,7 @@ class RunnerTests: XCTestCase {
     let emitted = expectation(description: "登记后推送固定摘要")
     let fixture = try makeRetentionCleanupFixture(
       id: "retention-registration",
+      autoEnabled: true,
       onSnapshot: { _ in emitted.fulfill() }
     )
     defer { removeRetentionCleanupFixture(fixture) }
@@ -4140,6 +4144,7 @@ class RunnerTests: XCTestCase {
 
   private func makeRetentionCleanupFixture(
     id: String,
+    autoEnabled: Bool = false,
     availableStorageBytesOverride: (() -> Int64)? = nil,
     storageAttestationOverride:
       (([String: Any], String, Int64) async -> String?)? = nil,
@@ -4165,6 +4170,7 @@ class RunnerTests: XCTestCase {
     let suiteName = "RunnerTests.retention-cleanup.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
     defaults.removePersistentDomain(forName: suiteName)
+    defaults.set(autoEnabled, forKey: "ios_backup_auto_enabled")
     let store = try IosBackupJobStore(
       databaseURL: root.appendingPathComponent("lan_backup.db"), defaults: defaults
     )

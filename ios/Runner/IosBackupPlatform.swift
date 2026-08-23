@@ -906,8 +906,9 @@ final class IosBackupHostApi: BackupNativeHostApi {
     let id = request["id"] as? String ?? stableId(
       IosBackupRecordingPath.stableIdentity(storedPath: path)
     )
+    let autoEnabled = defaults.bool(forKey: "ios_backup_auto_enabled")
     let startUploadRequested = request["startUpload"] as? Bool != false &&
-      defaults.bool(forKey: "ios_backup_auto_enabled")
+      autoEnabled
     let forceRestart = request["forceRestart"] as? Bool == true
       let attributes = try FileManager.default.attributesOfItem(atPath: resolvedPath)
       let fileSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
@@ -951,7 +952,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
         job["filePath"] = resolvedPath
         job["id"] = id
         job["generation"] = UUID().uuidString
-        job["state"] = startUploadRequested ? "pending" : "paused"
+        job["state"] = autoEnabled ? "pending" : "paused"
         job["uploadedBytes"] = 0
         job["totalBytes"] = fileSize
         job["lastModified"] = lastModified
