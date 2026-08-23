@@ -23,6 +23,10 @@ internal object LanBackupCleanupScheduler {
     private const val WORK_PREFIX = "lan-backup-cleanup-"
     internal const val UNIQUE_WORK = "lan-backup-cleanup-dispatcher"
     internal const val WORK_TAG = "lan-backup-cleanup"
+    internal const val SCHEDULE_REFRESH_UNIQUE_WORK =
+        "lan-backup-cleanup-schedule-refresh"
+    internal const val SCHEDULE_REFRESH_WORK_TAG =
+        "lan-backup-cleanup-schedule-refresh"
     val RETENTION_CONFIRMATION_GRACE: Duration = Duration.ofHours(24)
 
     fun reschedule(context: Context, store: LanBackupStateStore, job: JSONObject) {
@@ -64,44 +68,40 @@ internal object LanBackupCleanupScheduler {
         nullableText(current, "scheduledCleanupAt") == dueAt.toString()
 
     fun rescheduleAll(context: Context, store: LanBackupStateStore) {
-        var afterId: String? = null
-        var page: List<String>
-        do {
-            page = store.cleanupSchedulingJobIdsPage(afterId)
-            page.forEach { id -> store.readJob(id)?.let { updateSchedule(store, it) } }
-            afterId = page.lastOrNull()
-        } while (page.size == 100)
-        scheduleNext(context, store)
+        val refresh = store.restartCleanupScheduleRefresh()
+        WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_WORK)
+        scheduleRefresh(context, refresh.generation)
     }
 
-    private fun updateSchedule(store: LanBackupStateStore, job: JSONObject) {
-        LanBackupStateStore.withJobLock {
-            val id = job.getString("id")
-            val expectedGeneration = nullableText(job, "generation") ?: return@withJobLock
-            val current = store.readJob(id)
-                ?.takeIf { nullableText(it, "generation") == expectedGeneration }
-                ?: return@withJobLock
-            val dueAt = dueAt(store, current)
-            if (dueAt == null || nullableText(current, "localDeletedAt") != null) {
-                if (nullableText(current, "scheduledCleanupAt") != null ||
-                    current.optBoolean("waitingCleanup")
-                ) {
-                    store.updateJob(id, expectedGeneration) { value ->
-                        value.put("scheduledCleanupAt", JSONObject.NULL)
-                            .put("waitingCleanup", false)
-                        true
-                    }
-                }
-            } else if (!shouldSkipReschedule(current, dueAt)) {
-                store.updateJob(id, expectedGeneration) { value ->
-                    value.put("scheduledCleanupAt", dueAt.toString())
-                    true
-                }
-            }
+    fun resumeRefreshOrScheduleNext(context: Context, store: LanBackupStateStore) {
+        val refresh = store.ensureCleanupScheduleRefresh()
+        if (refresh != null) {
+            WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_WORK)
+            scheduleRefresh(context, refresh.generation)
+        } else {
+            scheduleNext(context, store)
         }
     }
 
+    internal fun scheduleRefresh(
+        context: Context,
+        generation: Long,
+        append: Boolean = false,
+    ) {
+        val request = OneTimeWorkRequestBuilder<LanBackupCleanupScheduleWorker>()
+            .setInputData(workDataOf("generation" to generation))
+            .addTag("lan-backup")
+            .addTag(SCHEDULE_REFRESH_WORK_TAG)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            SCHEDULE_REFRESH_UNIQUE_WORK,
+            schedulingPolicy(append),
+            request,
+        )
+    }
+
     fun scheduleNext(context: Context, store: LanBackupStateStore, append: Boolean = false) {
+        if (store.cleanupScheduleRefresh().active) return
         val next = store.nextScheduledCleanupJob() ?: return
         val id = next.getString("id")
         val generation = nullableText(next, "generation") ?: return
@@ -130,12 +130,27 @@ internal object LanBackupCleanupScheduler {
         if (append) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.REPLACE
 
     fun dueAt(store: LanBackupStateStore, job: JSONObject): Instant? {
-        val completedAt = nullableText(job, "backupCompletedAt")
-        if (job.optString("state") == "completed" && completedAt == null) return null
-        val days = if (completedAt != null) store.backedRetentionDays() else store.unbackedRetentionDays()
+        return dueAt(
+            state = job.optString("state"),
+            fileCreatedAt = nullableText(job, "fileCreatedAt"),
+            backupCompletedAt = nullableText(job, "backupCompletedAt"),
+            unbackedDays = store.unbackedRetentionDays(),
+            backedDays = store.backedRetentionDays(),
+        )
+    }
+
+    internal fun dueAt(
+        state: String,
+        fileCreatedAt: String?,
+        backupCompletedAt: String?,
+        unbackedDays: Int,
+        backedDays: Int,
+    ): Instant? {
+        if (state == "completed" && backupCompletedAt == null) return null
+        val days = if (backupCompletedAt != null) backedDays else unbackedDays
         if (days < 0) return null
         val base = runCatching {
-            Instant.parse(completedAt ?: job.getString("fileCreatedAt"))
+            Instant.parse(backupCompletedAt ?: fileCreatedAt ?: return null)
         }.getOrNull() ?: return null
         return base.plus(Duration.ofDays(days.toLong()))
     }
@@ -162,6 +177,34 @@ internal object LanBackupCleanupScheduler {
         return runCatching {
             !now.isAfter(Instant.parse(attested).plus(RETENTION_CONFIRMATION_GRACE))
         }.getOrDefault(false)
+    }
+}
+
+internal class LanBackupCleanupScheduleWorker(
+    appContext: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(appContext, params) {
+    private val store = LanBackupStateStore(appContext)
+
+    override suspend fun doWork(): Result = try {
+        val generation = inputData.getLong("generation", -1L)
+        if (generation < 0L) return Result.success()
+        val slice = store.refreshCleanupScheduleSlice(generation)
+        if (slice.hasMore) {
+            LanBackupCleanupScheduler.scheduleRefresh(
+                applicationContext,
+                generation,
+                append = true,
+            )
+        } else {
+            LanBackupCleanupScheduler.scheduleNext(applicationContext, store)
+        }
+        Result.success()
+    } catch (error: Throwable) {
+        Log.e(CLEANUP_TAG, "Cleanup schedule refresh failed", error)
+        Result.retry()
+    } finally {
+        store.close()
     }
 }
 

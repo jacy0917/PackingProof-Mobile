@@ -93,6 +93,18 @@ internal data class LanBackupStorageJobPage(
     val nextId: String?,
 )
 
+internal data class LanBackupCleanupScheduleRefresh(
+    val generation: Long,
+    val active: Boolean,
+)
+
+internal data class LanBackupCleanupScheduleSliceResult(
+    val generation: Long,
+    val processedCount: Int,
+    val changedCount: Int,
+    val hasMore: Boolean,
+)
+
 internal enum class RecordingStorageReclaimResult { deleted, missing, stale, failed, rejected }
 
 internal data class RecordingStorageReclaimOutcome(
@@ -605,6 +617,230 @@ internal class LanBackupStateStore(
             )
         }
 
+    /**
+     * Starts a new cleanup-schedule pass only when the persisted policy differs
+     * from the policy that the last completed pass applied. An interrupted pass
+     * keeps its cursor and generation so process recreation resumes instead of
+     * restarting from the first job.
+     */
+    fun ensureCleanupScheduleRefresh(): LanBackupCleanupScheduleRefresh? = withJobLock {
+        val unbackedDays = unbackedRetentionDays()
+        val backedDays = backedRetentionDays()
+        val current = cleanupScheduleRefreshUnlocked()
+        val policyMatches = db.query(
+            LanBackupJobDatabase.CLEANUP_SCHEDULE_STATE_TABLE,
+            arrayOf("unbacked_days", "backed_days"),
+            "singleton_id = 1",
+            null,
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            cursor.moveToFirst() &&
+                cursor.getInt(0) == unbackedDays &&
+                cursor.getInt(1) == backedDays
+        }
+        if (current.active && policyMatches) return@withJobLock current
+        if (policyMatches) return@withJobLock null
+        beginCleanupScheduleRefreshUnlocked(unbackedDays, backedDays)
+    }
+
+    fun restartCleanupScheduleRefresh(): LanBackupCleanupScheduleRefresh = withJobLock {
+        beginCleanupScheduleRefreshUnlocked(
+            unbackedRetentionDays(),
+            backedRetentionDays(),
+        )
+    }
+
+    fun cleanupScheduleRefresh(): LanBackupCleanupScheduleRefresh = withJobLock {
+        cleanupScheduleRefreshUnlocked()
+    }
+
+    private fun beginCleanupScheduleRefreshUnlocked(
+        unbackedDays: Int,
+        backedDays: Int,
+    ): LanBackupCleanupScheduleRefresh {
+        val generation = cleanupScheduleRefreshUnlocked().generation + 1L
+        db.execSQL(
+            "UPDATE ${LanBackupJobDatabase.CLEANUP_SCHEDULE_STATE_TABLE} " +
+                "SET generation = ?, active = 1, after_id = NULL, " +
+                "unbacked_days = ?, backed_days = ? WHERE singleton_id = 1",
+            arrayOf<Any?>(generation, unbackedDays, backedDays),
+        )
+        return LanBackupCleanupScheduleRefresh(generation = generation, active = true)
+    }
+
+    private fun cleanupScheduleRefreshUnlocked(): LanBackupCleanupScheduleRefresh = db.query(
+        LanBackupJobDatabase.CLEANUP_SCHEDULE_STATE_TABLE,
+        arrayOf("generation", "active"),
+        "singleton_id = 1",
+        null,
+        null,
+        null,
+        null,
+        "1",
+    ).use { cursor ->
+        check(cursor.moveToFirst()) { "缺少 cleanup schedule 状态行" }
+        LanBackupCleanupScheduleRefresh(
+            generation = cursor.getLong(0),
+            active = cursor.getInt(1) != 0,
+        )
+    }
+
+    /**
+     * Applies at most [limit] rows and advances the cursor in the same SQLite
+     * transaction. Job changes share one revision and therefore one summary
+     * notification; a no-op slice only checkpoints its cursor.
+     */
+    fun refreshCleanupScheduleSlice(
+        expectedGeneration: Long,
+        limit: Int = 100,
+    ): LanBackupCleanupScheduleSliceResult = withJobLock {
+        require(limit in 1..100) { "清理排期单片数量必须为 1 到 100" }
+        data class ScheduleRow(
+            val id: String,
+            val generation: String,
+            val state: String,
+            val fileCreatedAt: String?,
+            val backupCompletedAt: String?,
+            val scheduledCleanupAt: String?,
+            val waitingCleanup: Boolean,
+        )
+
+        var policyUnbackedDays = -1
+        var policyBackedDays = -1
+        var afterId: String? = null
+        val active = db.query(
+            LanBackupJobDatabase.CLEANUP_SCHEDULE_STATE_TABLE,
+            arrayOf("generation", "active", "after_id", "unbacked_days", "backed_days"),
+            "singleton_id = 1",
+            null,
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            cursor.moveToFirst() &&
+                cursor.getLong(0) == expectedGeneration &&
+                cursor.getInt(1) != 0 &&
+                run {
+                    afterId = if (cursor.isNull(2)) null else cursor.getString(2)
+                    policyUnbackedDays = cursor.getInt(3)
+                    policyBackedDays = cursor.getInt(4)
+                    true
+                }
+        }
+        if (!active) {
+            return@withJobLock LanBackupCleanupScheduleSliceResult(
+                generation = expectedGeneration,
+                processedCount = 0,
+                changedCount = 0,
+                hasMore = false,
+            )
+        }
+
+        val selection = buildString {
+            append("local_deleted_at IS NULL")
+            if (afterId != null) append(" AND id > ?")
+        }
+        val rows = db.query(
+            "${LanBackupJobDatabase.TABLE} INDEXED BY " +
+                LanBackupJobDatabase.CLEANUP_SCHEDULE_REFRESH_INDEX,
+            arrayOf(
+                "id", "generation", "state", "file_created_at",
+                "backup_completed_at", "scheduled_cleanup_at", "waiting_cleanup",
+            ),
+            selection,
+            afterId?.let { arrayOf(it) },
+            null,
+            null,
+            "id ASC",
+            limit.toString(),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        ScheduleRow(
+                            id = cursor.getString(0),
+                            generation = cursor.getString(1),
+                            state = cursor.getString(2),
+                            fileCreatedAt = if (cursor.isNull(3)) null else cursor.getString(3),
+                            backupCompletedAt = if (cursor.isNull(4)) null else cursor.getString(4),
+                            scheduledCleanupAt = if (cursor.isNull(5)) null else cursor.getString(5),
+                            waitingCleanup = cursor.getInt(6) != 0,
+                        ),
+                    )
+                }
+            }
+        }
+        val changes = rows.mapNotNull { row ->
+            val dueAt = LanBackupCleanupScheduler.dueAt(
+                state = row.state,
+                fileCreatedAt = row.fileCreatedAt,
+                backupCompletedAt = row.backupCompletedAt,
+                unbackedDays = policyUnbackedDays,
+                backedDays = policyBackedDays,
+            )?.toString()
+            val clearWaiting = dueAt == null && row.waitingCleanup
+            if (dueAt == row.scheduledCleanupAt && !clearWaiting) {
+                null
+            } else {
+                Triple(row, dueAt, clearWaiting)
+            }
+        }
+        val hasMore = rows.size == limit
+        var revision = 0L
+        db.beginTransaction()
+        try {
+            if (changes.isNotEmpty()) {
+                revision = nextRevisionUnlocked()
+                val clearedWaiting = changes.count { it.third }
+                changes.forEach { (row, dueAt, clearWaiting) ->
+                    val values = android.content.ContentValues().apply {
+                        if (dueAt == null) putNull("scheduled_cleanup_at") else put("scheduled_cleanup_at", dueAt)
+                        if (clearWaiting) put("waiting_cleanup", 0)
+                        put("updated_revision", revision)
+                    }
+                    db.update(
+                        LanBackupJobDatabase.TABLE,
+                        values,
+                        "id = ? AND generation = ? AND local_deleted_at IS NULL",
+                        arrayOf(row.id, row.generation),
+                    )
+                }
+                if (clearedWaiting > 0) {
+                    setMetaValueUnlocked(
+                        "summary_waiting_cleanup_count",
+                        metaValueUnlocked("summary_waiting_cleanup_count") - clearedWaiting,
+                    )
+                }
+            }
+            db.execSQL(
+                "UPDATE ${LanBackupJobDatabase.CLEANUP_SCHEDULE_STATE_TABLE} " +
+                    "SET after_id = ?, active = ? WHERE singleton_id = 1 AND generation = ?",
+                arrayOf<Any?>(
+                    rows.lastOrNull()?.id,
+                    if (hasMore) 1 else 0,
+                    expectedGeneration,
+                ),
+            )
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        if (revision > 0L) {
+            // 排期刷新不改变上传或清理状态，按进度通知合并，避免大库刷新时反复驱动 UI。
+            LanBackupRevisionNotifier.publish(revision, immediate = false)
+        }
+        LanBackupCleanupScheduleSliceResult(
+            generation = expectedGeneration,
+            processedCount = rows.size,
+            changedCount = changes.size,
+            hasMore = hasMore,
+        )
+    }
+
     fun nextScheduledCleanupJob(): JSONObject? = withJobLock {
         db.query(
             LanBackupJobDatabase.TABLE,
@@ -1053,11 +1289,17 @@ internal class LanBackupStateStore(
         LanBackupCleanupScheduler.nullableText(job, "fileCreatedAt")
             ?: "9999-12-31T23:59:59Z"
 
-    fun saveRetentionPolicies(unbackedDays: Int?, backedDays: Int?) {
-        context.getSharedPreferences(RETENTION_PREFS, Context.MODE_PRIVATE).edit()
-            .putInt("unbackedDays", unbackedDays ?: -1)
-            .putInt("backedDays", backedDays ?: -1)
+    fun saveRetentionPolicies(unbackedDays: Int?, backedDays: Int?): Boolean {
+        val unbacked = unbackedDays ?: -1
+        val backed = backedDays ?: -1
+        val preferences = context.getSharedPreferences(RETENTION_PREFS, Context.MODE_PRIVATE)
+        val changed = preferences.getInt("unbackedDays", Int.MIN_VALUE) != unbacked ||
+            preferences.getInt("backedDays", Int.MIN_VALUE) != backed
+        preferences.edit()
+            .putInt("unbackedDays", unbacked)
+            .putInt("backedDays", backed)
             .apply()
+        return changed
     }
 
     fun unbackedRetentionDays(): Int = context

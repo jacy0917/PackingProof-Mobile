@@ -91,6 +91,25 @@ class LanBackupWorkBoundTest {
         assertTrue(allBackupWork().size <= 4)
     }
 
+    @Test
+    fun tenThousandPolicyRefreshWakeupsKeepMaintenanceAndUploadWorkBounded() {
+        seedScheduledCleanupJobs(10_000)
+        LanBackupCleanupScheduler.rescheduleAll(context, store)
+        val generation = store.cleanupScheduleRefresh().generation
+
+        repeat(10_000) {
+            LanBackupDispatcher.schedule(context)
+            LanBackupCleanupScheduler.scheduleRefresh(context, generation)
+        }
+
+        assertTrue(allUniqueWork(LanBackupDispatcher.UNIQUE_WORK).size <= 2)
+        assertTrue(
+            allUniqueWork(LanBackupCleanupScheduler.SCHEDULE_REFRESH_UNIQUE_WORK).size <= 2,
+        )
+        assertTrue(unfinishedBackupWorkCount() <= 4)
+        assertTrue(allBackupWork().size <= 4)
+    }
+
     private fun seedScheduledCleanupJobs(count: Int) {
         store.summary()
         val database = context.openOrCreateDatabase("lan_backup.db", Context.MODE_PRIVATE, null)

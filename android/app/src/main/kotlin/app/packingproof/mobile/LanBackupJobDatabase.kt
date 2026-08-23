@@ -17,10 +17,13 @@ internal class LanBackupJobDatabase(private val context: Context) :
 
     companion object {
         private const val DATABASE_NAME = "lan_backup.db"
-        private const val DATABASE_VERSION = 5
+        private const val DATABASE_VERSION = 6
         const val TABLE = "backup_jobs"
         const val META_TABLE = "backup_meta"
         const val CLEANUP_EVENTS_TABLE = "backup_cleanup_events"
+        const val CLEANUP_SCHEDULE_STATE_TABLE = "backup_cleanup_schedule_state"
+        const val CLEANUP_SCHEDULE_REFRESH_INDEX =
+            "idx_backup_jobs_cleanup_schedule_refresh"
         const val SUMMARY_COUNTERS_INITIALIZED = "summary_counters_initialized"
         const val UPLOADING_CLAIM_INDEX = "idx_backup_jobs_uploading_claim"
         const val QUEUED_UPLOAD_CLAIM_INDEX = "idx_backup_jobs_queued_upload_claim"
@@ -122,6 +125,17 @@ internal class LanBackupJobDatabase(private val context: Context) :
                 reason TEXT NOT NULL
             )
         """
+
+        private const val CREATE_CLEANUP_SCHEDULE_STATE_TABLE = """
+            CREATE TABLE backup_cleanup_schedule_state (
+                singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+                generation INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 0,
+                after_id TEXT,
+                unbacked_days INTEGER NOT NULL DEFAULT -1,
+                backed_days INTEGER NOT NULL DEFAULT -1
+            )
+        """
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -168,11 +182,16 @@ internal class LanBackupJobDatabase(private val context: Context) :
         if (oldVersion < 5) {
             createFairUploadClaimIndexes(db)
         }
+        if (oldVersion < 6) {
+            createCleanupScheduleState(db)
+            createCleanupScheduleRefreshIndex(db)
+        }
     }
 
     private fun createRevisionSchema(db: SQLiteDatabase) {
         db.execSQL(CREATE_META_TABLE.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
         db.execSQL(CREATE_CLEANUP_EVENTS_TABLE.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
+        createCleanupScheduleState(db)
         db.execSQL("INSERT OR IGNORE INTO $META_TABLE(key, int_value) VALUES('revision', 0)")
         db.execSQL("INSERT OR IGNORE INTO $META_TABLE(key, int_value) VALUES('completed_revision', 0)")
         db.execSQL("INSERT OR IGNORE INTO $META_TABLE(key, int_value) VALUES('cleanup_high_watermark', 0)")
@@ -196,6 +215,20 @@ internal class LanBackupJobDatabase(private val context: Context) :
         createFairUploadClaimIndexes(db)
     }
 
+    private fun createCleanupScheduleState(db: SQLiteDatabase) {
+        db.execSQL(
+            CREATE_CLEANUP_SCHEDULE_STATE_TABLE.replace(
+                "CREATE TABLE",
+                "CREATE TABLE IF NOT EXISTS",
+            ),
+        )
+        db.execSQL(
+            "INSERT OR IGNORE INTO $CLEANUP_SCHEDULE_STATE_TABLE(" +
+                "singleton_id, generation, active, after_id, unbacked_days, backed_days" +
+                ") VALUES(1, 0, 0, NULL, -1, -1)",
+        )
+    }
+
     private fun createBoundedRecoveryIndexes(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS idx_backup_jobs_state_id ON $TABLE(state, id)",
@@ -204,6 +237,7 @@ internal class LanBackupJobDatabase(private val context: Context) :
             "CREATE INDEX IF NOT EXISTS idx_backup_jobs_bounded_scan " +
                 "ON $TABLE(id, state, local_deleted_at)",
         )
+        createCleanupScheduleRefreshIndex(db)
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS idx_backup_jobs_storage_recovery " +
                 "ON $TABLE(" +
@@ -213,6 +247,13 @@ internal class LanBackupJobDatabase(private val context: Context) :
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS idx_backup_jobs_failure_revision " +
                 "ON $TABLE(state, failure_kind, updated_revision DESC)",
+        )
+    }
+
+    private fun createCleanupScheduleRefreshIndex(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS $CLEANUP_SCHEDULE_REFRESH_INDEX " +
+                "ON $TABLE(id) WHERE local_deleted_at IS NULL",
         )
     }
 

@@ -64,9 +64,13 @@ internal class LanBackupPlugin(
         WorkManager.getInstance(context).cancelAllWorkByTag("lan-backup").result.get()
         if (store.migrateLegacyConnection() != null) credentials.clear()
         store.reconcileUnavailableJobs()
-        store.saveRetentionPolicies(unbackedDays, backedDays)
+        val retentionChanged = store.saveRetentionPolicies(unbackedDays, backedDays)
         schedulePending()
-        LanBackupCleanupScheduler.rescheduleAll(context, store)
+        if (retentionChanged) {
+            LanBackupCleanupScheduler.rescheduleAll(context, store)
+        } else {
+            LanBackupCleanupScheduler.resumeRefreshOrScheduleNext(context, store)
+        }
         return summary()
     }
 
@@ -92,14 +96,14 @@ internal class LanBackupPlugin(
         }
         store.clearMigrationHint()
         schedulePending()
-        LanBackupCleanupScheduler.rescheduleAll(context, store)
+        LanBackupCleanupScheduler.resumeRefreshOrScheduleNext(context, store)
     }
 
     fun disconnect() {
         WorkManager.getInstance(context).cancelAllWorkByTag("lan-backup")
         store.clearConnection()
         credentials.clear()
-        LanBackupCleanupScheduler.rescheduleAll(context, store)
+        LanBackupCleanupScheduler.resumeRefreshOrScheduleNext(context, store)
     }
 
     fun enqueueJob(request: Map<String?, Any?>) {
@@ -148,11 +152,15 @@ internal class LanBackupPlugin(
     }
 
     fun updateRetentionSchedule(request: Map<String?, Any?>) {
-        store.saveRetentionPolicies(
+        val changed = store.saveRetentionPolicies(
             (request["unbackedRetentionDays"] as? Number)?.toInt(),
             (request["backedRetentionDays"] as? Number)?.toInt(),
         )
-        LanBackupCleanupScheduler.rescheduleAll(context, store)
+        if (changed) {
+            LanBackupCleanupScheduler.rescheduleAll(context, store)
+        } else {
+            LanBackupCleanupScheduler.resumeRefreshOrScheduleNext(context, store)
+        }
     }
 
     fun reclaimStorageIfNeeded(): Map<String?, Any?> =
