@@ -2005,6 +2005,30 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testCleanupReturnDrainsImmediateAndThrottledSummaryWork() async throws {
+    let countQueue = DispatchQueue(label: "RunnerTests.cleanup-summary-count")
+    var summaryCount = 0
+    let fixture = try makeRetentionCleanupFixture(
+      id: "cleanup-summary-drain",
+      onSnapshot: { _ in
+        countQueue.sync { summaryCount += 1 }
+      }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    var job = fixture.job
+    job["verificationVersion"] = 3
+    job["remoteRecordId"] = NSNumber(value: 42)
+    try fixture.store.upsert(job)
+
+    fixture.api.emitProgressSummaryForTesting()
+    try await fixture.api.performCleanup()
+    XCTAssertEqual(countQueue.sync { summaryCount }, 1)
+
+    try FileManager.default.removeItem(at: fixture.root)
+    try await Task.sleep(nanoseconds: 1_200_000_000)
+    XCTAssertEqual(countQueue.sync { summaryCount }, 1)
+  }
+
   func testRetentionCleanupKeepsVerifiedFileWhenRemoteIsUnreachable()
     async throws
   {
