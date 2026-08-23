@@ -2199,6 +2199,107 @@ void main() {
     expect(find.text('检查电脑后重试'), findsNothing);
   });
 
+  testWidgets('待上传任务存在时文件异常不覆盖全局备份状态', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingsScreen(
+          sessions: const [],
+          workMode: WorkMode.continuousScan,
+          speechEnabled: true,
+          maxVolumeEnabled: true,
+          backupSnapshot: LanBackupSnapshot(
+            autoEnabled: true,
+            endpoint: LanBackupEndpoint(
+              baseUri: Uri.parse('http://192.168.1.20:5280'),
+              accessKey: '',
+              computerId: 'computer-1',
+              computerName: '仓库电脑',
+            ),
+            summary: const LanBackupSummary(
+              totalCount: 11,
+              pendingCount: 10,
+              pausedCount: 1,
+              problemJob: LanBackupJob(
+                id: 'old-container-job',
+                filePath: '/old/Documents/recordings/video.mp4',
+                state: LanBackupJobState.paused,
+                uploadedBytes: 0,
+                totalBytes: 1024,
+                errorMessage: '无法读取录像文件信息',
+                failureKind: LanBackupFailureKind.storageUnavailable,
+              ),
+            ),
+            connectionStatus: LanConnectionStatus.connected,
+          ),
+          onAutoBackupChanged: (_) async {},
+          onBackupNow: () async {},
+          onDisconnectBackup: () async {},
+          onWorkModeChanged: (_) async {},
+          onSpeechEnabledChanged: (_) async {},
+          onMaxVolumeEnabledChanged: (_) async {},
+          onSpeechPreview: () async {},
+          onSessionUpdated: (_) async {},
+          onDeleteSessions: (_) async {},
+        ),
+      ),
+    );
+
+    expect(find.text('在线'), findsOneWidget);
+    expect(find.text('还有 11 个录像等待备份'), findsOneWidget);
+    expect(find.text('无法读取录像文件信息'), findsNothing);
+    expect(find.text('部分录像暂时无法读取，不影响其余录像继续备份'), findsOneWidget);
+    expect(find.text('检查电脑后重试'), findsNothing);
+  });
+
+  testWidgets('只有文件异常任务时仍如实显示错误', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingsScreen(
+          sessions: const [],
+          workMode: WorkMode.continuousScan,
+          speechEnabled: true,
+          maxVolumeEnabled: true,
+          backupSnapshot: LanBackupSnapshot(
+            endpoint: LanBackupEndpoint(
+              baseUri: Uri.parse('http://192.168.1.20:5280'),
+              accessKey: '',
+              computerId: 'computer-1',
+              computerName: '仓库电脑',
+            ),
+            summary: const LanBackupSummary(
+              totalCount: 1,
+              pausedCount: 1,
+              problemJob: LanBackupJob(
+                id: 'unreadable-job',
+                filePath: '/old/Documents/recordings/video.mp4',
+                state: LanBackupJobState.paused,
+                uploadedBytes: 0,
+                totalBytes: 1024,
+                errorMessage: '无法读取录像文件信息',
+                failureKind: LanBackupFailureKind.storageUnavailable,
+              ),
+            ),
+            connectionStatus: LanConnectionStatus.connected,
+          ),
+          onDisconnectBackup: () async {},
+          onWorkModeChanged: (_) async {},
+          onSpeechEnabledChanged: (_) async {},
+          onMaxVolumeEnabledChanged: (_) async {},
+          onSpeechPreview: () async {},
+          onSessionUpdated: (_) async {},
+          onDeleteSessions: (_) async {},
+        ),
+      ),
+    );
+
+    expect(find.text('无法读取录像文件信息'), findsOneWidget);
+    expect(
+      find.byKey(const Key('backup-nonblocking-storage-warning')),
+      findsNothing,
+    );
+    expect(find.text('备份完成'), findsNothing);
+  });
+
   testWidgets('电脑不是备份主机时显示重新申请并覆盖旧版本失败提示', (WidgetTester tester) async {
     await tester.pumpWidget(
       MaterialApp(

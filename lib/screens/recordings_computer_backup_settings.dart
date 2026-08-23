@@ -101,6 +101,11 @@ class _ComputerBackupSettings extends StatelessWidget {
         snapshot.connectionStatus == LanConnectionStatus.approvalDenied;
     final bool offline =
         snapshot.connectionStatus == LanConnectionStatus.offline;
+    final bool hasQueuedWork = active != null || summary.pendingCount > 0;
+    final bool hasNonBlockingStorageIssue =
+        online &&
+        hasQueuedWork &&
+        paused?.failureKind == LanBackupFailureKind.storageUnavailable;
     final String stateLabel = discovery.searching && !paired
         ? '搜索中'
         : awaitingApproval
@@ -145,12 +150,14 @@ class _ComputerBackupSettings extends StatelessWidget {
         ? '正在备份 · $progress%'
         : failed != null
         ? (failed.errorMessage ?? '备份失败')
-        : paused != null
+        : paused != null && !hasNonBlockingStorageIssue
         ? (paused.errorMessage ?? '等待自动续传')
-        : allBackedUp && online
-        ? '备份完成'
         : pending > 0
         ? '还有 $pending 个录像等待备份'
+        : remainingBackupCount > 0
+        ? '$remainingBackupCount 个录像等待备份'
+        : allBackedUp && online
+        ? '备份完成'
         : null;
 
     final String disconnectedMessage = awaitingApproval || approvalFailed
@@ -473,6 +480,18 @@ class _ComputerBackupSettings extends StatelessWidget {
                 ],
               ),
             ),
+            if (hasNonBlockingStorageIssue) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                key: const Key('backup-nonblocking-storage-warning'),
+                '部分录像暂时无法读取，不影响其余录像继续备份',
+                style: TextStyle(
+                  color: colors.onSurfaceVariant,
+                  fontSize: 11,
+                  height: 1.3,
+                ),
+              ),
+            ],
           ],
           if (showRetention) ...<Widget>[
             const SizedBox(height: 14),
