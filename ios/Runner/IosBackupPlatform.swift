@@ -674,8 +674,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   func summary(completion: @escaping (Result<BackupSummaryDto, Error>) -> Void) {
-    triggerCleanupIfDue()
-    completion(Result { try currentSummary() })
+    summaryQueue.async {
+      self.triggerCleanupIfDue()
+      completion(Result { try self.currentSummary() })
+    }
   }
 
   func initialize(
