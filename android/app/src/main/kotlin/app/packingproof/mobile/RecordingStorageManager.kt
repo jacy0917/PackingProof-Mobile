@@ -3,7 +3,6 @@ package app.packingproof.mobile
 import android.content.Context
 import android.os.StatFs
 import org.json.JSONObject
-import java.io.File
 import java.time.Instant
 
 internal object RecordingStoragePolicy {
@@ -11,6 +10,7 @@ internal object RecordingStoragePolicy {
     const val MINIMUM_BYTES = 2L * 1024 * 1024 * 1024
     const val TARGET_BYTES = 3L * 1024 * 1024 * 1024
     val STORAGE_ATTESTATION_FRESHNESS = java.time.Duration.ofMinutes(5)
+    private val HEX_64 = Regex("^[0-9a-fA-F]{64}$")
 
     fun needsWarning(availableBytes: Long): Boolean = availableBytes < WARNING_BYTES
     fun needsReclaim(availableBytes: Long): Boolean = availableBytes < MINIMUM_BYTES
@@ -20,30 +20,126 @@ internal object RecordingStoragePolicy {
         age <= STORAGE_ATTESTATION_FRESHNESS
     }.getOrDefault(false)
 
+    fun isVerifiedCandidate(candidate: RecordingStorageCandidate): Boolean =
+        candidate.generation.isNotBlank() &&
+            candidate.filePath.isNotBlank() &&
+            candidate.destinationComputerId.isNotBlank() &&
+            candidate.state == "completed" &&
+            candidate.backupCompletedAt != null &&
+            candidate.contentSha256?.matches(HEX_64) == true &&
+            candidate.verificationVersion >= BackupRequestAuthentication.VERSION &&
+            candidate.verificationReceipt?.let { receipt ->
+                receipt.authVersion == BackupRequestAuthentication.VERSION &&
+                    receipt.verifiedAtUnixSeconds > 0 &&
+                    receipt.hostNodeId.equals(candidate.destinationComputerId, ignoreCase = true) &&
+                    receipt.sourceDeviceId.isNotBlank() &&
+                    receipt.sourceSessionId == candidate.sessionIds.singleOrNull() &&
+                    receipt.fileSha256.equals(candidate.contentSha256, ignoreCase = true) &&
+                    receipt.fileSizeBytes == candidate.totalBytes &&
+                    receipt.recordId == candidate.remoteRecordId &&
+                    receipt.receiptSignature.matches(HEX_64)
+            } == true &&
+            candidate.remoteRecordId > 0 &&
+            candidate.sessionIds.size == 1 &&
+            candidate.sessionIds.single().isNotBlank() &&
+            candidate.totalBytes > 0 &&
+            candidate.lastModified > 0 &&
+            candidate.lastAttestedAt?.let(RecordingStoragePolicy::isFreshAttestation) == true &&
+            candidate.localDeletedAt == null
+
     fun verifiedCandidates(
         candidates: List<RecordingStorageCandidate>,
     ): List<RecordingStorageCandidate> = candidates
-        .filter {
-            it.state == "completed" &&
-                it.backupCompletedAt != null &&
-                it.contentSha256 != null &&
-                it.verificationVersion >= BackupRequestAuthentication.VERSION &&
-                it.lastAttestedAt?.let(RecordingStoragePolicy::isFreshAttestation) == true &&
-                it.localDeletedAt == null
-        }
+        .filter(::isVerifiedCandidate)
         .sortedBy { runCatching { Instant.parse(it.fileCreatedAt) }.getOrDefault(Instant.MAX) }
+}
+
+internal data class RecordingStorageReceipt(
+    val authVersion: Int,
+    val verifiedAtUnixSeconds: Long,
+    val hostNodeId: String,
+    val sourceDeviceId: String,
+    val sourceSessionId: String,
+    val fileSha256: String,
+    val fileSizeBytes: Long,
+    val recordId: Long,
+    val receiptSignature: String,
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("authVersion", authVersion)
+        .put("verifiedAtUnixSeconds", verifiedAtUnixSeconds)
+        .put("hostNodeId", hostNodeId)
+        .put("sourceDeviceId", sourceDeviceId)
+        .put("sourceSessionId", sourceSessionId)
+        .put("fileSha256", fileSha256)
+        .put("fileSizeBytes", fileSizeBytes)
+        .put("recordId", recordId)
+        .put("receiptSignature", receiptSignature)
 }
 
 internal data class RecordingStorageCandidate(
     val id: String,
+    val generation: String,
+    val filePath: String,
+    val destinationComputerId: String,
     val state: String,
     val fileCreatedAt: String?,
     val backupCompletedAt: String?,
     val contentSha256: String?,
     val verificationVersion: Int,
+    val verificationReceipt: RecordingStorageReceipt?,
+    val remoteRecordId: Long,
+    val sessionIds: List<String>,
+    val totalBytes: Long,
+    val lastModified: Long,
     val lastAttestedAt: String?,
     val localDeletedAt: String?,
 )
+
+internal fun recordingStorageCandidate(job: JSONObject): RecordingStorageCandidate {
+    val sessions = job.optJSONArray("sessions")
+    return RecordingStorageCandidate(
+        id = job.optString("id"),
+        generation = job.optString("generation"),
+        filePath = job.optString("filePath"),
+        destinationComputerId = job.optString("destinationComputerId"),
+        state = job.optString("state"),
+        fileCreatedAt = LanBackupCleanupScheduler.nullableText(job, "fileCreatedAt"),
+        backupCompletedAt = LanBackupCleanupScheduler.nullableText(job, "backupCompletedAt"),
+        contentSha256 = LanBackupCleanupScheduler.nullableText(job, "contentSha256"),
+        verificationVersion = job.optInt("verificationVersion"),
+        verificationReceipt = parseRecordingStorageReceipt(job.optJSONObject("verificationReceipt")),
+        remoteRecordId = job.optLong("remoteRecordId", -1L),
+        sessionIds = if (sessions == null) {
+            emptyList()
+        } else {
+            List(sessions.length()) { index ->
+                sessions.optJSONObject(index)?.optString("id")?.trim().orEmpty()
+            }
+        },
+        totalBytes = job.optLong("totalBytes", -1L),
+        lastModified = job.optLong("lastModified", -1L),
+        lastAttestedAt = LanBackupCleanupScheduler.nullableText(job, "lastAttestedAt"),
+        localDeletedAt = LanBackupCleanupScheduler.nullableText(job, "localDeletedAt"),
+    )
+}
+
+private fun parseRecordingStorageReceipt(value: JSONObject?): RecordingStorageReceipt? {
+    value ?: return null
+    return runCatching {
+        RecordingStorageReceipt(
+            authVersion = value.getInt("authVersion"),
+            verifiedAtUnixSeconds = value.getLong("verifiedAtUnixSeconds"),
+            hostNodeId = value.getString("hostNodeId").trim(),
+            sourceDeviceId = value.getString("sourceDeviceId").trim(),
+            sourceSessionId = value.getString("sourceSessionId").trim(),
+            fileSha256 = value.getString("fileSha256").trim(),
+            fileSizeBytes = value.getLong("fileSizeBytes"),
+            recordId = value.getLong("recordId"),
+            receiptSignature = value.getString("receiptSignature").trim(),
+        )
+    }.getOrNull()
+}
 
 internal data class RecordingStorageCheckResult(
     val values: Map<String, Any>,
@@ -56,6 +152,7 @@ internal class RecordingStorageManager(
     private val availableBytes: () -> Long = {
         StatFs(context.filesDir.path).availableBytes
     },
+    private val beforeGuardedDeleteForTesting: ((JSONObject) -> Unit)? = null,
 ) {
     fun checkAndReclaim(): RecordingStorageCheckResult {
         val before = availableBytes()
@@ -71,50 +168,24 @@ internal class RecordingStorageManager(
                 page = store.storageRecoveryJobsPage(afterCreatedAtKey, afterId)
                 for (job in page.jobs) {
                     if (current >= RecordingStoragePolicy.TARGET_BYTES) break
-                    if (!RecordingStoragePolicy.verifiedCandidates(listOf(candidate(job))).any()) {
+                    val expected = recordingStorageCandidate(job)
+                    if (!RecordingStoragePolicy.isVerifiedCandidate(expected)) {
                         continue
                     }
-                    val file = File(job.optString("filePath"))
-                    if (!isManaged(file)) continue
-                    val expectedBytes = job.optLong("totalBytes", -1L)
-                    when (
-                        LanBackupFileCleanup.deleteExpected(
-                            file = file,
-                            expectedBytes = expectedBytes,
-                            expectedLastModified = job.optLong("lastModified", -1L),
-                            expectedSha256 = LanBackupCleanupScheduler.nullableText(
-                                job,
-                                "contentSha256",
-                            ),
-                        )
-                    ) {
-                        LanBackupFileCleanupResult.deleted -> {
+                    beforeGuardedDeleteForTesting?.invoke(JSONObject(job.toString()))
+                    val outcome = store.reclaimVerifiedRecording(expected)
+                    when (outcome.result) {
+                        RecordingStorageReclaimResult.deleted -> {
                             deletedCount++
-                            freedBytes += expectedBytes.coerceAtLeast(0)
-                            markDeleted(job)
-                            jobsChanged = true
+                            freedBytes += expected.totalBytes
                         }
-                        LanBackupFileCleanupResult.missing -> {
-                            markDeleted(job)
-                            jobsChanged = true
-                        }
-                        LanBackupFileCleanupResult.stale -> {
-                            val message = "录像文件已被替换，已取消空间清理"
-                            if (job.optString("errorMessage") != message) {
-                                job.put("errorMessage", message)
-                                store.writeJob(job)
-                                jobsChanged = true
-                            }
-                        }
-                        LanBackupFileCleanupResult.failed -> {
-                            val message = "空间清理失败，已保留本机录像"
-                            if (job.optString("errorMessage") != message) {
-                                job.put("errorMessage", message)
-                                store.writeJob(job)
-                                jobsChanged = true
-                            }
-                        }
+                        RecordingStorageReclaimResult.missing,
+                        RecordingStorageReclaimResult.stale,
+                        RecordingStorageReclaimResult.failed,
+                        RecordingStorageReclaimResult.rejected,
+                        -> Unit
                     }
+                    jobsChanged = jobsChanged || outcome.jobChanged
                     current = availableBytes()
                 }
                 afterCreatedAtKey = page.nextCreatedAtKey
@@ -134,31 +205,5 @@ internal class RecordingStorageManager(
             ),
             jobsChanged = jobsChanged,
         )
-    }
-
-    private fun isManaged(file: File): Boolean = runCatching {
-        file.canonicalFile.path.startsWith(
-            context.dataDir.canonicalPath + File.separator,
-        )
-    }.getOrDefault(false)
-
-    private fun candidate(job: JSONObject) = RecordingStorageCandidate(
-        id = job.getString("id"),
-        state = job.optString("state"),
-        fileCreatedAt = LanBackupCleanupScheduler.nullableText(job, "fileCreatedAt"),
-        backupCompletedAt = LanBackupCleanupScheduler.nullableText(job, "backupCompletedAt"),
-        contentSha256 = LanBackupCleanupScheduler.nullableText(job, "contentSha256"),
-        verificationVersion = job.optInt("verificationVersion"),
-        lastAttestedAt = LanBackupCleanupScheduler.nullableText(job, "lastAttestedAt"),
-        localDeletedAt = LanBackupCleanupScheduler.nullableText(job, "localDeletedAt"),
-    )
-
-    private fun markDeleted(job: JSONObject) {
-        job.put("localDeletedAt", Instant.now().toString())
-            .put("scheduledCleanupAt", JSONObject.NULL)
-            .put("waitingCleanup", false)
-            .put("cleanupReason", "存储空间不足提前清理")
-            .put("errorMessage", JSONObject.NULL)
-        store.writeJob(job)
     }
 }

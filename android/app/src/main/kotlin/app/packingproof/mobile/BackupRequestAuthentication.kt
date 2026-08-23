@@ -67,12 +67,40 @@ internal object BackupRequestAuthentication {
         fileSizeBytes: Long,
         recordId: Long,
     ): Boolean {
-        if (credential.version < VERSION || response.optInt("authVersion") != VERSION) return false
         val verifiedAt = response.optLong("verifiedAtUnixSeconds")
         if (kotlin.math.abs(Instant.now().epochSecond - verifiedAt) > 300) return false
+        return verifyPersistedReceipt(
+            response,
+            credential,
+            hostNodeId,
+            sourceDeviceId,
+            sourceSessionId,
+            fileSha256,
+            fileSizeBytes,
+            recordId,
+        )
+    }
+
+    /**
+     * 持久化回执可在后续远端 attestation 刷新后继续使用，因此不重复限制签发时间；
+     * 调用方必须另外要求 lastAttestedAt 新鲜。网络刚收到的回执仍使用 [verifyReceipt]。
+     */
+    fun verifyPersistedReceipt(
+        response: org.json.JSONObject,
+        credential: StoredBackupCredential,
+        hostNodeId: String,
+        sourceDeviceId: String,
+        sourceSessionId: String,
+        fileSha256: String,
+        fileSizeBytes: Long,
+        recordId: Long,
+    ): Boolean {
+        if (credential.version < VERSION || response.optInt("authVersion") != VERSION) return false
+        val verifiedAt = response.optLong("verifiedAtUnixSeconds").takeIf { it > 0 } ?: return false
         if (!response.optString("hostNodeId").equals(hostNodeId, ignoreCase = true) ||
             !response.optString("sourceDeviceId").equals(sourceDeviceId, ignoreCase = true) ||
             response.optString("sourceSessionId") != sourceSessionId ||
+            !response.optString("fileSha256").equals(fileSha256, ignoreCase = true) ||
             response.optLong("fileSizeBytes") != fileSizeBytes ||
             response.optLong("recordId") != recordId
         ) return false

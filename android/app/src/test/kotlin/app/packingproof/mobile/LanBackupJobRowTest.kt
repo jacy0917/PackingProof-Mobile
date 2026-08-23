@@ -28,7 +28,19 @@ class LanBackupJobRowTest {
             .put("remoteRecordId", 1L)
             .put("contentSha256", "a".repeat(64))
             .put("verificationVersion", 3)
-            .put("verificationReceipt", JSONObject().put("signature", "sig"))
+            .put(
+                "verificationReceipt",
+                JSONObject()
+                    .put("authVersion", 3)
+                    .put("verifiedAtUnixSeconds", 1_777_000_000L)
+                    .put("hostNodeId", "host-1")
+                    .put("sourceDeviceId", "device-1")
+                    .put("sourceSessionId", "session-1")
+                    .put("fileSha256", "a".repeat(64))
+                    .put("fileSizeBytes", 1234L)
+                    .put("recordId", 1L)
+                    .put("receiptSignature", "b".repeat(64)),
+            )
             .put("lastAttestedAt", "2026-08-19T05:00:00Z")
             .put("cleanupReason", JSONObject.NULL)
             .put("errorMessage", JSONObject.NULL)
@@ -52,7 +64,10 @@ class LanBackupJobRowTest {
         assertEquals(job.optLong("lastModified"), restored.optLong("lastModified"))
         assertEquals(job.optInt("verificationVersion"), restored.optInt("verificationVersion"))
         assertEquals(1L, restored.getLong("remoteRecordId"))
-        assertEquals("sig", restored.optJSONObject("verificationReceipt").getString("signature"))
+        val receipt = restored.getJSONObject("verificationReceipt")
+        assertEquals(3, receipt.getInt("authVersion"))
+        assertEquals("session-1", receipt.getString("sourceSessionId"))
+        assertEquals("b".repeat(64), receipt.getString("receiptSignature"))
         assertEquals(1, restored.optJSONArray("sessions").length())
         assertTrue(restored.isNull("errorMessage"))
         assertTrue(restored.isNull("localDeletedAt"))
@@ -82,6 +97,18 @@ class LanBackupJobRowTest {
         assertTrue(restored.isNull("remoteRecordId"))
         assertEquals(0, restored.optJSONArray("sessions").length())
         assertFalse(restored.optBoolean("waitingCleanup"))
+    }
+
+    @Test
+    fun legacyReceiptSignatureStringRoundTripsButRemainsDistinguishable() {
+        val signature = "a".repeat(64)
+        val job = JSONObject()
+            .put("id", "job-signature")
+            .put("verificationReceipt", signature)
+
+        val restored = lanBackupRowToJob(lanBackupJobToRow(job))
+
+        assertEquals(signature, restored.getString("verificationReceipt"))
     }
 
     @Test

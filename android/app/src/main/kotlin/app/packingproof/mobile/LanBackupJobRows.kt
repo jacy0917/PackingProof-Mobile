@@ -118,8 +118,14 @@ internal fun lanBackupRowToJob(row: Map<String, Any?>): JSONObject {
     )
     job.put(
         "verificationReceipt",
-        row["verification_receipt"]?.let {
-            runCatching { JSONObject(it.toString()) }.getOrNull()
+        row["verification_receipt"]?.toString()?.trim()?.takeIf {
+            it.isNotEmpty() && it != "null"
+        }?.let { raw ->
+            if (raw.startsWith("{")) {
+                runCatching { JSONObject(raw) }.getOrNull() ?: raw
+            } else {
+                raw
+            }
         } ?: JSONObject.NULL,
     )
     job.put("sessions", row["sessions"].parseJsonArray() ?: JSONArray())

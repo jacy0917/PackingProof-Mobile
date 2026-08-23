@@ -93,6 +93,13 @@ internal data class LanBackupStorageJobPage(
     val nextId: String?,
 )
 
+internal enum class RecordingStorageReclaimResult { deleted, missing, stale, failed, rejected }
+
+internal data class RecordingStorageReclaimOutcome(
+    val result: RecordingStorageReclaimResult,
+    val jobChanged: Boolean,
+)
+
 internal fun planLanBackupConnectionMigration(
     schemaVersion: Int,
     computerId: String?,
@@ -106,7 +113,10 @@ internal fun planLanBackupConnectionMigration(
     )
 }
 
-internal class LanBackupStateStore(private val context: Context) : AutoCloseable {
+internal class LanBackupStateStore(
+    private val context: Context,
+    private val backupCredential: () -> String? = { LanBackupCredentialStore(context).load() },
+) : AutoCloseable {
     companion object {
         private const val CONNECTION_SCHEMA_VERSION = 1
         private const val PREFS = "lan_backup_connection"
@@ -594,7 +604,9 @@ internal class LanBackupStateStore(private val context: Context) : AutoCloseable
         val selection = buildString {
             append("state = 'completed' AND backup_completed_at IS NOT NULL ")
             append("AND content_sha256 IS NOT NULL AND content_sha256 != '' ")
-            append("AND verification_version >= ? AND last_attested_at IS NOT NULL ")
+            append("AND verification_version >= ? AND verification_receipt IS NOT NULL ")
+            append("AND verification_receipt != '' AND remote_record_id IS NOT NULL ")
+            append("AND total_bytes > 0 AND last_modified > 0 AND last_attested_at IS NOT NULL ")
             append("AND local_deleted_at IS NULL")
             if (afterCreatedAtKey != null) {
                 append(" AND ($createdAtExpression > ? OR ($createdAtExpression = ? AND id > ?))")
@@ -629,6 +641,104 @@ internal class LanBackupStateStore(private val context: Context) : AutoCloseable
             nextCreatedAtKey = last?.let(::storageCreatedAtKey),
             nextId = last?.optString("id"),
         )
+    }
+
+    /**
+     * 空间回收候选读取与文件删除之间可能发生重新入队。这里在统一 job 锁内重读，
+     * 并要求 generation、文件身份和完整远端证明仍与候选快照完全一致后才删除。
+     */
+    fun reclaimVerifiedRecording(
+        expected: RecordingStorageCandidate,
+    ): RecordingStorageReclaimOutcome = withJobLock {
+        val current = readJobUnlocked(expected.id)
+            ?: return@withJobLock rejectedStorageReclaim()
+        val actual = recordingStorageCandidate(current)
+        if (actual != expected || !RecordingStoragePolicy.isVerifiedCandidate(actual)) {
+            return@withJobLock rejectedStorageReclaim()
+        }
+        val receipt = actual.verificationReceipt
+            ?: return@withJobLock rejectedStorageReclaim()
+        val contentSha256 = actual.contentSha256
+            ?: return@withJobLock rejectedStorageReclaim()
+        val sessionId = actual.sessionIds.singleOrNull()
+            ?: return@withJobLock rejectedStorageReclaim()
+        val cryptographicallyVerified = runCatching {
+            val credential = backupCredential()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: return@runCatching false
+            BackupRequestAuthentication.verifyPersistedReceipt(
+                response = receipt.toJson(),
+                credential = BackupRequestAuthentication.parse(credential),
+                hostNodeId = actual.destinationComputerId,
+                sourceDeviceId = deviceId(),
+                sourceSessionId = sessionId,
+                fileSha256 = contentSha256,
+                fileSizeBytes = actual.totalBytes,
+                recordId = actual.remoteRecordId,
+            )
+        }.getOrDefault(false)
+        if (!cryptographicallyVerified) return@withJobLock rejectedStorageReclaim()
+        val file = File(actual.filePath)
+        val appDataRoot = context.dataDir.canonicalFile
+        val managed = runCatching {
+            file.canonicalFile.path.startsWith(appDataRoot.path + File.separator)
+        }.getOrDefault(false)
+        if (!managed) return@withJobLock rejectedStorageReclaim()
+
+        when (
+            val result = LanBackupFileCleanup.deleteExpected(
+                file = file,
+                expectedBytes = actual.totalBytes,
+                expectedLastModified = actual.lastModified,
+                expectedSha256 = contentSha256,
+            )
+        ) {
+            LanBackupFileCleanupResult.deleted,
+            LanBackupFileCleanupResult.missing,
+            -> {
+                current.put("localDeletedAt", Instant.now().toString())
+                    .put("scheduledCleanupAt", JSONObject.NULL)
+                    .put("waitingCleanup", false)
+                    .put("cleanupReason", "存储空间不足提前清理")
+                    .put("errorMessage", JSONObject.NULL)
+                writeJobUnlocked(current)
+                RecordingStorageReclaimOutcome(
+                    result = if (result == LanBackupFileCleanupResult.deleted) {
+                        RecordingStorageReclaimResult.deleted
+                    } else {
+                        RecordingStorageReclaimResult.missing
+                    },
+                    jobChanged = true,
+                )
+            }
+            LanBackupFileCleanupResult.stale -> updateStorageReclaimError(
+                current,
+                RecordingStorageReclaimResult.stale,
+                "录像文件已被替换，已取消空间清理",
+            )
+            LanBackupFileCleanupResult.failed -> updateStorageReclaimError(
+                current,
+                RecordingStorageReclaimResult.failed,
+                "空间清理失败，已保留本机录像",
+            )
+        }
+    }
+
+    private fun rejectedStorageReclaim() = RecordingStorageReclaimOutcome(
+        result = RecordingStorageReclaimResult.rejected,
+        jobChanged = false,
+    )
+
+    private fun updateStorageReclaimError(
+        job: JSONObject,
+        result: RecordingStorageReclaimResult,
+        message: String,
+    ): RecordingStorageReclaimOutcome {
+        val changed = job.optString("errorMessage") != message
+        if (changed) {
+            job.put("errorMessage", message)
+            writeJobUnlocked(job)
+        }
+        return RecordingStorageReclaimOutcome(result = result, jobChanged = changed)
     }
 
     private fun jobIdsPageUnlocked(

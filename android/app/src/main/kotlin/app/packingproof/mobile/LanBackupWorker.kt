@@ -54,6 +54,17 @@ internal fun verifiedCompletionRecordId(response: JSONObject, fileSha256: String
     return response.optLong("recordId").takeIf { it > 0 }
 }
 
+internal fun persistedVerificationReceipt(response: JSONObject): JSONObject = JSONObject()
+    .put("authVersion", response.optInt("authVersion"))
+    .put("verifiedAtUnixSeconds", response.optLong("verifiedAtUnixSeconds"))
+    .put("hostNodeId", response.optString("hostNodeId"))
+    .put("sourceDeviceId", response.optString("sourceDeviceId"))
+    .put("sourceSessionId", response.optString("sourceSessionId"))
+    .put("fileSha256", response.optString("fileSha256"))
+    .put("fileSizeBytes", response.optLong("fileSizeBytes"))
+    .put("recordId", response.optLong("recordId"))
+    .put("receiptSignature", response.optString("receiptSignature"))
+
 internal object LanBackupDispatcher {
     internal const val UNIQUE_WORK = "lan-backup-dispatcher"
     internal const val WORK_TAG = "lan-backup-upload"
@@ -321,7 +332,7 @@ internal class LanBackupWorker(
                 recordId,
                 sha256,
                 if (signedVerification) BackupRequestAuthentication.VERSION else 0,
-                completion.optString("receiptSignature"),
+                if (signedVerification) persistedVerificationReceipt(completion) else null,
             )
         } catch (error: BackupSourceUnavailableException) {
             Log.w(TAG, "Backup source unavailable id=${id.take(8)}", error)
@@ -394,7 +405,7 @@ internal class LanBackupWorker(
         recordId: Long,
         contentSha256: String,
         verificationVersion: Int,
-        verificationReceipt: String,
+        verificationReceipt: JSONObject?,
     ): Result {
         val current = store.updateJob(job.getString("id"), generation) { value ->
             value.put("state", "completed")
@@ -403,7 +414,10 @@ internal class LanBackupWorker(
                 .put("contentSha256", contentSha256)
                 .put("remoteRecordId", recordId)
                 .put("verificationVersion", verificationVersion)
-                .put("verificationReceipt", verificationReceipt.takeIf { verificationVersion > 0 } ?: JSONObject.NULL)
+                .put(
+                    "verificationReceipt",
+                    verificationReceipt?.takeIf { verificationVersion > 0 } ?: JSONObject.NULL,
+                )
                 .put("lastAttestedAt", if (verificationVersion > 0) java.time.Instant.now().toString() else JSONObject.NULL)
                 .put("errorMessage", JSONObject.NULL)
                 .put("failureKind", JSONObject.NULL)

@@ -66,6 +66,41 @@ class LanBackupCompletionContractTest {
     }
 
     @Test
+    fun verifiedReceiptPayloadKeepsAllFieldsRequiredForLaterReverification() {
+        val response = JSONObject()
+            .put("authVersion", 3)
+            .put("verifiedAtUnixSeconds", 1_777_000_000L)
+            .put("hostNodeId", "host-1")
+            .put("sourceDeviceId", "device-1")
+            .put("sourceSessionId", "session-1")
+            .put("fileSha256", "a".repeat(64))
+            .put("fileSizeBytes", 123L)
+            .put("recordId", 42L)
+            .put("receiptSignature", "b".repeat(64))
+            .put("untrustedExtra", "not-persisted")
+
+        val persisted = persistedVerificationReceipt(response)
+
+        assertEquals(9, persisted.length())
+        assertEquals(response.getInt("authVersion"), persisted.getInt("authVersion"))
+        assertEquals(
+            response.getLong("verifiedAtUnixSeconds"),
+            persisted.getLong("verifiedAtUnixSeconds"),
+        )
+        assertEquals(response.getString("hostNodeId"), persisted.getString("hostNodeId"))
+        assertEquals(response.getString("sourceDeviceId"), persisted.getString("sourceDeviceId"))
+        assertEquals(response.getString("sourceSessionId"), persisted.getString("sourceSessionId"))
+        assertEquals(response.getString("fileSha256"), persisted.getString("fileSha256"))
+        assertEquals(response.getLong("fileSizeBytes"), persisted.getLong("fileSizeBytes"))
+        assertEquals(response.getLong("recordId"), persisted.getLong("recordId"))
+        assertEquals(
+            response.getString("receiptSignature"),
+            persisted.getString("receiptSignature"),
+        )
+        assertFalse(persisted.has("untrustedExtra"))
+    }
+
+    @Test
     fun uploadedVideoCodecAcceptsDocumentedValuesAndNormalizesAliases() {
         assertEquals("h264", normalizeUploadedVideoCodec("AVC"))
         assertEquals("h265", normalizeUploadedVideoCodec("hevc"))

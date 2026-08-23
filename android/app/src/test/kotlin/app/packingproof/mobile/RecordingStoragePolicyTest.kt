@@ -28,9 +28,23 @@ class RecordingStoragePolicyTest {
             .copy(localDeletedAt = "2026-07-21T00:00:00Z")
         val legacyUnsigned = verified("legacy", "2026-06-05T00:00:00Z")
             .copy(verificationVersion = 0)
+        val missingReceipt = verified("missing-receipt", "2026-06-06T00:00:00Z")
+            .copy(verificationReceipt = null)
+        val multipleSessions = verified("multiple-sessions", "2026-06-07T00:00:00Z")
+            .copy(sessionIds = listOf("one", "two"))
 
         val candidates = RecordingStoragePolicy.verifiedCandidates(
-            listOf(recent, unbacked, uploading, old, unverified, deleted, legacyUnsigned),
+            listOf(
+                recent,
+                unbacked,
+                uploading,
+                old,
+                unverified,
+                deleted,
+                legacyUnsigned,
+                missingReceipt,
+                multipleSessions,
+            ),
         )
 
         assertEquals(listOf("old", "recent"), candidates.map { it.id })
@@ -38,11 +52,29 @@ class RecordingStoragePolicyTest {
 
     private fun verified(id: String, createdAt: String) = RecordingStorageCandidate(
         id = id,
+        generation = "generation-$id",
+        filePath = "/data/user/0/app.packingproof.mobile/$id.mp4",
+        destinationComputerId = "host-1",
         state = "completed",
         fileCreatedAt = createdAt,
         backupCompletedAt = "2026-07-22T00:00:00Z",
         contentSha256 = "a".repeat(64),
         verificationVersion = BackupRequestAuthentication.VERSION,
+        verificationReceipt = RecordingStorageReceipt(
+            authVersion = BackupRequestAuthentication.VERSION,
+            verifiedAtUnixSeconds = 1L,
+            hostNodeId = "host-1",
+            sourceDeviceId = "device-1",
+            sourceSessionId = "session-$id",
+            fileSha256 = "a".repeat(64),
+            fileSizeBytes = 1024L,
+            recordId = 1L,
+            receiptSignature = "b".repeat(64),
+        ),
+        remoteRecordId = 1L,
+        sessionIds = listOf("session-$id"),
+        totalBytes = 1024L,
+        lastModified = 1L,
         lastAttestedAt = java.time.Instant.now().toString(),
         localDeletedAt = null,
     )
