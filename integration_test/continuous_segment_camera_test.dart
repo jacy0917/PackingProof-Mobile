@@ -1,16 +1,30 @@
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:packing_proof_mobile/services/continuous_camera_service.dart';
 
+const MethodChannel _mediaTrackProbe = MethodChannel(
+  'app.packingproof.mobile.integration_test/media_track_probe',
+);
+
+Future<List<Map<Object?, Object?>>> _inspectMediaTracks(File file) async {
+  final List<Object?> tracks =
+      await _mediaTrackProbe.invokeListMethod<Object?>(
+        'inspect',
+        <String, Object?>{'path': file.path},
+      ) ??
+      <Object?>[];
+  return tracks.cast<Map<Object?, Object?>>();
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('原生录像分片与关闭声音体积对比', (WidgetTester tester) async {
+  testWidgets('原生录像分片与音轨开关', (WidgetTester tester) async {
     if (!Platform.isAndroid) {
       return;
     }
@@ -130,13 +144,41 @@ void main() {
       NativeWatermarkDisposition.completed,
     );
 
-    final int withAudioBytes = await withAudio.length();
-    final int withoutAudioBytes = await withoutAudio.length();
-    debugPrint('音频开视频大小: $withAudioBytes bytes');
-    debugPrint('音频关视频大小: $withoutAudioBytes bytes');
-    debugPrint('差值: ${withAudioBytes - withoutAudioBytes} bytes');
-    expect(withAudioBytes, greaterThan(100000));
-    expect(withoutAudioBytes, greaterThan(100000));
-    expect(withoutAudioBytes, lessThan(withAudioBytes));
+    expect(await withAudio.length(), greaterThan(100000));
+    expect(await withoutAudio.length(), greaterThan(100000));
+    final List<Map<Object?, Object?>> withAudioTracks =
+        await _inspectMediaTracks(withAudio);
+    final List<Map<Object?, Object?>> silentTracks = await _inspectMediaTracks(
+      withoutAudio,
+    );
+    final List<Map<Object?, Object?>> audioTracks = withAudioTracks.where((
+      Map<Object?, Object?> track,
+    ) {
+      return (track['mime'] as String?)?.startsWith('audio/') == true;
+    }).toList();
+    expect(
+      withAudioTracks.any(
+        (Map<Object?, Object?> track) =>
+            (track['mime'] as String?)?.startsWith('video/') == true,
+      ),
+      isTrue,
+    );
+    expect(audioTracks, hasLength(1));
+    expect(audioTracks.single['durationUs'], greaterThan(0));
+    expect(audioTracks.single['sampleCount'], greaterThan(0));
+    expect(
+      silentTracks.any(
+        (Map<Object?, Object?> track) =>
+            (track['mime'] as String?)?.startsWith('video/') == true,
+      ),
+      isTrue,
+    );
+    expect(
+      silentTracks.where(
+        (Map<Object?, Object?> track) =>
+            (track['mime'] as String?)?.startsWith('audio/') == true,
+      ),
+      isEmpty,
+    );
   });
 }

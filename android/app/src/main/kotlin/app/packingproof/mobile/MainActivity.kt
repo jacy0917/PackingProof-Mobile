@@ -16,6 +16,7 @@ class MainActivity : FlutterActivity() {
     private var recordingThumbnailPlugin: RecordingThumbnailPlugin? = null
     private var videoWatermarkPlugin: VideoWatermarkPlugin? = null
     private var orderInfoReceiverPlugin: OrderInfoReceiverPlugin? = null
+    private var integrationMediaTrackProbe: IntegrationMediaTrackProbe? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,6 +47,12 @@ class MainActivity : FlutterActivity() {
             this,
             flutterEngine.dartExecutor.binaryMessenger,
         )
+        if (IntegrationTestBridgePolicy.isAllowed(applicationContext.packageName)) {
+            integrationMediaTrackProbe = IntegrationMediaTrackProbe(
+                applicationContext,
+                flutterEngine.dartExecutor.binaryMessenger,
+            )
+        }
         maxVolumeController = MaxVolumeController(this)
         systemVideoPlayerPlugin = SystemVideoPlayerPlugin(
             this,
@@ -120,6 +127,8 @@ class MainActivity : FlutterActivity() {
         videoWatermarkPlugin = null
         orderInfoReceiverPlugin?.dispose()
         orderInfoReceiverPlugin = null
+        integrationMediaTrackProbe?.dispose()
+        integrationMediaTrackProbe = null
         super.onDestroy()
     }
 
