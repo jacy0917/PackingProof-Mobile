@@ -258,6 +258,9 @@ class CameraDiagnosticsSnapshot {
   String? get startFailureDetail => camera['startFailureDetail'] as String?;
   String? get recordingFallbackMode =>
       camera['recordingFallbackMode'] as String?;
+  String? get surfacePipeline => camera['surfacePipeline'] as String?;
+  String? get surfaceFallbackReason =>
+      camera['surfaceFallbackReason'] as String?;
   bool get preferEncoderAnalysisRecording =>
       camera['preferEncoderAnalysisRecording'] == true;
   bool get recordAudio => camera['recordAudio'] == true;

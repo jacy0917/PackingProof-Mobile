@@ -281,6 +281,8 @@ void main() {
               'startFailureStage': null,
               'startFailureDetail': null,
               'recordingFallbackMode': 'encoder_analysis',
+              'surfacePipeline': 'gl_compositor',
+              'surfaceFallbackReason': null,
               'preferEncoderAnalysisRecording': true,
               'recordAudio': false,
               'probeResults': <Object?>[
@@ -329,6 +331,8 @@ void main() {
     expect(snapshot.probeResults, hasLength(1));
     expect(snapshot.probeResults.single['name'], 'preview_only');
     expect(snapshot.recordingFallbackMode, 'encoder_analysis');
+    expect(snapshot.surfacePipeline, 'gl_compositor');
+    expect(snapshot.surfaceFallbackReason, isNull);
     expect(snapshot.preferEncoderAnalysisRecording, isTrue);
     expect(snapshot.recordAudio, isFalse);
     expect(snapshot.probeInProgress, isFalse);

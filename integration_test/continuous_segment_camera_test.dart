@@ -74,12 +74,24 @@ void main() {
     expect(split.completedPath, first.path);
     expect(split.nextPath, second.path);
     expect(split.boundaryAt.isAfter(started.startedAt), isTrue);
+    expect(
+      split.watermarkDisposition,
+      NativeWatermarkDisposition.completed,
+      reason: '第一段必须由实时合成管线确认至少写入过水印帧且全程未降级',
+    );
     await Future<void>.delayed(const Duration(seconds: 4));
 
     final CameraDiagnosticsSnapshot beforeStop = (await camera
         .getDiagnostics())!;
+    expect(beforeStop.surfacePipeline, 'gl_compositor');
+    expect(beforeStop.surfaceFallbackReason, isNull);
     final NativeRecordingStop stopped = await camera.stopWork();
     expect(stopped.path, second.path);
+    expect(
+      stopped.watermarkDisposition,
+      NativeWatermarkDisposition.completed,
+      reason: '第二段必须由实时合成管线确认至少写入过水印帧且全程未降级',
+    );
     expect(await first.length(), greaterThan(100000));
     expect(await second.length(), greaterThan(100000));
     // 停止后预览帧必须继续前进；此步可捕获“按结束后仍卡住”。
@@ -99,7 +111,11 @@ void main() {
     );
     expect(audioStart.path, withAudio.path);
     await Future<void>.delayed(const Duration(seconds: 5));
-    await camera.stopWork();
+    final NativeRecordingStop audioStopped = await camera.stopWork();
+    expect(
+      audioStopped.watermarkDisposition,
+      NativeWatermarkDisposition.completed,
+    );
 
     final NativeRecordingStart silentStart = await camera.startWork(
       withoutAudio.path,
@@ -108,7 +124,11 @@ void main() {
     );
     expect(silentStart.path, withoutAudio.path);
     await Future<void>.delayed(const Duration(seconds: 5));
-    await camera.stopWork();
+    final NativeRecordingStop silentStopped = await camera.stopWork();
+    expect(
+      silentStopped.watermarkDisposition,
+      NativeWatermarkDisposition.completed,
+    );
 
     final int withAudioBytes = await withAudio.length();
     final int withoutAudioBytes = await withoutAudio.length();
