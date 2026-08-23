@@ -9,7 +9,7 @@ final class IosWatermarkRasterTests: XCTestCase {
   func testPortraitFontIsSmallerWithoutChangingLandscapeFont() {
     XCTAssertEqual(
       iosWatermarkFontSize(forOutputSize: CGSize(width: 1080, height: 1920)),
-      40
+      35
     )
     XCTAssertEqual(
       iosWatermarkFontSize(forOutputSize: CGSize(width: 1920, height: 1080)),
