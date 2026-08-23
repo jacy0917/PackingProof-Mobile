@@ -39,6 +39,20 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 
+internal const val CONTINUOUS_CAMERA_PROBE_TIMEOUT_MS = 2_500L
+internal const val CONTINUOUS_CAMERA_CAPABILITY_PROBE_SCHEMA_VERSION = 1
+internal const val CONTINUOUS_CAMERA_PIPELINE_VERSION = 2
+internal val CONTINUOUS_CAMERA_PROBE_TRIGGER_STAGES = setOf(
+    "camera_open", "camera_error", "camera_disconnected", "camera_disabled",
+    "session_config", "session_create", "capture_request",
+)
+
+/** 进程内共享的初始化组合探针结果，避免重试时重复探测。 */
+internal object ContinuousCameraInitProbeCache {
+    @Volatile var results: List<Map<String, Any?>>? = null
+    @Volatile var inProgress = false
+}
+
 /**
  * Keeps one Camera2 session and one hardware video encoder alive while work is active.
  * Barcode boundaries only rotate the MP4 muxer, so preview and camera capture
@@ -49,7 +63,7 @@ class ContinuousSegmentCamera(
     private val textures: TextureRegistry,
     private val preferredLensFacing: Int = CameraCharacteristics.LENS_FACING_BACK,
     private val preferredCameraId: String? = null,
-    private val emit: (String, Any?) -> Unit,
+    internal val emit: (String, Any?) -> Unit,
 ) {
     companion object {
         private const val ANALYSIS_INTERVAL_MS = 250L
@@ -61,35 +75,18 @@ class ContinuousSegmentCamera(
         private const val MUX_WRITE_STALL_THRESHOLD_MS = 100L
         private const val CAMERA_DISABLED_MESSAGE =
             "摄像头被系统或设备策略禁用，请检查摄像头访问开关"
-        private const val PROBE_TIMEOUT_MS = 2_500L
         private const val START_STALL_FALLBACK_THRESHOLD_MS = 2_500L
-        private const val CAPABILITY_PROBE_SCHEMA_VERSION = 1
-        private const val CAMERA_PIPELINE_VERSION = 2
-        private val PROBE_TRIGGER_STAGES = setOf(
-            "camera_open",
-            "camera_error",
-            "camera_disconnected",
-            "camera_disabled",
-            "session_config",
-            "session_create",
-            "capture_request",
-        )
-
-        /** 进程内共享的初始化组合探针结果，避免重试时重复探测。 */
-        private object InitProbeCache {
-            @Volatile var results: List<Map<String, Any?>>? = null
-            @Volatile var inProgress = false
-        }
     }
 
     private val mainHandler = Handler(activity.mainLooper)
-    private val cameraManager = activity.getSystemService(CameraManager::class.java)
+    internal val cameraManager = activity.getSystemService(CameraManager::class.java)
+    private val backCameraCatalog = BackCameraCatalog(cameraManager)
     private val captureRequestTargetPolicy = CaptureRequestTargetPolicy()
     private var recordingFpsRangePolicy =
         RecordingFpsRangePolicy(RecordingSpecPolicy.HD.fps)
     private val stallRecoveryPolicy = PreviewStallRecoveryPolicy()
     private var recordingSpec = RecordingSpecPolicy.HD
-    private var recordingSpecName = RecordingSpecPolicy.DEFAULT_SPEC_NAME
+    internal var recordingSpecName = RecordingSpecPolicy.DEFAULT_SPEC_NAME
     private var recordingOrientationName = "portrait"
     @Volatile private var captureStartedCount = 0L
     @Volatile private var lastCaptureStartedAtMs = 0L
@@ -106,25 +103,25 @@ class ContinuousSegmentCamera(
     )
 
     private var cameraThread: HandlerThread? = null
-    private var cameraHandler: Handler? = null
+    internal var cameraHandler: Handler? = null
     private var muxThread: HandlerThread? = null
-    private var muxHandler: Handler? = null
+    internal var muxHandler: Handler? = null
 
-    private var textureEntry: TextureRegistry.SurfaceTextureEntry? = null
-    private var previewSurface: Surface? = null
+    internal var textureEntry: TextureRegistry.SurfaceTextureEntry? = null
+    internal var previewSurface: Surface? = null
     private var cameraGlCompositor: CameraGlCompositor? = null
     private var compositorInputSurface: Surface? = null
-    @Volatile private var cameraSurfacePipeline = CameraSurfacePipeline.GL_COMPOSITOR
+    @Volatile internal var cameraSurfacePipeline = CameraSurfacePipeline.GL_COMPOSITOR
     @Volatile private var cameraSurfaceFallbackReason: String? = null
     @Volatile private var glFailureStage: String? = null
     @Volatile private var glFailureOutput: String? = null
     @Volatile private var glFailureApi: String? = null
     @Volatile private var glFailureErrorCode: String? = null
     @Volatile private var glFailureType: String? = null
-    private var cameraDevice: CameraDevice? = null
-    @Volatile private var selectedCameraId: String? = null
-    @Volatile private var selectedCameraCharacteristics: CameraCharacteristics? = null
-    private var captureSession: CameraCaptureSession? = null
+    internal var cameraDevice: CameraDevice? = null
+    @Volatile internal var selectedCameraId: String? = null
+    @Volatile internal var selectedCameraCharacteristics: CameraCharacteristics? = null
+    internal var captureSession: CameraCaptureSession? = null
     private var analysisReader: ImageReader? = null
     @Volatile private var sensorOrientation = 90
     @Volatile private var selectedLensFacing = CameraCharacteristics.LENS_FACING_BACK
@@ -137,64 +134,64 @@ class ContinuousSegmentCamera(
     @Volatile private var lastSwitchDurationMs = 0L
     @Volatile private var lastSwitchRestartedEncoder = false
     private var pendingSwitchStartedAtMs = 0L
-    @Volatile private var videoSize = Size(
+    @Volatile internal var videoSize = Size(
         RecordingSpecPolicy.HD.videoWidth,
         RecordingSpecPolicy.HD.videoHeight,
     )
-    @Volatile private var analysisSize = Size(1280, 720)
+    @Volatile internal var analysisSize = Size(1280, 720)
     @Volatile private var sessionConfigStage: String? = null
     @Volatile private var sessionConfigAttempts = 0
-    private var streamConfigPolicy = StreamConfigPolicy(
+    internal var streamConfigPolicy = StreamConfigPolicy(
         RecordingSpecPolicy.HD.videoWidth,
         RecordingSpecPolicy.HD.videoHeight,
     )
-    private var videoCandidates = emptyList<Size>()
-    private var analysisCandidates = emptyList<Size>()
+    internal var videoCandidates = emptyList<Size>()
+    internal var analysisCandidates = emptyList<Size>()
     private var workingStreamConfig: StreamConfig? = null
-    @Volatile private var initFailureStage: String? = null
+    @Volatile internal var initFailureStage: String? = null
     @Volatile private var initFailureDetail: String? = null
     @Volatile private var startFailureStage: String? = null
     @Volatile private var startFailureDetail: String? = null
-    @Volatile private var sessionHasPreview = false
-    @Volatile private var sessionHasEncoder = false
-    @Volatile private var sessionHasAnalysis = false
+    @Volatile internal var sessionHasPreview = false
+    @Volatile internal var sessionHasEncoder = false
+    @Volatile internal var sessionHasAnalysis = false
     @Volatile private var startFallbackTried = false
     @Volatile private var recordingFallbackMode: String? = null
     @Volatile private var capabilityMode = CameraCapabilityMode.UNVERIFIED
     @Volatile private var sessionFallbackEncoderAnalysis = false
-    @Volatile private var capabilityProbeActive = false
-    private var probeRestoreCallback: ((Throwable?) -> Unit)? = null
-    @Volatile private var probeResults: List<Map<String, Any?>> = emptyList()
-    @Volatile private var probeInProgress = false
-    @Volatile private var probeGeneration = 0
-    private val probeReaders = mutableListOf<ImageReader>()
+    @Volatile internal var capabilityProbeActive = false
+    internal var probeRestoreCallback: ((Throwable?) -> Unit)? = null
+    @Volatile internal var probeResults: List<Map<String, Any?>> = emptyList()
+    @Volatile internal var probeInProgress = false
+    @Volatile internal var probeGeneration = 0
+    internal val probeReaders = mutableListOf<ImageReader>()
     private var supportedVideoSizes: List<String> = emptyList()
     private var supportedYuvSizes: List<String> = emptyList()
     private var supportedPreviewSizes: List<String> = emptyList()
     private var fpsRanges: List<String> = emptyList()
-    @Volatile private var hardwareLevel: Int? = null
+    @Volatile internal var hardwareLevel: Int? = null
     private var capabilities: List<String> = emptyList()
     private var physicalCameraIds: List<String> = emptyList()
-    @Volatile private var initialized = false
-    private var disposed = false
+    @Volatile internal var initialized = false
+    internal var disposed = false
     private var initializeResult: MethodChannel.Result? = null
     private var previewResumeResult: MethodChannel.Result? = null
     private var openCameraAttempts = 0
     private var audioOutputFormat: MediaFormat? = null
 
-    @Volatile private var recordingRequested = false
-    @Volatile private var recordingActive = false
-    private var startResult: MethodChannel.Result? = null
-    private var stopResult: MethodChannel.Result? = null
-    private var splitResult: MethodChannel.Result? = null
+    @Volatile internal var recordingRequested = false
+    @Volatile internal var recordingActive = false
+    internal var startResult: MethodChannel.Result? = null
+    internal var stopResult: MethodChannel.Result? = null
+    internal var splitResult: MethodChannel.Result? = null
     private var pendingStartPath: String? = null
     private var pendingSplitPath: String? = null
     private var pendingNextTrackingNumber: String? = null
     private var activeWatermarkTrackingNumber: String = ""
     @Volatile private var pendingWatermarkTransitionPtsUs: Long? = null
     private val liveWatermarkSegmentState = LiveWatermarkSegmentState()
-    private val encodedWatermarkFrameTracker = EncodedWatermarkFrameTracker()
-    private val recordingVideoEncoder = RecordingVideoEncoder(
+    internal val encodedWatermarkFrameTracker = EncodedWatermarkFrameTracker()
+    internal val recordingVideoEncoder = RecordingVideoEncoder(
         recordingSpec = { recordingSpec },
         onSample = ::handleVideoSample,
         onSampleFailure = { error ->
@@ -302,7 +299,7 @@ class ContinuousSegmentCamera(
         initFailureDetail = null
         startFailureStage = null
         startFailureDetail = null
-        probeResults = InitProbeCache.results ?: emptyList()
+        probeResults = ContinuousCameraInitProbeCache.results ?: emptyList()
         probeInProgress = false
         sessionHasPreview = false
         sessionHasEncoder = false
@@ -677,84 +674,12 @@ class ContinuousSegmentCamera(
         if (cached != null) {
             return cached
         }
-        return buildBackLenses(defaultBackCameraId())
+        return backCameraCatalog.build(backCameraCatalog.defaultId())
             .map(CameraDiagnosticsSnapshotMapper::backLens)
             .also { cachedBackLenses = it }
     }
 
-    private fun buildBackLenses(mainCameraId: String? = null): List<BackLensInfo> = runCatching {
-        val logicalBack = cameraManager.cameraIdList.filter(::isBackCamera)
-        val entries = ArrayList<BackLensEntry>()
-        for (id in logicalBack) {
-            addBackLensEntry(entries, id)
-        }
-        for (id in logicalBack) {
-            for (physicalId in cameraManager.getCameraCharacteristics(id).physicalCameraIds) {
-                if (isBackCamera(physicalId)) {
-                    addBackLensEntry(entries, physicalId)
-                }
-            }
-        }
-        val wideZoomRatio = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            logicalBack.firstNotNullOfOrNull { id ->
-                cameraManager.getCameraCharacteristics(id)
-                    .get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-                    ?.takeIf { it.lower < 1f }
-                    ?.lower
-                    ?.toDouble()
-            }
-        } else {
-            null
-        }
-        return BackLensCatalog.build(
-            entries,
-            mainCameraId = mainCameraId ?: logicalBack.firstOrNull(),
-            wideZoomRatio = wideZoomRatio,
-        )
-    }.getOrDefault(emptyList())
-
-    private fun addBackLensEntry(
-        entries: MutableList<BackLensEntry>,
-        cameraId: String,
-    ) {
-        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-        val focalLength = characteristics
-            .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-            ?.firstOrNull() ?: return
-        val sensorWidth = characteristics
-            .get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
-            ?.width ?: return
-        entries.add(
-            BackLensEntry(
-                cameraId = cameraId,
-                focalLength = focalLength,
-                sensorWidthMm = sensorWidth,
-            ),
-        )
-    }
-
-    private fun isBackCamera(cameraId: String): Boolean = runCatching {
-        cameraManager.getCameraCharacteristics(cameraId)
-            .get(CameraCharacteristics.LENS_FACING) ==
-        CameraCharacteristics.LENS_FACING_BACK
-    }.getOrDefault(false)
-
-    private fun allBackCameraIds(): Set<String> = runCatching {
-        val logicalBack = cameraManager.cameraIdList.filter(::isBackCamera)
-        val ids = logicalBack.toMutableSet()
-        for (id in logicalBack) {
-            for (physicalId in cameraManager.getCameraCharacteristics(id).physicalCameraIds) {
-                if (isBackCamera(physicalId)) {
-                    ids.add(physicalId)
-                }
-            }
-        }
-        ids
-    }.getOrDefault(emptySet())
-
-    private fun defaultBackCameraId(): String? = runCatching {
-        cameraManager.cameraIdList.firstOrNull(::isBackCamera)
-    }.getOrDefault(null)
+    private fun allBackCameraIds(): Set<String> = backCameraCatalog.allIds()
 
     fun dispose(onDisposed: (() -> Unit)? = null) {
         if (disposed) {
@@ -762,7 +687,7 @@ class ContinuousSegmentCamera(
             return
         }
         disposed = true
-        InitProbeCache.inProgress = false
+        ContinuousCameraInitProbeCache.inProgress = false
         probeGeneration++
         probeInProgress = false
         initializeResult?.let { replyError(it, "disposed", "摄像头初始化已取消") }
@@ -845,7 +770,7 @@ class ContinuousSegmentCamera(
     }
 
     @SuppressLint("MissingPermission")
-    private fun openCamera() {
+    internal fun openCamera() {
         try {
             val cameraId = selectedCameraId
                 ?: throw IllegalStateException("没有检测到可用摄像头")
@@ -926,7 +851,7 @@ class ContinuousSegmentCamera(
         }
     }
 
-    private fun closeCameraSafely(camera: CameraDevice) {
+    internal fun closeCameraSafely(camera: CameraDevice) {
         cameraDevice = null
         try {
             camera.close()
@@ -969,7 +894,7 @@ class ContinuousSegmentCamera(
             ?: throw IllegalStateException("无法读取摄像头输出能力")
         selectedCameraId = cameraId
         selectedCameraCharacteristics = characteristics
-        val backLenses = buildBackLenses(defaultBackCameraId())
+        val backLenses = backCameraCatalog.build(backCameraCatalog.defaultId())
         selectedZoomRatio = backLenses.firstOrNull { it.cameraId == cameraId }
             ?.zoomRatio
             ?: 1.0
@@ -1127,7 +1052,7 @@ class ContinuousSegmentCamera(
         }
     }
 
-    private fun applyAutomaticCameraControls(
+    internal fun applyAutomaticCameraControls(
         request: CaptureRequest.Builder,
         characteristics: CameraCharacteristics,
     ) {
@@ -1451,7 +1376,7 @@ class ContinuousSegmentCamera(
     }
 
     @Synchronized
-    private fun releaseCameraGlCompositor() {
+    internal fun releaseCameraGlCompositor() {
         cameraGlCompositor?.release()
         cameraGlCompositor = null
         compositorInputSurface = null
@@ -2311,7 +2236,7 @@ class ContinuousSegmentCamera(
         else -> 0
     }
 
-    private fun cameraGlOutputGeometry(size: Size): CameraGlOutputGeometry =
+    internal fun cameraGlOutputGeometry(size: Size): CameraGlOutputGeometry =
         CameraGlOutputGeometryPolicy.create(size.width, size.height, sensorOrientation)
 
     private fun recordMuxWrite(startedAtMs: Long) {
@@ -2424,234 +2349,6 @@ class ContinuousSegmentCamera(
         }
     }
 
-    private fun runInitProbesIfNeeded() {
-        if (disposed) return
-        val stage = initFailureStage ?: return
-        if (stage !in PROBE_TRIGGER_STAGES) return
-        if (InitProbeCache.results != null) return
-        if (InitProbeCache.inProgress) {
-            probeInProgress = true
-            return
-        }
-        val handler = cameraHandler ?: return
-        handler.post {
-            if (disposed || InitProbeCache.results != null) return@post
-            val configs = CameraProbePlanPolicy.initializationConfigs(
-                videoCandidates.map { StreamSize(it.width, it.height) },
-                analysisCandidates.map { StreamSize(it.width, it.height) },
-            )
-            if (configs.isEmpty()) return@post
-            InitProbeCache.inProgress = true
-            probeInProgress = true
-            probeGeneration++
-            val generation = probeGeneration
-            runSingleProbe(generation, configs, 0, mutableListOf())
-        }
-    }
-
-    private fun runSingleProbe(
-        generation: Int,
-        configs: List<ProbeConfig>,
-        index: Int,
-        results: MutableList<Map<String, Any?>>,
-    ) {
-        val handler = cameraHandler
-        if (handler == null || disposed || generation != probeGeneration) {
-            finishProbes(generation, results)
-            return
-        }
-        if (index >= configs.size) {
-            finishProbes(generation, results)
-            return
-        }
-        val config = configs[index]
-        runOneProbe(generation, config) { result ->
-            results += result
-            handler.post { runSingleProbe(generation, configs, index + 1, results) }
-        }
-    }
-
-    private fun runOneProbe(
-        generation: Int,
-        config: ProbeConfig,
-        onDone: (Map<String, Any?>) -> Unit,
-    ) {
-        val handler = cameraHandler
-        val cameraId = selectedCameraId
-        val entry = textureEntry
-        val label = when {
-            config.includeEncoder -> "preview+encoder+analysis"
-            config.analysisSize != null -> "preview+analysis"
-            else -> "preview"
-        }
-        if (handler == null || cameraId == null || entry == null) {
-            onDone(mapOf("name" to config.name, "surfaces" to label, "result" to "preview_unavailable"))
-            return
-        }
-        val surfaces = buildList {
-            val texture = entry.surfaceTexture()
-            texture.setDefaultBufferSize(config.videoSize.width, config.videoSize.height)
-            val preview = previewSurface ?: Surface(texture).also { previewSurface = it }
-            add(preview)
-            config.analysisSize?.let { size ->
-                ImageReader.newInstance(
-                    size.width,
-                    size.height,
-                    ImageFormat.YUV_420_888,
-                    2,
-                ).also { reader ->
-                    probeReaders += reader
-                    add(reader.surface)
-                }
-            }
-            if (config.includeEncoder) recordingVideoEncoder.inputSurface?.let(::add)
-        }
-        val expected = 1 +
-            (if (config.analysisSize != null) 1 else 0) +
-            (if (config.includeEncoder) 1 else 0)
-        if (surfaces.size < expected) {
-            closeProbeCameraAndReaders()
-            onDone(mapOf("name" to config.name, "surfaces" to label, "result" to "surface_missing"))
-            return
-        }
-        var finished = false
-        val timeout = Runnable {
-            if (!finished) {
-                finished = true
-                closeProbeCameraAndReaders()
-                onDone(mapOf("name" to config.name, "surfaces" to label, "result" to "timeout"))
-            }
-        }
-        fun finish(result: Map<String, Any?>) {
-            if (finished) return
-            finished = true
-            handler.removeCallbacks(timeout)
-            closeProbeCameraAndReaders()
-            onDone(result)
-        }
-        handler.postDelayed(timeout, PROBE_TIMEOUT_MS)
-        try {
-            cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
-                override fun onOpened(camera: CameraDevice) {
-                    if (generation != probeGeneration || disposed) {
-                        finish(mapOf("name" to config.name, "surfaces" to label, "result" to "cancelled"))
-                        return
-                    }
-                    cameraDevice = camera
-                    try {
-                        camera.createCaptureSession(
-                            surfaces,
-                            object : CameraCaptureSession.StateCallback() {
-                                override fun onConfigured(session: CameraCaptureSession) {
-                                    try {
-                                        session.close()
-                                    } catch (_: Throwable) {
-                                    }
-                                    finish(
-                                        mapOf(
-                                            "name" to config.name,
-                                            "surfaces" to label,
-                                            "result" to "configured",
-                                        ),
-                                    )
-                                }
-
-                                override fun onConfigureFailed(session: CameraCaptureSession) {
-                                    try {
-                                        session.close()
-                                    } catch (_: Throwable) {
-                                    }
-                                    finish(
-                                        mapOf(
-                                            "name" to config.name,
-                                            "surfaces" to label,
-                                            "result" to "configure_failed",
-                                        ),
-                                    )
-                                }
-                            },
-                            handler,
-                        )
-                    } catch (error: Throwable) {
-                        finish(
-                            mapOf(
-                                "name" to config.name,
-                                "surfaces" to label,
-                                "result" to "create_failed",
-                                "detail" to (error.message ?: ""),
-                            ),
-                        )
-                    }
-                }
-
-                override fun onDisconnected(camera: CameraDevice) {
-                    closeCameraSafely(camera)
-                    finish(
-                        mapOf(
-                            "name" to config.name,
-                            "surfaces" to label,
-                            "result" to "open_disconnected",
-                        ),
-                    )
-                }
-
-                override fun onError(camera: CameraDevice, error: Int) {
-                    closeCameraSafely(camera)
-                    finish(
-                        mapOf(
-                            "name" to config.name,
-                            "surfaces" to label,
-                            "result" to "open_failed",
-                            "detail" to error.toString(),
-                        ),
-                    )
-                }
-            }, handler)
-        } catch (error: Throwable) {
-            finish(
-                mapOf(
-                    "name" to config.name,
-                    "surfaces" to label,
-                    "result" to "open_failed",
-                    "detail" to (error.message ?: ""),
-                ),
-            )
-        }
-    }
-
-    private fun closeProbeCameraAndReaders() {
-        try {
-            cameraDevice?.close()
-        } catch (_: Throwable) {
-        }
-        cameraDevice = null
-        probeReaders.forEach { reader ->
-            try {
-                reader.close()
-            } catch (_: Throwable) {
-            }
-        }
-        probeReaders.clear()
-    }
-
-    private fun finishProbes(generation: Int, results: List<Map<String, Any?>>) {
-        InitProbeCache.inProgress = false
-        if (generation != probeGeneration) return
-        probeInProgress = false
-        if (results.isEmpty()) return
-        val snapshot = results.toList()
-        InitProbeCache.results = snapshot
-        probeResults = snapshot
-        emit(
-            "probeFinished",
-            mapOf(
-                "results" to snapshot,
-                "cameraId" to (selectedCameraId ?: ""),
-                "hardwareLevel" to (hardwareLevel ?: -1),
-            ),
-        )
-    }
-
     /**
      * 持续出帧能力探针。由 Dart 按 FULL → ENCODER_ANALYSIS → ALTERNATING
      * 顺序逐条调用，每条序列执行 idle → record → idle → record → idle，
@@ -2660,184 +2357,6 @@ class ContinuousSegmentCamera(
      * 阶段只上报“是否配置成功 + 原始计数”，通过/失败阈值与模式决策全部
      * 留在 Dart 的 CameraCapabilityPolicy，避免两端策略漂移。
      */
-    fun probeSequence(sequence: String, budgetMs: Int, result: MethodChannel.Result) {
-        val normalized = sequence.trim().lowercase()
-        if (disposed) {
-            replyError(result, "disposed", "摄像头已经关闭")
-            return
-        }
-        if (!initialized) {
-            replyError(result, "camera_not_ready", "摄像头尚未准备完成")
-            return
-        }
-        if (recordingRequested || recordingActive ||
-            startResult != null || stopResult != null || splitResult != null
-        ) {
-            replyError(result, "camera_busy", "录像进行中不能检测摄像头能力")
-            return
-        }
-        if (!CameraProbePlanPolicy.supportsCapabilitySequence(normalized)) {
-            replyError(result, "invalid_sequence", "无法识别的摄像头能力探测序列")
-            return
-        }
-        if (capabilityProbeActive) {
-            replyError(result, "probe_pending", "摄像头能力检测正在进行")
-            return
-        }
-        val mux = muxHandler
-        val cam = cameraHandler
-        if (mux == null || cam == null) {
-            replyError(result, "camera_not_ready", "摄像头尚未准备完成")
-            return
-        }
-        capabilityProbeActive = true
-        probeInProgress = true
-        probeGeneration++
-        val generation = probeGeneration
-        val deadline = SystemClock.uptimeMillis() + budgetMs.coerceIn(1_000, 30_000)
-        mux.post {
-            if (disposed || generation != probeGeneration) {
-                finishCapabilityProbe(normalized, result, "error", "cancelled", emptyList())
-                return@post
-            }
-            // 探针使用独立临时编码器：先释放长驻编码器，结束后确定性恢复，
-            // 正式 preferredMime / selectedMime / fallbackReason
-            // 均由同一确定性输入重建，与探测前一致。
-            runCatching { captureSession?.close() }
-            captureSession = null
-            sessionHasPreview = false
-            sessionHasEncoder = false
-            sessionHasAnalysis = false
-            runCatching { cameraDevice?.close() }
-            cameraDevice = null
-            releaseCameraGlCompositor()
-            encodedWatermarkFrameTracker.reset()
-            recordingVideoEncoder.release()
-            cam.post {
-                if (disposed || generation != probeGeneration) {
-                    finishCapabilityProbe(normalized, result, "error", "cancelled", emptyList())
-                    return@post
-                }
-                val environment = CameraCapabilityProbeEnvironment(
-                    handler = cam,
-                    cameraManager = cameraManager,
-                    streamConfigPolicy = streamConfigPolicy,
-                    videoCandidates = videoCandidates.map { StreamSize(it.width, it.height) },
-                    analysisCandidates = analysisCandidates.map {
-                        StreamSize(it.width, it.height)
-                    },
-                    videoSize = StreamSize(videoSize.width, videoSize.height),
-                    analysisSize = StreamSize(analysisSize.width, analysisSize.height),
-                    selectedVideoMime = recordingVideoEncoder.selectedMime,
-                    surfacePipeline = cameraSurfacePipeline,
-                    cameraId = { selectedCameraId },
-                    cameraCharacteristics = { selectedCameraCharacteristics },
-                    surfaceTexture = { textureEntry?.surfaceTexture() },
-                    previewSurface = { previewSurface },
-                    updatePreviewSurface = { previewSurface = it },
-                    cameraDevice = { cameraDevice },
-                    updateCameraDevice = { cameraDevice = it },
-                    isDisposed = { disposed },
-                    createEncoderFormat = recordingVideoEncoder::createFormat,
-                    applyAutomaticCameraControls = ::applyAutomaticCameraControls,
-                )
-                CameraCapabilityProbeRunner(
-                    AndroidCameraCapabilityProbePhaseExecutor(environment),
-                ).run(
-                    sequence = normalized,
-                    deadline = deadline,
-                    isCancelled = { disposed || generation != probeGeneration },
-                ) { probeResult ->
-                    finishCapabilityProbe(
-                        normalized,
-                        result,
-                        probeResult.status,
-                        probeResult.reason,
-                        probeResult.phases,
-                    )
-                }
-            }
-        }
-    }
-
-    private fun finishCapabilityProbe(
-        sequence: String,
-        result: MethodChannel.Result,
-        status: String,
-        reason: String?,
-        phases: List<Map<String, Any?>>,
-    ) {
-        capabilityProbeActive = false
-        probeInProgress = false
-        val payload = mapOf<String, Any?>(
-            "sequence" to sequence,
-            "status" to status,
-            "probeErrorReason" to reason,
-            "phases" to phases,
-            "identity" to capabilityProbeIdentity(),
-        )
-        if (disposed) {
-            replySuccess(result, payload)
-            return
-        }
-        val mux = muxHandler
-        val cam = cameraHandler
-        if (mux == null || cam == null) {
-            replySuccess(result, payload)
-            return
-        }
-        mux.post {
-            if (!disposed) {
-                try {
-                    val output = cameraGlOutputGeometry(videoSize)
-                    recordingVideoEncoder.prepare(
-                        output.width,
-                        output.height,
-                        muxHandler,
-                    )
-                    recordingVideoEncoder.setSuspended(true)
-                } catch (error: Throwable) {
-                    notifyNativeError("摄像头能力检测后编码器恢复失败", error)
-                }
-            }
-            cam.post {
-                if (disposed) {
-                    replySuccess(result, payload)
-                    return@post
-                }
-                val output = cameraGlOutputGeometry(videoSize)
-                textureEntry?.surfaceTexture()?.setDefaultBufferSize(output.width, output.height)
-                probeRestoreCallback = { restoreError ->
-                    replySuccess(
-                        result,
-                        if (restoreError == null) {
-                            payload
-                        } else {
-                            payload + (
-                                "restoreError" to (restoreError.message ?: "摄像头会话恢复失败")
-                            )
-                        },
-                    )
-                }
-                openCamera()
-            }
-        }
-    }
-
-    private fun capabilityProbeIdentity(): Map<String, Any?> =
-        CameraDiagnosticsSnapshotMapper.capabilityProbeIdentity(
-            CameraProbeIdentityDiagnostics(
-                selectedCameraId, StreamSize(videoSize.width, videoSize.height),
-                StreamSize(analysisSize.width, analysisSize.height),
-                if (recordingVideoEncoder.selectedMime == MediaFormat.MIMETYPE_VIDEO_AVC) {
-                    "h264"
-                } else {
-                    "hevc"
-                },
-                recordingSpecName, CAPABILITY_PROBE_SCHEMA_VERSION, CAMERA_PIPELINE_VERSION,
-            ),
-        )
-
     fun getDiagnostics(result: MethodChannel.Result) {
         val snapshot = CameraDiagnosticsSnapshotMapper.snapshot(
             SystemClock.elapsedRealtime(),
@@ -2887,7 +2406,7 @@ class ContinuousSegmentCamera(
                     capabilityMode == CameraCapabilityMode.ENCODER_ANALYSIS ||
                         sessionFallbackEncoderAnalysis,
                     sessionHasPreview, sessionHasEncoder, sessionHasAnalysis,
-                    probeResults, probeInProgress, InitProbeCache.results != null, hardwareLevel,
+                    probeResults, probeInProgress, ContinuousCameraInitProbeCache.results != null, hardwareLevel,
                     capabilities, supportedYuvSizes, supportedVideoSizes, supportedPreviewSizes,
                     physicalCameraIds, cachedBackLenses ?: emptyList(), fpsRanges,
                 ),
@@ -2905,7 +2424,7 @@ class ContinuousSegmentCamera(
         result.success(snapshot)
     }
 
-    private fun notifyNativeError(message: String, error: Throwable?) {
+    internal fun notifyNativeError(message: String, error: Throwable?) {
         Log.w(CAMERA_LOG_TAG, "$message", error)
         emit("nativeError", error?.let { "$message：${it.message}" } ?: message)
     }
@@ -2952,11 +2471,11 @@ class ContinuousSegmentCamera(
         StatFs(parent.path).availableBytes >= RecordingStoragePolicy.MINIMUM_BYTES
     }.getOrDefault(false)
 
-    private fun replySuccess(result: MethodChannel.Result, value: Any?) {
+    internal fun replySuccess(result: MethodChannel.Result, value: Any?) {
         mainHandler.post { result.success(value) }
     }
 
-    private fun replyError(result: MethodChannel.Result, code: String, message: String) {
+    internal fun replyError(result: MethodChannel.Result, code: String, message: String) {
         mainHandler.post { result.error(code, message, null) }
     }
 
