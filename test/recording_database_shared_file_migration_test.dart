@@ -779,11 +779,15 @@ void main() {
       ),
       <Map<String, Object?>>[
         <String, Object?>{
-          'normalized_path': source.path,
+          'normalized_path': p.posix.normalize(
+            source.path.replaceAll('\\', '/'),
+          ),
           'retained_session_id': 'concurrent-0',
         },
         <String, Object?>{
-          'normalized_path': moved.path,
+          'normalized_path': p.posix.normalize(
+            moved.path.replaceAll('\\', '/'),
+          ),
           'retained_session_id': 'concurrent-1',
         },
       ],
