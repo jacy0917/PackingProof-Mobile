@@ -46,6 +46,9 @@ class _ComputerBackupSettings extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
+    final PackingProofSemanticColors semanticColors =
+        Theme.of(context).extension<PackingProofSemanticColors>() ??
+        PackingProofTheme.semanticColors;
     final LanBackupSummary summary = snapshot.summary;
     final LanBackupJob? active =
         summary.activeJob?.state == LanBackupJobState.uploading
@@ -582,14 +585,10 @@ class _ComputerBackupSettings extends StatelessWidget {
                         minimumSize: const Size.fromHeight(46),
                         backgroundColor: snapshot.autoEnabled
                             ? null
-                            : Theme.of(context).brightness == Brightness.light
-                            ? colors.error
-                            : colors.errorContainer,
+                            : semanticColors.dangerAction,
                         foregroundColor: snapshot.autoEnabled
                             ? null
-                            : Theme.of(context).brightness == Brightness.light
-                            ? colors.onError
-                            : colors.onErrorContainer,
+                            : semanticColors.onDangerAction,
                       ),
                       child: Text(snapshot.autoEnabled ? '暂停上传' : '继续上传'),
                     ),

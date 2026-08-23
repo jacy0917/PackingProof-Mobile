@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:packing_proof_mobile/app/packing_proof_mobile_app.dart';
+import 'package:packing_proof_mobile/app/packing_proof_theme.dart';
 import 'package:packing_proof_mobile/controllers/packing_session_controller.dart';
 import 'package:packing_proof_mobile/models/recording_operation_mode.dart';
 import 'package:packing_proof_mobile/models/recording_orientation.dart';
@@ -513,7 +514,10 @@ void main() {
     );
     expect(
       stopButton.style?.backgroundColor?.resolve(<WidgetState>{}),
-      const Color(0xFFD92D20),
+      Theme.of(
+            tester.element(find.byKey(const Key('primary-work-button'))),
+          ).extension<PackingProofSemanticColors>()?.dangerAction ??
+          PackingProofTheme.semanticColors.dangerAction,
     );
   });
 

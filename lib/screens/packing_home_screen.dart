@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app/app_build_config.dart';
+import '../app/packing_proof_theme.dart';
 import '../controllers/packing_session_controller.dart';
 import '../models/barcode_marker.dart';
 import '../models/recording_operation_mode.dart';
@@ -2099,6 +2100,9 @@ class _PrimaryWorkButtonState extends State<_PrimaryWorkButton>
   @override
   Widget build(BuildContext context) {
     final PackingHomeView view = widget.view;
+    final PackingProofSemanticColors semanticColors =
+        Theme.of(context).extension<PackingProofSemanticColors>() ??
+        PackingProofTheme.semanticColors;
     return FilledButton(
       key: const Key('primary-work-button'),
       onPressed:
@@ -2109,8 +2113,8 @@ class _PrimaryWorkButtonState extends State<_PrimaryWorkButton>
           : view.onPrimaryPressed,
       style: view._isWorking
           ? FilledButton.styleFrom(
-              backgroundColor: const Color(0xFFD92D20),
-              foregroundColor: Colors.white,
+              backgroundColor: semanticColors.dangerAction,
+              foregroundColor: semanticColors.onDangerAction,
               minimumSize: const Size.fromHeight(54),
             )
           : null,

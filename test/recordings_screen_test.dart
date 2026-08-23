@@ -2065,16 +2065,18 @@ void main() {
     final FilledButton autoButton = tester.widget<FilledButton>(
       find.byKey(const Key('auto-backup-button')),
     );
-    final ColorScheme colors = Theme.of(
-      tester.element(find.byKey(const Key('auto-backup-button'))),
-    ).colorScheme;
+    final PackingProofSemanticColors semanticColors =
+        Theme.of(
+          tester.element(find.byKey(const Key('auto-backup-button'))),
+        ).extension<PackingProofSemanticColors>() ??
+        PackingProofTheme.semanticColors;
     expect(
       autoButton.style?.backgroundColor?.resolve(const <WidgetState>{}),
-      colors.error,
+      semanticColors.dangerAction,
     );
     expect(
       autoButton.style?.foregroundColor?.resolve(const <WidgetState>{}),
-      colors.onError,
+      semanticColors.onDangerAction,
     );
   });
 

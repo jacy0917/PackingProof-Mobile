@@ -1,8 +1,46 @@
 import 'package:flutter/material.dart';
 
+@immutable
+class PackingProofSemanticColors
+    extends ThemeExtension<PackingProofSemanticColors> {
+  const PackingProofSemanticColors({
+    required this.dangerAction,
+    required this.onDangerAction,
+  });
+
+  final Color dangerAction;
+  final Color onDangerAction;
+
+  @override
+  PackingProofSemanticColors copyWith({
+    Color? dangerAction,
+    Color? onDangerAction,
+  }) => PackingProofSemanticColors(
+    dangerAction: dangerAction ?? this.dangerAction,
+    onDangerAction: onDangerAction ?? this.onDangerAction,
+  );
+
+  @override
+  PackingProofSemanticColors lerp(
+    covariant PackingProofSemanticColors? other,
+    double t,
+  ) {
+    if (other == null) return this;
+    return PackingProofSemanticColors(
+      dangerAction: Color.lerp(dangerAction, other.dangerAction, t)!,
+      onDangerAction: Color.lerp(onDangerAction, other.onDangerAction, t)!,
+    );
+  }
+}
+
 abstract final class PackingProofTheme {
   static const Color forest = Color(0xFF087454);
   static const Color ink = Color(0xFF151918);
+  static const PackingProofSemanticColors semanticColors =
+      PackingProofSemanticColors(
+        dangerAction: Color(0xFFD92D20),
+        onDangerAction: Colors.white,
+      );
 
   static ThemeData light() => _build(Brightness.light);
 
@@ -54,6 +92,7 @@ abstract final class PackingProofTheme {
     );
 
     return base.copyWith(
+      extensions: const <ThemeExtension<dynamic>>[semanticColors],
       scaffoldBackgroundColor: colors.surface,
       appBarTheme: AppBarTheme(
         backgroundColor: colors.surface,

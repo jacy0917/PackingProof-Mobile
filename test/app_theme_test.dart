@@ -14,6 +14,10 @@ void main() {
     expect(PackingProofMobileApp.themeMode, ThemeMode.system);
     expect(light.colorScheme.surface, isNot(dark.colorScheme.surface));
     expect(
+      light.extension<PackingProofSemanticColors>()?.dangerAction,
+      dark.extension<PackingProofSemanticColors>()?.dangerAction,
+    );
+    expect(
       dark.colorScheme.surfaceContainer.computeLuminance(),
       lessThan(light.colorScheme.surfaceContainer.computeLuminance()),
     );
