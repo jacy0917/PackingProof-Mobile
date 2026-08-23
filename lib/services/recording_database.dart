@@ -142,6 +142,7 @@ class RecordingDatabase {
   Future<void>? _closeInFlight;
   final _AsyncMutex _sharedFileMigrationMutex = _AsyncMutex();
   Completer<void> _sharedFileMigrationCancellation = Completer<void>();
+  Completer<void> _sharedFileMigrationPause = Completer<void>();
   bool _closing = false;
   bool _watermarkRecoveryCompleted = false;
 
@@ -1370,7 +1371,13 @@ class RecordingDatabase {
       'WHERE is_deleted = 0 AND file_path = ?',
       <Object?>[filePath],
     );
-    return Sqflite.firstIntValue(exact) ?? 0;
+    final int exactReferences = Sqflite.firstIntValue(exact) ?? 0;
+    if (exactReferences > 0) return exactReferences;
+    // 旧数据库的 owner 索引尚未完整建立时，规范化等价的路径别名可能
+    // 仍引用同一物理文件。删除路径必须 fail-closed，不能为了确认引用
+    // 而在 UI isolate 扫描上万条 file_path。
+    if (!await _sharedFileMigrationCompleted(db)) return 1;
+    return 0;
   }
 
   Future<void> repairFilePaths(Map<String, String> resolvedPaths) async {
@@ -1638,6 +1645,7 @@ class RecordingDatabase {
       await Future.any<void>(<Future<void>>[
         Future<void>.delayed(sharedFileMigrationDelay),
         _sharedFileMigrationCancellation.future,
+        _sharedFileMigrationPause.future,
       ]);
     }
     return !_closing && !_sharedFileMigrationCancellation.isCompleted;
@@ -1646,17 +1654,42 @@ class RecordingDatabase {
   /// 当工作录像结束或系统转为空闲后，显式请求继续低优先迁移。
   Future<void> resumeSharedFileMigration() async {
     final Database db = await _db;
+    if (_sharedFileMigrationPause.isCompleted) {
+      _sharedFileMigrationPause = Completer<void>();
+    }
     if (!await _sharedFileMigrationCompleted(db)) {
       _startSharedFileMigrationWorker(db);
     }
   }
 
+  /// 请求当前复制在最多一个分块后退出，并有界等待迁移互斥区静止。
+  Future<void> pauseSharedFileMigration({
+    Duration maximumWait = const Duration(milliseconds: 400),
+  }) async {
+    if (!_sharedFileMigrationPause.isCompleted) {
+      _sharedFileMigrationPause.complete();
+    }
+    await Future.any<void>(<Future<void>>[
+      _sharedFileMigrationMutex.drained.catchError((Object _) {}),
+      Future<void>.delayed(maximumWait),
+    ]);
+  }
+
   /// 播放、备份或删除前可优先物化一条旧共享记录，不扫描其他录像。
   Future<bool> materializeSharedFileForSession(String sessionId) async {
-    if (_closing) return false;
+    if (_closing ||
+        _sharedFileMigrationPause.isCompleted ||
+        sharedFileMigrationAllowed?.call() == false) {
+      return false;
+    }
     final Database db = await _db;
     return _sharedFileMigrationMutex.run(() async {
-      if (_closing || !identical(_database, db)) return false;
+      if (_closing ||
+          _sharedFileMigrationPause.isCompleted ||
+          sharedFileMigrationAllowed?.call() == false ||
+          !identical(_database, db)) {
+        return false;
+      }
       final List<Map<String, Object?>> rows = await db.query(
         'recording_sessions',
         columns: <String>['id', 'started_at', ..._sessionPayloadColumns],
@@ -2037,7 +2070,10 @@ class RecordingDatabase {
     var copiedBytes = 0;
     try {
       while (copiedBytes < expectedSource.size) {
-        if (_closing || _sharedFileMigrationCancellation.isCompleted) {
+        if (_closing ||
+            _sharedFileMigrationCancellation.isCompleted ||
+            _sharedFileMigrationPause.isCompleted ||
+            sharedFileMigrationAllowed?.call() == false) {
           return false;
         }
         if (!await _awaitSharedFileCopyHook()) return false;
@@ -2068,8 +2104,11 @@ class RecordingDatabase {
     await Future.any<void>(<Future<void>>[
       hook(),
       _sharedFileMigrationCancellation.future,
+      _sharedFileMigrationPause.future,
     ]);
-    return !_closing && !_sharedFileMigrationCancellation.isCompleted;
+    return !_closing &&
+        !_sharedFileMigrationCancellation.isCompleted &&
+        !_sharedFileMigrationPause.isCompleted;
   }
 
   Future<bool> _awaitExclusiveMaterializationHook(String path) async {
@@ -2079,8 +2118,11 @@ class RecordingDatabase {
     await Future.any<void>(<Future<void>>[
       hook(path),
       _sharedFileMigrationCancellation.future,
+      _sharedFileMigrationPause.future,
     ]);
-    return !_closing && !_sharedFileMigrationCancellation.isCompleted;
+    return !_closing &&
+        !_sharedFileMigrationCancellation.isCompleted &&
+        !_sharedFileMigrationPause.isCompleted;
   }
 
   Future<bool> _isNormalizedPathReservedByAnotherSession(

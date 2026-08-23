@@ -64,6 +64,9 @@ class UnsupportedBackupNativePlatform implements BackupNativePlatform {
       _unsupported();
 
   @override
+  Future<int?> availableRecordingStorageBytes() => _unsupported();
+
+  @override
   Future<Map<Object?, Object?>?> reclaimStorageIfNeeded() => _unsupported();
 
   @override

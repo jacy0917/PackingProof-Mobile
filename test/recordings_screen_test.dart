@@ -17,6 +17,7 @@ import 'package:packing_proof_mobile/platform/platform_capabilities.dart';
 import 'package:packing_proof_mobile/screens/recordings_screen.dart';
 import 'package:packing_proof_mobile/services/camera_capability_policy.dart';
 import 'package:packing_proof_mobile/services/recording_database.dart';
+import 'package:packing_proof_mobile/services/session_repository.dart';
 import 'package:packing_proof_mobile/services/order_info_receiver_service.dart';
 import 'package:packing_proof_mobile/services/lan_backup_discovery_service.dart';
 import 'package:packing_proof_mobile/services/lan_backup_service.dart';
@@ -1797,10 +1798,8 @@ void main() {
                   ),
                 ],
               ),
-          localRecordingFileProbe: (String path) async => (
-            exists: true,
-            bytes: 1,
-          ),
+          localRecordingFileProbe: (String path) async =>
+              (exists: true, bytes: 1),
           onWorkModeChanged: (_) async {},
           onSpeechEnabledChanged: (_) async {},
           onMaxVolumeEnabledChanged: (_) async {},
@@ -2691,6 +2690,50 @@ void main() {
     await tester.tap(find.text('CLEANED-001'));
     await tester.pump();
     expect(find.text('录像已清理或文件不存在，无法播放'), findsOneWidget);
+  });
+
+  testWidgets('本地播放准备独立文件失败时类型化阻止进入播放器', (WidgetTester tester) async {
+    final DateTime startedAt = DateTime(2026, 8, 23, 12);
+    var prepareCalls = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingsScreen(
+          sessions: <RecordingSession>[
+            _session(
+              'shared-local',
+              'LOCAL-SHARED-001',
+              startedAt,
+              filePath: '/recordings/legacy-shared.mp4',
+            ),
+          ],
+          workMode: WorkMode.continuousScan,
+          speechEnabled: true,
+          maxVolumeEnabled: true,
+          localRecordingFileProbe: (String path) async =>
+              (exists: true, bytes: 1024),
+          onPrepareLocalPlayback: (String sessionId) async {
+            prepareCalls++;
+            throw const RecordingFilePreparationException(
+              RecordingFilePreparationFailure.storageUnavailable,
+            );
+          },
+          onWorkModeChanged: (_) async {},
+          onSpeechEnabledChanged: (_) async {},
+          onMaxVolumeEnabledChanged: (_) async {},
+          onSpeechPreview: () async {},
+          onSessionUpdated: (_) async {},
+          onDeleteSessions: (_) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('LOCAL-SHARED-001'));
+    await tester.pump();
+
+    expect(prepareCalls, 1);
+    expect(find.text('暂时无法准备独立录像文件'), findsOneWidget);
+    expect(find.text('LOCAL-SHARED-001'), findsOneWidget);
   });
 
   testWidgets('录像来源标签显示在快递单号右侧', (WidgetTester tester) async {

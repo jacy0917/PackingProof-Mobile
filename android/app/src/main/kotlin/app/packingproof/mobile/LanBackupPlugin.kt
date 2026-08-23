@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
+import android.os.StatFs
 import android.util.Log
 import androidx.work.WorkManager
 import org.json.JSONArray
@@ -17,6 +18,10 @@ import app.packingproof.mobile.generated.BackupCleanupPageDto
 import app.packingproof.mobile.generated.BackupJobsByPathsDto
 import app.packingproof.mobile.generated.BackupSummaryDto
 import app.packingproof.mobile.generated.FlutterError
+
+internal fun availableRecordingStorageBytes(context: Context): Long? = runCatching {
+    StatFs(context.filesDir.path).availableBytes
+}.getOrNull()
 
 internal class LanBackupPlugin(
     private val activity: Activity,
@@ -145,6 +150,8 @@ internal class LanBackupPlugin(
 
     fun reclaimStorageIfNeeded(): Map<String?, Any?> =
         storageManager.checkAndReclaim().values.mapKeys { it.key as String? }
+
+    fun availableRecordingStorageBytes(): Long? = availableRecordingStorageBytes(context)
 
     fun requeueJob(id: String) {
         val sourceStatus = store.reconcileJobSource(id)

@@ -705,6 +705,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
     }
   }
 
+  func availableRecordingStorageBytes(
+    completion: @escaping (Result<Int64?, Error>) -> Void
+  ) {
+    completion(.success(availableStorageBytesOrNil()))
+  }
+
   private func performStorageReclaim() async throws -> [String?: Any?] {
     try await withMaintenanceSlot {
       if let storageReclaimOperationOverride {
@@ -868,11 +874,15 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func availableStorageBytes() -> Int64 {
+    availableStorageBytesOrNil() ?? 0
+  }
+
+  private func availableStorageBytesOrNil() -> Int64? {
     if let availableStorageBytesOverride { return availableStorageBytesOverride() }
     let values = try? FileManager.default.attributesOfFileSystem(
       forPath: recordingsDirectory().path
     )
-    return (values?[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+    return (values?[.systemFreeSize] as? NSNumber)?.int64Value
   }
 
   private func storageAttestation(

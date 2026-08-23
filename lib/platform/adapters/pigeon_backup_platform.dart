@@ -70,6 +70,10 @@ class PigeonBackupNativePlatform implements BackupNativePlatform {
       _hostApi.updateRetentionSchedule(_wireMap(request));
 
   @override
+  Future<int?> availableRecordingStorageBytes() =>
+      _hostApi.availableRecordingStorageBytes();
+
+  @override
   Future<Map<Object?, Object?>?> reclaimStorageIfNeeded() async =>
       _map(await _hostApi.reclaimStorageIfNeeded());
 

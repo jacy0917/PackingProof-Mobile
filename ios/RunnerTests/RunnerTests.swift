@@ -875,6 +875,20 @@ class RunnerTests: XCTestCase {
     await fulfillment(of: [emitted], timeout: 0.5)
   }
 
+  func testAvailableRecordingStorageBytesReadsRecordingVolumeWithoutReclaim() async throws {
+    let expected: Int64 = 3 * 1024 * 1024 * 1024
+    let fixture = try makeRetentionCleanupFixture(
+      id: "available-recording-storage",
+      availableStorageBytesOverride: { expected }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+
+    let available = try await awaitAvailableRecordingStorageBytes(fixture.api)
+
+    XCTAssertEqual(available, expected)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
+  }
+
   func testStorageReclaimEmitsSnapshotWhenJobErrorChanges() async throws {
     let emitted = expectation(description: "任务错误变化后推送快照")
     let fixture = try makeRetentionCleanupFixture(
@@ -2045,6 +2059,16 @@ class RunnerTests: XCTestCase {
   ) async throws -> [String?: Any?] {
     try await withCheckedThrowingContinuation { continuation in
       api.reclaimStorageIfNeeded { result in
+        continuation.resume(with: result)
+      }
+    }
+  }
+
+  private func awaitAvailableRecordingStorageBytes(
+    _ api: IosBackupHostApi
+  ) async throws -> Int64? {
+    try await withCheckedThrowingContinuation { continuation in
+      api.availableRecordingStorageBytes { result in
         continuation.resume(with: result)
       }
     }

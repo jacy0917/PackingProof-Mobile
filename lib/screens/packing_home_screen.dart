@@ -705,6 +705,7 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
       onScanSearch: _beginHistorySearchScan,
       onSpeechPreview: _controller.previewSpeech,
       onSessionUpdated: _controller.updateSession,
+      onPrepareLocalPlayback: _controller.prepareSessionFileForPlayback,
       onDeleteSessions: _controller.deleteSessions,
       hiddenRemoteRecordingIds: _controller.hiddenRemoteRecordingIds,
       onHideRemoteRecordings: _controller.hideRemoteRecordings,

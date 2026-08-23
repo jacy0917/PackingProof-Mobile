@@ -1791,6 +1791,9 @@ class _TestChannelBackupPlatform implements BackupNativePlatform {
   int summaryCalls = 0;
 
   @override
+  Future<int?> availableRecordingStorageBytes() async => 1 << 50;
+
+  @override
   void setSummaryListener(void Function(BackupSummaryDto summary)? listener) {}
 
   @override

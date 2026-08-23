@@ -22,6 +22,7 @@ import '../widgets/two_button_confirm_dialog.dart';
 import '../services/recording_thumbnail_service.dart';
 import '../services/camera_capability_policy.dart';
 import '../services/recording_database.dart';
+import '../services/session_repository.dart';
 import '../services/remote_playback_compat.dart';
 import '../services/remote_video_clip_service.dart';
 import '../services/system_video_player_service.dart';
@@ -191,6 +192,7 @@ class RecordingsScreen extends StatefulWidget {
     this.onHistoryPageSizeChanged,
     required this.onSpeechPreview,
     required this.onSessionUpdated,
+    this.onPrepareLocalPlayback,
     required this.onDeleteSessions,
     this.backupSnapshot = const LanBackupSnapshot(),
     this.backupListenable,
@@ -264,6 +266,8 @@ class RecordingsScreen extends StatefulWidget {
   final Future<void> Function(int value)? onMinimumBarcodeLengthChanged;
   final Future<void> Function() onSpeechPreview;
   final Future<void> Function(RecordingSession session) onSessionUpdated;
+  final Future<RecordingSession> Function(String sessionId)?
+  onPrepareLocalPlayback;
   final Future<void> Function(Set<String> sessionIds) onDeleteSessions;
   final LanBackupSnapshot backupSnapshot;
   final Listenable? backupListenable;
@@ -1438,6 +1442,34 @@ class _RecordingsScreenState extends State<RecordingsScreen>
                           );
                           return;
                         }
+                        RecordingSession playbackSession = session;
+                        if (localAvailable) {
+                          final Future<RecordingSession> Function(
+                            String sessionId,
+                          )?
+                          prepare = widget.onPrepareLocalPlayback;
+                          if (prepare == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('暂时无法准备独立录像文件')),
+                            );
+                            return;
+                          }
+                          try {
+                            playbackSession = await prepare(session.id);
+                          } on RecordingFilePreparationException {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('暂时无法准备独立录像文件')),
+                            );
+                            return;
+                          } on Object {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('暂时无法准备独立录像文件')),
+                            );
+                            return;
+                          }
+                        }
                         Uri? resolvedRemoteUri;
                         if (!localAvailable &&
                             remoteAvailable &&
@@ -1470,7 +1502,7 @@ class _RecordingsScreenState extends State<RecordingsScreen>
                           MaterialPageRoute<bool>(
                             builder: (BuildContext context) =>
                                 VideoPlaybackScreen(
-                                  session: session,
+                                  session: playbackSession,
                                   onSessionUpdated: _updateSession,
                                   onDelete: item.local == null
                                       ? null

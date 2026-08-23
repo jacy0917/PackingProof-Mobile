@@ -232,6 +232,60 @@ void main() {
     );
   });
 
+  test('复制钩子挂起时暂停有界返回且不再写入下一分块', () async {
+    final File source = File('${root.path}/pause-source.mp4');
+    await source.writeAsBytes(List<int>.filled(2 * 1024 * 1024, 9));
+    await _seedSharedSessions(databasePath, source, <String>[
+      'first',
+      'second',
+    ]);
+    var working = false;
+    var copyChunks = 0;
+    final Completer<void> firstChunk = Completer<void>();
+    final Completer<void> blocked = Completer<void>();
+    final RecordingDatabase database = RecordingDatabase(
+      path: databasePath,
+      sharedFileMigrationAllowed: () => !working,
+      sharedFileMigrationDelay: Duration.zero,
+      beforeSharedFileCopyChunkForTesting: () async {
+        copyChunks++;
+        if (!firstChunk.isCompleted) firstChunk.complete();
+        await blocked.future;
+      },
+    );
+    addTearDown(database.close);
+
+    await database.initialize();
+    await firstChunk.future.timeout(const Duration(seconds: 1));
+    working = true;
+    final Stopwatch stopwatch = Stopwatch()..start();
+    await database.pauseSharedFileMigration();
+    stopwatch.stop();
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(stopwatch.elapsed, lessThan(const Duration(milliseconds: 500)));
+    expect(copyChunks, 1);
+    expect(await source.exists(), isTrue);
+    expect(
+      (await database.loadActiveSessions())
+          .map((RecordingSession value) => value.filePath)
+          .toSet(),
+      <String>{source.path},
+    );
+    expect(
+      root.listSync().whereType<File>().where(
+        (File file) => file.path.contains('_独立_'),
+      ),
+      isEmpty,
+    );
+    expect(
+      await database.readMetadataValue(
+        'shared_file_materialization_intent_v1:${base64Url.encode(utf8.encode('second'))}',
+      ),
+      isNotNull,
+    );
+  });
+
   test('分块复制中 close 有界结束且重启可从 intent 恢复', () async {
     final File source = File('${root.path}/shutdown-source.mp4');
     await source.writeAsBytes(List<int>.filled(2 * 1024 * 1024, 7));

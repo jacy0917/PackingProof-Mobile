@@ -34,6 +34,8 @@ abstract interface class BackupNativePlatform {
 
   Future<void> updateRetentionSchedule(Map<Object?, Object?> request);
 
+  Future<int?> availableRecordingStorageBytes();
+
   Future<Map<Object?, Object?>?> reclaimStorageIfNeeded();
 
   Future<Map<Object?, Object?>?> getNetworkDiagnostics();

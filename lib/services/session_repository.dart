@@ -55,12 +55,46 @@ class BackupIncrementPage {
   final BackupRegistrationCursor nextAfter;
 }
 
-class SessionRepository {
-  SessionRepository({Directory? rootDirectory}) : this._(rootDirectory);
+enum RecordingFilePreparationFailure {
+  sessionUnavailable,
+  sourceUnavailable,
+  storageUnavailable,
+}
 
-  SessionRepository._(this._rootDirectory);
+class RecordingFilePreparationException implements Exception {
+  const RecordingFilePreparationException(this.failure);
+
+  final RecordingFilePreparationFailure failure;
+
+  @override
+  String toString() => switch (failure) {
+    RecordingFilePreparationFailure.sessionUnavailable => '录像记录已不存在',
+    RecordingFilePreparationFailure.sourceUnavailable => '录像原文件不存在',
+    RecordingFilePreparationFailure.storageUnavailable => '暂时无法准备独立录像文件',
+  };
+}
+
+class SessionRepository {
+  SessionRepository({
+    Directory? rootDirectory,
+    Future<int?> Function()? availableRecordingStorageBytes,
+    bool Function()? sharedFileMigrationAllowed,
+  }) : this._(
+         rootDirectory,
+         availableRecordingStorageBytes,
+         sharedFileMigrationAllowed,
+       );
+
+  SessionRepository._(
+    this._rootDirectory,
+    this._availableRecordingStorageBytes,
+    this._configuredSharedFileMigrationAllowed,
+  );
 
   Directory? _rootDirectory;
+  final Future<int?> Function()? _availableRecordingStorageBytes;
+  final bool Function()? _configuredSharedFileMigrationAllowed;
+  bool _sharedFileMigrationAllowed = false;
   late Directory _recordingsDirectory;
   late Directory _pendingRecordingsDirectory;
   late File _indexFile;
@@ -109,6 +143,12 @@ class SessionRepository {
     _settingsFile = File(p.join(_rootDirectory!.path, 'settings.json'));
     _recordingDatabase = RecordingDatabase(
       path: p.join(_rootDirectory!.path, 'recordings.db'),
+      availableStorageBytesForMigration: _availableRecordingStorageBytes == null
+          ? null
+          : (_) => _availableRecordingStorageBytes(),
+      sharedFileMigrationAllowed: () =>
+          _sharedFileMigrationAllowed &&
+          (_configuredSharedFileMigrationAllowed?.call() ?? true),
     );
     await _recordingDatabase.initialize();
     _pathResolver = RecordingPathResolver(_recordingsDirectory.path);
@@ -443,9 +483,10 @@ class SessionRepository {
           pageSize: pageSize,
         );
     if (rows.isEmpty) return null;
-    final List<RecordingSession> sessions = await _resolveAndRepair(
-      rows.map((RecordingBackupRow row) => row.session).toList(growable: false),
-    );
+    final List<RecordingSession> sessions = <RecordingSession>[];
+    for (final RecordingBackupRow row in rows) {
+      sessions.add(await prepareSessionFileForAccess(row.id));
+    }
     final RecordingBackupRow last = rows.last;
     return BackupIncrementPage(
       sessions: sessions,
@@ -478,6 +519,73 @@ class SessionRepository {
   ) async {
     await initialize();
     return _resolveAndRepair(await _recordingDatabase.findActiveByIds(ids));
+  }
+
+  /// 播放或备份旧录像前取得该记录永久独占的物理文件。
+  ///
+  /// 无法安全复制时抛出类型化异常；调用方不得继续使用旧共享路径。
+  Future<RecordingSession> prepareSessionFileForAccess(String sessionId) =>
+      _serializeSessionMutation(() async {
+        await initialize();
+        final List<RecordingSession> before = await _recordingDatabase
+            .findActiveByIds(<String>{sessionId});
+        if (before.isEmpty) {
+          throw const RecordingFilePreparationException(
+            RecordingFilePreparationFailure.sessionUnavailable,
+          );
+        }
+        final List<RecordingSession> resolved = await _resolveAndRepair(before);
+        if (!await File(resolved.single.filePath).exists()) {
+          throw const RecordingFilePreparationException(
+            RecordingFilePreparationFailure.sourceUnavailable,
+          );
+        }
+        try {
+          final bool materialized = await _recordingDatabase
+              .materializeSharedFileForSession(sessionId);
+          if (!materialized) {
+            throw const RecordingFilePreparationException(
+              RecordingFilePreparationFailure.storageUnavailable,
+            );
+          }
+        } on RecordingFilePreparationException {
+          rethrow;
+        } on Object {
+          throw const RecordingFilePreparationException(
+            RecordingFilePreparationFailure.storageUnavailable,
+          );
+        }
+        final List<RecordingSession> after = await _recordingDatabase
+            .findActiveByIds(<String>{sessionId});
+        if (after.isEmpty) {
+          throw const RecordingFilePreparationException(
+            RecordingFilePreparationFailure.sessionUnavailable,
+          );
+        }
+        final RecordingSession prepared = after.single;
+        if (!await File(prepared.filePath).exists()) {
+          throw const RecordingFilePreparationException(
+            RecordingFilePreparationFailure.sourceUnavailable,
+          );
+        }
+        return prepared;
+      });
+
+  /// 立即阻止后台迁移和显式物化继续复制旧共享录像。
+  Future<void> pauseSharedFileMigration() async {
+    _sharedFileMigrationAllowed = false;
+    if (_initialized) {
+      await _recordingDatabase.pauseSharedFileMigration();
+    }
+  }
+
+  /// 仅在控制器确认空闲时恢复低优先迁移。
+  Future<void> resumeSharedFileMigration() async {
+    if (_disposeFuture != null) return;
+    _sharedFileMigrationAllowed = true;
+    if (_initialized) {
+      await _recordingDatabase.resumeSharedFileMigration();
+    }
   }
 
   Future<void> dispose() => _disposeFuture ??= _dispose();

@@ -105,7 +105,13 @@ class PackingSessionController extends ChangeNotifier
     // Named parameters cannot use a private initializing formal.
     // ignore: prefer_initializing_formals
     AppBuildConfig buildConfig = AppBuildConfig.environment,
-  }) : _repository = repository ?? SessionRepository(),
+  }) : _repository =
+           repository ??
+           SessionRepository(
+             availableRecordingStorageBytes: AppContainer.forCurrentPlatform()
+                 .backup
+                 .availableRecordingStorageBytes,
+           ),
        _speechService = speechService ?? SpeechPromptService(),
        _maxVolumeService = maxVolumeService ?? MaxVolumeService(),
        _videoWatermarkService =
@@ -600,48 +606,50 @@ class PackingSessionController extends ChangeNotifier
       );
       return;
     }
-    unawaited(
-      _runtimeLog.log(
-        kind: 'start_work',
-        extra: <String, Object?>{
-          'recordAudio': _recordAudioEnabled,
-          'recordingSpec': _recordingSpec.storageValue,
-          'videoCodec': _preferredVideoCodec.storageValue,
-          'nativeRecordingFallback': _nativeRecordingFallback,
-          'capabilityMode': _capabilityMode.wireValue,
-        },
-      ),
-    );
-    _alternatingLastCompletedCode = null;
-    _alternatingNoCodeSince = null;
-    _queuedStorageNoticePriority = -1;
-    _storageWarningMessage = null;
-    final StorageSpaceResult storage = await _checkAndHandleStorage(
-      allowStop: false,
-    );
-    if (storage.insufficient) {
-      _errorMessage = '存储空间不足 2GB，请清理空间或连接电脑完成录像备份';
-      notifyListeners();
-      return;
-    }
-
-    await _beginMaxVolumeIfNeeded();
-    await _boostMaxVolumeIfNeeded();
-
-    _errorMessage = null;
-    _lastMarker = null;
-    _candidateCode = '';
-    _timeline.reset();
-    _activeOrderInfo = null;
-    _lastAnnouncedOrderSignature = '';
-    _stabilityTracker.reset();
-    _speechService.resetIncidents();
-    if (_speechService case final SpeechPromptService speech) {
-      await speech.prepareDuplicateOrderWarning();
-    }
-    _beginInitialPromptFlow();
-
+    await _repository.pauseSharedFileMigration();
     try {
+      unawaited(
+        _runtimeLog.log(
+          kind: 'start_work',
+          extra: <String, Object?>{
+            'recordAudio': _recordAudioEnabled,
+            'recordingSpec': _recordingSpec.storageValue,
+            'videoCodec': _preferredVideoCodec.storageValue,
+            'nativeRecordingFallback': _nativeRecordingFallback,
+            'capabilityMode': _capabilityMode.wireValue,
+          },
+        ),
+      );
+      _alternatingLastCompletedCode = null;
+      _alternatingNoCodeSince = null;
+      _queuedStorageNoticePriority = -1;
+      _storageWarningMessage = null;
+      final StorageSpaceResult storage = await _checkAndHandleStorage(
+        allowStop: false,
+      );
+      if (storage.insufficient) {
+        _errorMessage = '存储空间不足 2GB，请清理空间或连接电脑完成录像备份';
+        notifyListeners();
+        await _resumeSharedFileMigrationIfIdle();
+        return;
+      }
+
+      await _beginMaxVolumeIfNeeded();
+      await _boostMaxVolumeIfNeeded();
+
+      _errorMessage = null;
+      _lastMarker = null;
+      _candidateCode = '';
+      _timeline.reset();
+      _activeOrderInfo = null;
+      _lastAnnouncedOrderSignature = '';
+      _stabilityTracker.reset();
+      _speechService.resetIncidents();
+      if (_speechService case final SpeechPromptService speech) {
+        await speech.prepareDuplicateOrderWarning();
+      }
+      _beginInitialPromptFlow();
+
       await WakelockPlus.enable();
       await setPreviewActive(true);
       await _setNativeWorkScanEnabled(true);
@@ -678,6 +686,7 @@ class PackingSessionController extends ChangeNotifier
       await WakelockPlus.disable();
       await _endMaxVolumeSession();
       _setCameraError(error);
+      await _resumeSharedFileMigrationIfIdle();
     } on Object catch (error) {
       unawaited(
         _runtimeLog.log(
@@ -700,6 +709,7 @@ class PackingSessionController extends ChangeNotifier
       _errorMessage = '无法开始录像，请重新检查摄像头\n$error';
       _setPhase(PackingSessionPhase.error);
       _speakErrorMessage(error.toString());
+      await _resumeSharedFileMigrationIfIdle();
     }
   }
 
@@ -716,6 +726,7 @@ class PackingSessionController extends ChangeNotifier
           },
         ),
       );
+      await _resumeSharedFileMigrationIfIdle();
       return null;
     }
     final bool silentStorageStop = _storageStopRequested;
@@ -745,6 +756,7 @@ class PackingSessionController extends ChangeNotifier
       await _endMaxVolumeSession();
       _setPhase(PackingSessionPhase.ready);
       await _releaseStorageNoticeAfterWork();
+      await _resumeSharedFileMigrationIfIdle();
       return null;
     }
     if (recordingUnavailable) {
@@ -795,6 +807,7 @@ class PackingSessionController extends ChangeNotifier
       );
       _setActiveOrderInfo(null, announce: false);
       await _releaseStorageNoticeAfterWork();
+      await _resumeSharedFileMigrationIfIdle();
       return savedSessions.isEmpty ? null : savedSessions.last;
     } on Object catch (error) {
       unawaited(
@@ -815,7 +828,22 @@ class PackingSessionController extends ChangeNotifier
       if (!silentStorageStop) {
         _speakErrorMessage(error.toString());
       }
+      await _resumeSharedFileMigrationIfIdle();
       return null;
+    }
+  }
+
+  @override
+  Future<void> _resumeSharedFileMigrationIfIdle() async {
+    if (_disposed || isWorking) return;
+    try {
+      await _repository.resumeSharedFileMigration();
+    } on Object catch (error, stackTrace) {
+      developer.log(
+        'PackingSessionController failed to resume shared file migration',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -1195,6 +1223,9 @@ class PackingSessionController extends ChangeNotifier
     await _refreshLocalStatistics();
     notifyListeners();
   }
+
+  Future<RecordingSession> prepareSessionFileForPlayback(String sessionId) =>
+      _repository.prepareSessionFileForAccess(sessionId);
 
   Future<void> deleteSessions(Set<String> sessionIds) async {
     _sessions = await _repository.deleteSessions(sessionIds);
@@ -1683,6 +1714,7 @@ class PackingSessionController extends ChangeNotifier
 
   Future<void> _shutdown() async {
     _disposed = true;
+    await _repository.pauseSharedFileMigration();
     _stopStorageMonitor();
     await _cancelWatermarkForShutdown();
     final Future<void>? storageStop = _storageStopFuture;

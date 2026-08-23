@@ -2640,6 +2640,7 @@ protocol BackupNativeHostApi {
   func requeueJob(jobId: String, completion: @escaping (Result<Void, Error>) -> Void)
   func cancelJob(jobId: String, completion: @escaping (Result<Void, Error>) -> Void)
   func updateRetentionSchedule(request: [String?: Any?], completion: @escaping (Result<Void, Error>) -> Void)
+  func availableRecordingStorageBytes(completion: @escaping (Result<Int64?, Error>) -> Void)
   func reclaimStorageIfNeeded(completion: @escaping (Result<[String?: Any?], Error>) -> Void)
   func getNetworkDiagnostics(completion: @escaping (Result<[String?: Any?]?, Error>) -> Void)
 }
@@ -2913,6 +2914,23 @@ class BackupNativeHostApiSetup {
       }
     } else {
       updateRetentionScheduleChannel.setMessageHandler(nil)
+    }
+    let availableRecordingStorageBytesChannel = taskQueue == nil
+      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.availableRecordingStorageBytes\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.availableRecordingStorageBytes\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
+    if let api = api {
+      availableRecordingStorageBytesChannel.setMessageHandler { _, reply in
+        api.availableRecordingStorageBytes { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      availableRecordingStorageBytesChannel.setMessageHandler(nil)
     }
     let reclaimStorageIfNeededChannel = taskQueue == nil
       ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.reclaimStorageIfNeeded\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)

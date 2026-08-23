@@ -383,6 +383,9 @@ abstract class BackupNativeHostApi {
   void updateRetentionSchedule(Map<String?, Object?> request);
   @async
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  int? availableRecordingStorageBytes();
+  @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   Map<String?, Object?> reclaimStorageIfNeeded();
   @async
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)

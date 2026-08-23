@@ -2712,6 +2712,7 @@ interface BackupNativeHostApi {
   fun requeueJob(jobId: String, callback: (Result<Unit>) -> Unit)
   fun cancelJob(jobId: String, callback: (Result<Unit>) -> Unit)
   fun updateRetentionSchedule(request: Map<String?, Any?>, callback: (Result<Unit>) -> Unit)
+  fun availableRecordingStorageBytes(callback: (Result<Long?>) -> Unit)
   fun reclaimStorageIfNeeded(callback: (Result<Map<String?, Any?>>) -> Unit)
   fun getNetworkDiagnostics(callback: (Result<Map<String?, Any?>?>) -> Unit)
 
@@ -2984,6 +2985,24 @@ interface BackupNativeHostApi {
                 reply.reply(PlatformApiPigeonUtils.wrapError(error))
               } else {
                 reply.reply(PlatformApiPigeonUtils.wrapResult(null))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.availableRecordingStorageBytes$separatedMessageChannelSuffix", codec, taskQueue)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            api.availableRecordingStorageBytes{ result: Result<Long?> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(PlatformApiPigeonUtils.wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(PlatformApiPigeonUtils.wrapResult(data))
               }
             }
           }

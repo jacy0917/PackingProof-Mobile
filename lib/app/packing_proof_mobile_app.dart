@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import '../models/app_settings.dart';
+import '../platform/platform_container.dart';
 import '../screens/packing_home_screen.dart';
 import '../services/session_repository.dart';
 import 'app_build_config.dart';
@@ -37,7 +38,13 @@ class _PackingProofMobileAppState extends State<PackingProofMobileApp> {
   @override
   void initState() {
     super.initState();
-    _repository = widget.repository ?? SessionRepository();
+    _repository =
+        widget.repository ??
+        SessionRepository(
+          availableRecordingStorageBytes: AppContainer.forCurrentPlatform()
+              .backup
+              .availableRecordingStorageBytes,
+        );
     _settings = _loadSettings();
   }
 

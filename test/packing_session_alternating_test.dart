@@ -35,6 +35,8 @@ class _FakeCameraPlatform implements CameraPlatform {
   String? lastPath;
   int diagnosticsCalls = 0;
   Completer<void>? diagnosticsBlocker;
+  bool Function()? sharedFileMigrationPaused;
+  bool? migrationPausedWhenRecordingStarted;
 
   @override
   void Function(List<NativeBarcodeCandidate> candidates)? onBarcodeBatch;
@@ -76,6 +78,7 @@ class _FakeCameraPlatform implements CameraPlatform {
     required bool recordAudio,
     required String trackingNumber,
   }) async {
+    migrationPausedWhenRecordingStarted = sharedFileMigrationPaused?.call();
     startWorkCalls++;
     lastPath = path;
     File(path).createSync(recursive: true);
@@ -208,9 +211,30 @@ class _FakeCameraPlatform implements CameraPlatform {
   Future<void> dispose() async {}
 }
 
+class _TrackingSessionRepository extends SessionRepository {
+  _TrackingSessionRepository({required super.rootDirectory});
+
+  bool migrationPaused = true;
+
+  @override
+  Future<void> pauseSharedFileMigration() async {
+    migrationPaused = true;
+    await super.pauseSharedFileMigration();
+  }
+
+  @override
+  Future<void> resumeSharedFileMigration() async {
+    migrationPaused = false;
+    await super.resumeSharedFileMigration();
+  }
+}
+
 class _FakeBackupPlatform implements BackupNativePlatform {
   int storageCheckCalls = 0;
   Completer<Map<Object?, Object?>?>? pendingStorageCheck;
+
+  @override
+  Future<int?> availableRecordingStorageBytes() async => 1 << 50;
   final BackupSummaryDto backupSummary = BackupSummaryDto(
     schemaVersion: 1,
     revision: 0,
@@ -390,6 +414,7 @@ void main() {
   late Directory root;
   late _FakeCameraPlatform camera;
   late _FakeBackupPlatform backupPlatform;
+  late _TrackingSessionRepository repository;
   late PackingSessionController controller;
 
   setUp(() async {
@@ -397,8 +422,10 @@ void main() {
     root = await Directory.systemTemp.createTemp('packing-proof-alternating-');
     camera = _FakeCameraPlatform();
     backupPlatform = _FakeBackupPlatform();
+    repository = _TrackingSessionRepository(rootDirectory: root);
+    camera.sharedFileMigrationPaused = () => repository.migrationPaused;
     controller = PackingSessionController(
-      repository: SessionRepository(rootDirectory: root),
+      repository: repository,
       speechService: _FakeSpeechSink(),
       maxVolumeService: _FakeMaxVolumeSink(),
       lanBackupService: LanBackupService(platform: backupPlatform),
@@ -535,6 +562,31 @@ void main() {
       ),
     ]);
     expect(controller.candidateCode, 'YT123456789012');
+  });
+
+  testWidgets('原生录像开始前已暂停旧共享文件迁移', (WidgetTester tester) async {
+    camera.fullSupported = true;
+    try {
+      await tester.runAsync(() async {
+        await controller.initialize();
+        await controller.retryCapabilityProbe();
+        expect(repository.migrationPaused, isFalse);
+        await controller.startWork();
+      });
+      expect(repository.migrationPaused, isTrue);
+
+      await _confirmBarcode(tester, controller, 'YT123456789019');
+      await _waitUntil(
+        tester,
+        () => camera.startWorkCalls == 1,
+        reason: 'native recording should start after barcode confirmation',
+      );
+
+      expect(camera.migrationPausedWhenRecordingStarted, isTrue);
+    } finally {
+      await _stopWorkIfNeeded(tester, controller);
+      await tester.pump(const Duration(seconds: 4));
+    }
   });
 
   testWidgets('切换条码不等待慢速存储回收', (WidgetTester tester) async {

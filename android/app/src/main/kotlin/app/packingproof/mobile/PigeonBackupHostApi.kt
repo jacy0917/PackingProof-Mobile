@@ -104,6 +104,12 @@ internal class PigeonBackupHostApi(
         plugin.submit(callback) { plugin.reclaimStorageIfNeeded() }
     }
 
+    override fun availableRecordingStorageBytes(
+        callback: (Result<Long?>) -> Unit,
+    ) {
+        plugin.submit(callback) { plugin.availableRecordingStorageBytes() }
+    }
+
     override fun getNetworkDiagnostics(
         callback: (Result<Map<String?, Any?>?>) -> Unit,
     ) {

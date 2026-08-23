@@ -19,6 +19,7 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
 
   Future<void> _reloadRecentSessions();
   Future<void> _initializeBackgroundServices(AppSettings settings);
+  Future<void> _resumeSharedFileMigrationIfIdle();
   Future<void> _disposeCamera();
   void _setCameraError(CameraException error);
   void _speakErrorMessage(String message);
@@ -245,6 +246,9 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
       _setPhase(PackingSessionPhase.error);
     } finally {
       final bool cameraReadyBeforeBackgroundServices = isCameraReady;
+      if (loadedSettings != null) {
+        await _resumeSharedFileMigrationIfIdle();
+      }
       if (loadedSettings != null) {
         await _measureCameraPreparationStage(
           stageDurationsMs,

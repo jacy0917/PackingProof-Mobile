@@ -27,4 +27,29 @@ void main() {
       ),
     );
   });
+
+  test('Android 和 iOS 录像卷剩余空间接口使用 Pigeon 后台任务队列', () {
+    final String android = File(
+      'android/app/src/main/kotlin/app/packingproof/mobile/generated/'
+      'PlatformApi.kt',
+    ).readAsStringSync();
+    final String ios = File(
+      'ios/Runner/Generated/PlatformApi.swift',
+    ).readAsStringSync();
+
+    expect(
+      android,
+      contains(
+        'BackupNativeHostApi.availableRecordingStorageBytes\$separatedMessageChannelSuffix", '
+        'codec, taskQueue)',
+      ),
+    );
+    expect(
+      ios,
+      contains(
+        'BackupNativeHostApi.availableRecordingStorageBytes\\(channelSuffix)", '
+        'binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)',
+      ),
+    );
+  });
 }
