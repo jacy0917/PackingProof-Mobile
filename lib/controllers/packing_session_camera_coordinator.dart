@@ -37,6 +37,8 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
   CameraCapabilityMode _capabilityMode = CameraCapabilityMode.unverified;
   Map<String, Object?>? _capabilityState;
   bool _capabilityProbeRunning = false;
+  // Accessed through the app-support mixin's public projection.
+  // ignore: unused_field
   String? _capabilityProbeMessage;
   String? _capabilityNoticeMessage;
 
