@@ -6,14 +6,14 @@ import UIKit
 import XCTest
 
 final class IosWatermarkRasterTests: XCTestCase {
-  func testPortraitFontIsSmallerWithoutChangingLandscapeFont() {
+  func testPortraitAndLandscapeUseTheSameFontSize() {
     XCTAssertEqual(
       iosWatermarkFontSize(forOutputSize: CGSize(width: 1080, height: 1920)),
-      35
+      44
     )
     XCTAssertEqual(
       iosWatermarkFontSize(forOutputSize: CGSize(width: 1920, height: 1080)),
-      35
+      44
     )
   }
 
@@ -932,8 +932,8 @@ final class IosWatermarkRasterTests: XCTestCase {
       context: nil
     )
     return CGSize(
-      width: bounds.width.rounded(.up) + 12,
-      height: bounds.height.rounded(.up) + 12
+      width: bounds.width.rounded(.up) + 24,
+      height: bounds.height.rounded(.up) + 24
     )
   }
 

@@ -154,8 +154,8 @@ final class IosMediaProcessingCore {
           naturalSize: sourceVideo.naturalSize,
           preferredTransform: sourceVideo.preferredTransform,
           textSize: CGSize(
-            width: textBounds.width.rounded(.up) + 12,
-            height: textBounds.height.rounded(.up) + 12
+            width: textBounds.width.rounded(.up) + 24,
+            height: textBounds.height.rounded(.up) + 24
           )
         )
         let width = layout.renderSize.width
@@ -194,22 +194,21 @@ final class IosMediaProcessingCore {
           : 0
         let keyframeSeconds = timeline.keyframeSeconds(duration: duration)
         if duration > 0, keyframeSeconds.count > 1 {
-          let animation = CAKeyframeAnimation(keyPath: "string")
-          animation.values = keyframeSeconds.map {
+          let values = keyframeSeconds.map {
             IosWatermarkStyle.attributedText(
               timeline.text(at: $0),
               fontSize: fontSize
             )
           }
-          animation.keyTimes = keyframeSeconds.map {
+          let keyTimes = keyframeSeconds.map {
             NSNumber(value: min(1, $0 / duration))
           }
-          animation.duration = duration
-          animation.beginTime = AVCoreAnimationBeginTimeAtZero
-          animation.calculationMode = .discrete
-          animation.isRemovedOnCompletion = false
-          animation.fillMode = .forwards
-          text.add(animation, forKey: "watermarkText")
+          IosWatermarkStyle.addTextAnimation(
+            to: text,
+            values: values,
+            keyTimes: keyTimes,
+            duration: duration
+          )
         }
         parentLayer.addSublayer(text)
         videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(

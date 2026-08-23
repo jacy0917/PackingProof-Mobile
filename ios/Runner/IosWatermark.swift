@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import QuartzCore
 import UIKit
@@ -12,8 +13,7 @@ func iosWatermarkTopFraction(forOutputSize outputSize: CGSize) -> CGFloat {
 }
 
 func iosWatermarkFontSize(forOutputSize outputSize: CGSize) -> CGFloat {
-  let maximum: CGFloat = outputSize.height > outputSize.width ? 35 : 61
-  return max(35, min(maximum, outputSize.height * 0.032))
+  44
 }
 
 /// 保持固定 1080x1920 竖屏采集缓冲不变，仅用 MP4 轨道元数据表达最终录像方向。
@@ -151,13 +151,63 @@ struct IosWatermarkStyle {
     text: NSAttributedString,
     frame: CGRect,
     contentsScale: CGFloat = videoContentsScale
-  ) -> CATextLayer {
-    let layer = CATextLayer()
-    layer.string = text
-    layer.alignmentMode = .center
-    layer.contentsScale = contentsScale
-    layer.frame = frame
-    return layer
+  ) -> CALayer {
+    let container = CALayer()
+    container.contentsScale = contentsScale
+    container.frame = frame
+    for (name, value) in [
+      ("watermarkOutline", outlinedText(text)),
+      ("watermarkFill", filledText(text)),
+    ] {
+      let layer = CATextLayer()
+      layer.name = name
+      layer.string = value
+      layer.alignmentMode = .center
+      layer.contentsScale = contentsScale
+      layer.frame = container.bounds
+      container.addSublayer(layer)
+    }
+    return container
+  }
+
+  static func addTextAnimation(
+    to container: CALayer,
+    values: [NSAttributedString],
+    keyTimes: [NSNumber],
+    duration: CFTimeInterval
+  ) {
+    for layer in container.sublayers?.compactMap({ $0 as? CATextLayer }) ?? [] {
+      let animation = CAKeyframeAnimation(keyPath: "string")
+      animation.values = values.map {
+        layer.name == "watermarkOutline" ? outlinedText($0) : filledText($0)
+      }
+      animation.keyTimes = keyTimes
+      animation.duration = duration
+      animation.beginTime = AVCoreAnimationBeginTimeAtZero
+      animation.calculationMode = .discrete
+      animation.isRemovedOnCompletion = false
+      animation.fillMode = .forwards
+      layer.add(animation, forKey: "watermarkText")
+    }
+  }
+
+  private static func outlinedText(_ text: NSAttributedString) -> NSAttributedString {
+    let value = NSMutableAttributedString(attributedString: text)
+    let range = NSRange(location: 0, length: value.length)
+    value.addAttributes(
+      [.foregroundColor: UIColor.black, .strokeColor: UIColor.black, .strokeWidth: 10],
+      range: range
+    )
+    return value
+  }
+
+  private static func filledText(_ text: NSAttributedString) -> NSAttributedString {
+    let value = NSMutableAttributedString(attributedString: text)
+    let range = NSRange(location: 0, length: value.length)
+    value.removeAttribute(.strokeColor, range: range)
+    value.removeAttribute(.strokeWidth, range: range)
+    value.addAttribute(.foregroundColor, value: UIColor.white, range: range)
+    return value
   }
 }
 

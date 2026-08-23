@@ -456,10 +456,10 @@ void main() {
     expect(watermarkOutline.textAlign, TextAlign.center);
     expect(watermarkOutline.style?.foreground?.style, PaintingStyle.stroke);
     expect(watermarkOutline.style?.foreground?.color, Colors.black);
-    expect(watermarkOutline.style?.fontSize, closeTo(42 * 390 / 1080, 0.0001));
+    expect(watermarkOutline.style?.fontSize, closeTo(44 * 390 / 1080, 0.0001));
     expect(
       watermarkOutline.style?.foreground?.strokeWidth,
-      closeTo(4.2 * 390 / 1080, 0.0001),
+      closeTo(4.4 * 390 / 1080, 0.0001),
     );
     expect(watermarkFill.textAlign, TextAlign.center);
     expect(watermarkFill.style?.color, Colors.white);
@@ -556,10 +556,10 @@ void main() {
     );
     expect(outline.textScaler, TextScaler.noScaling);
     expect(fill.textScaler, TextScaler.noScaling);
-    expect(outline.style?.fontSize, closeTo(42 * 390 / 1080, 0.0001));
+    expect(outline.style?.fontSize, closeTo(44 * 390 / 1080, 0.0001));
     expect(
       outline.style?.foreground?.strokeWidth,
-      closeTo(4.2 * 390 / 1080, 0.0001),
+      closeTo(4.4 * 390 / 1080, 0.0001),
     );
   });
 
