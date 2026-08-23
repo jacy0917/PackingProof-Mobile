@@ -25,6 +25,9 @@ class PigeonBackupNativePlatform implements BackupNativePlatform {
       _hostApi.initialize(_wireMap(request));
 
   @override
+  Future<void> setAutoEnabled(bool enabled) => _hostApi.setAutoEnabled(enabled);
+
+  @override
   Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths) =>
       _hostApi.jobsForPaths(paths);
 

@@ -622,6 +622,46 @@ internal class LanBackupStateStore(
         JSONObject(job.toString())
     }
 
+    /** Atomically pauses or resumes the native upload queue without deleting jobs. */
+    fun setUploadsEnabled(enabled: Boolean): Int = withJobLock {
+        val fromStates = if (enabled) arrayOf("paused") else arrayOf("pending", "uploading")
+        val placeholders = fromStates.joinToString(",") { "?" }
+        val failureGuard = if (enabled) " AND failure_kind IS NULL" else ""
+        val count = db.rawQuery(
+            "SELECT COUNT(*) FROM ${LanBackupJobDatabase.TABLE} " +
+                "WHERE state IN ($placeholders)$failureGuard",
+            fromStates,
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+        if (count == 0) return@withJobLock 0
+        var revision = 0L
+        db.beginTransaction()
+        try {
+            revision = nextRevisionUnlocked()
+            val targetState = if (enabled) "pending" else "paused"
+            db.execSQL(
+                "UPDATE ${LanBackupJobDatabase.TABLE} SET state = ?, generation = lower(hex(randomblob(16))), " +
+                    "error_message = NULL, failure_kind = NULL, updated_revision = ? " +
+                    "WHERE state IN ($placeholders)$failureGuard",
+                arrayOf<Any?>(targetState, revision, *fromStates),
+            )
+            if (enabled) {
+                setMetaValueUnlocked("summary_pending_count", metaValueUnlocked("summary_pending_count") + count)
+                setMetaValueUnlocked("summary_paused_count", metaValueUnlocked("summary_paused_count") - count)
+            } else {
+                val pending = metaValueUnlocked("summary_pending_count")
+                val uploading = metaValueUnlocked("summary_uploading_count")
+                setMetaValueUnlocked("summary_pending_count", 0L)
+                setMetaValueUnlocked("summary_uploading_count", 0L)
+                setMetaValueUnlocked("summary_paused_count", metaValueUnlocked("summary_paused_count") + pending + uploading)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        LanBackupRevisionNotifier.publish(revision, immediate = true)
+        count
+    }
+
     fun cleanupSchedulingJobIdsPage(afterId: String?, limit: Int = 100): List<String> =
         withJobLock {
             require(limit in 1..100) { "清理排程单页数量必须为 1 到 100" }

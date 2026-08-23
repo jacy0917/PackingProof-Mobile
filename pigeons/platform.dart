@@ -347,6 +347,9 @@ abstract class BackupNativeHostApi {
   BackupSummaryDto initialize(Map<String?, Object?> request);
   @async
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  void setAutoEnabled(bool enabled);
+  @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   BackupJobsByPathsDto jobsForPaths(List<String> paths);
   @async
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)

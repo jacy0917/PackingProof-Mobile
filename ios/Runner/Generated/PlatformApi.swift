@@ -2628,6 +2628,7 @@ class CameraEventApi: CameraEventApiProtocol {
 protocol BackupNativeHostApi {
   func summary(completion: @escaping (Result<BackupSummaryDto, Error>) -> Void)
   func initialize(request: [String?: Any?], completion: @escaping (Result<BackupSummaryDto, Error>) -> Void)
+  func setAutoEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void)
   func jobsForPaths(paths: [String], completion: @escaping (Result<BackupJobsByPathsDto, Error>) -> Void)
   func cleanupEvents(afterRevision: Int64, limit: Int64, completion: @escaping (Result<BackupCleanupPageDto, Error>) -> Void)
   func acknowledgeCleanupEvents(throughRevision: Int64, completion: @escaping (Result<Void, Error>) -> Void)
@@ -2692,6 +2693,25 @@ class BackupNativeHostApiSetup {
       }
     } else {
       initializeChannel.setMessageHandler(nil)
+    }
+    let setAutoEnabledChannel = taskQueue == nil
+      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.setAutoEnabled\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.setAutoEnabled\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
+    if let api = api {
+      setAutoEnabledChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let enabledArg = args[0] as! Bool
+        api.setAutoEnabled(enabled: enabledArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      setAutoEnabledChannel.setMessageHandler(nil)
     }
     let jobsForPathsChannel = taskQueue == nil
       ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.jobsForPaths\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)

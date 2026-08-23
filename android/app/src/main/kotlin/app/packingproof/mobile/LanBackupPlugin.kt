@@ -65,13 +65,23 @@ internal class LanBackupPlugin(
         if (store.migrateLegacyConnection() != null) credentials.clear()
         store.reconcileUnavailableJobs()
         val retentionChanged = store.saveRetentionPolicies(unbackedDays, backedDays)
-        schedulePending()
+        setAutoEnabled(request["autoEnabled"] as? Boolean ?: false)
         if (retentionChanged) {
             LanBackupCleanupScheduler.rescheduleAll(context, store)
         } else {
             LanBackupCleanupScheduler.resumeRefreshOrScheduleNext(context, store)
         }
         return summary()
+    }
+
+    fun setAutoEnabled(enabled: Boolean) {
+        context.getSharedPreferences("lan_backup_runtime", Context.MODE_PRIVATE)
+            .edit().putBoolean("auto_enabled", enabled).commit()
+        if (!enabled) {
+            WorkManager.getInstance(context).cancelAllWorkByTag("lan-backup").result.get()
+        }
+        store.setUploadsEnabled(enabled)
+        if (enabled) schedulePending()
     }
 
     fun loadAccessKey(): String = credentials.load() ?: ""
@@ -138,7 +148,7 @@ internal class LanBackupPlugin(
         val upsert = store.upsertJob(path, sessions)
         var job = upsert.job
         val forceRestart = request["forceRestart"] == true
-        val startUpload = request["startUpload"] != false
+        val startUpload = request["startUpload"] != false && isAutoEnabled()
         if (forceRestart &&
             (job.optString("state") != "completed" ||
                 LanBackupCleanupScheduler.nullableText(job, "contentSha256") == null)
@@ -258,12 +268,14 @@ internal class LanBackupPlugin(
     }
 
     private fun schedulePending() {
+        if (!isAutoEnabled()) return
         if (store.connection() == null || credentials.load().isNullOrBlank()) return
         LanBackupDispatcher.schedule(context)
         Log.i(TAG, "Backup dispatcher scheduled")
     }
 
     private fun schedule(id: String, replace: Boolean) {
+        if (!isAutoEnabled()) return
         if (store.connection() == null) {
             Log.w(TAG, "Upload schedule skipped job=$id reason=no_connection")
             return
@@ -275,6 +287,10 @@ internal class LanBackupPlugin(
         LanBackupDispatcher.schedule(context)
         Log.i(TAG, "Upload dispatcher requested job=$id replace=$replace")
     }
+
+    private fun isAutoEnabled(): Boolean = context
+        .getSharedPreferences("lan_backup_runtime", Context.MODE_PRIVATE)
+        .getBoolean("auto_enabled", false)
 
     fun summary(): BackupSummaryDto = store.summary()
 

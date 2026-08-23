@@ -19,6 +19,10 @@ internal class PigeonBackupHostApi(
         plugin.submit(callback) { plugin.initialize(request) }
     }
 
+    override fun setAutoEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
+        plugin.submit(callback) { plugin.setAutoEnabled(enabled) }
+    }
+
     override fun jobsForPaths(
         paths: List<String>,
         callback: (Result<BackupJobsByPathsDto>) -> Unit,

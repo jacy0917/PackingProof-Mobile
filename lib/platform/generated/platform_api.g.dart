@@ -2898,6 +2898,24 @@ class BackupNativeHostApi {
     return pigeonVar_replyValue! as BackupSummaryDto;
   }
 
+  Future<void> setAutoEnabled(bool enabled) async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.setAutoEnabled$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[enabled]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
+  }
+
   Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths) async {
     final pigeonVar_channelName = 'dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.jobsForPaths$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(

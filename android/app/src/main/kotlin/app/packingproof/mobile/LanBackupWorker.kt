@@ -108,6 +108,10 @@ internal class LanBackupWorker(
     }
 
     private suspend fun runWork(): Result {
+        val autoEnabled = applicationContext
+            .getSharedPreferences("lan_backup_runtime", Context.MODE_PRIVATE)
+            .getBoolean("auto_enabled", false)
+        if (!autoEnabled) return Result.success()
         val explicitId = inputData.getString("jobId")
         val id = explicitId ?: store.claimNextUploadJob()?.optString("id")
         if (id.isNullOrBlank()) return Result.success()

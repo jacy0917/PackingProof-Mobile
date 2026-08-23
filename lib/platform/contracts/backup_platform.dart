@@ -7,6 +7,8 @@ abstract interface class BackupNativePlatform {
 
   Future<BackupSummaryDto> initialize(Map<Object?, Object?> request);
 
+  Future<void> setAutoEnabled(bool enabled);
+
   Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths);
 
   Future<BackupCleanupPageDto> cleanupEvents({

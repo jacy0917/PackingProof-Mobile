@@ -622,11 +622,36 @@ final class IosBackupHostApi: BackupNativeHostApi {
         backed: (request["backedRetentionDays"] as? Int) ?? -1
       )
       triggerCleanup()
-      if hasConfiguredBackupHost() { requestUploadDispatch() }
+      try applyAutoEnabled(request["autoEnabled"] as? Bool ?? false)
       completion(.success(try currentSummary()))
     } catch {
       completion(.failure(error))
     }
+  }
+
+  func setAutoEnabled(
+    enabled: Bool,
+    completion: @escaping (Result<Void, Error>) -> Void
+  ) {
+    completion(Result { try applyAutoEnabled(enabled) })
+  }
+
+  private func applyAutoEnabled(_ enabled: Bool) throws {
+    defaults.set(enabled, forKey: "ios_backup_auto_enabled")
+    if !enabled {
+      let tasks = withUploadsLock { () -> [Task<Void, Never>] in
+        uploadDispatcherTask?.cancel()
+        uploadDispatcherTask = nil
+        uploadDispatchRequested = false
+        let tasks = activeUploads.values.map(\.task)
+        activeUploads.removeAll()
+        return tasks
+      }
+      tasks.forEach { $0.cancel() }
+    }
+    _ = try jobStore.get().setUploadsEnabled(enabled)
+    if enabled, hasConfiguredBackupHost() { requestUploadDispatch() }
+    emitSummary()
   }
 
   func jobsForPaths(
@@ -797,7 +822,8 @@ final class IosBackupHostApi: BackupNativeHostApi {
     }
     guard FileManager.default.fileExists(atPath: path) else { return nil }
     let id = request["id"] as? String ?? stableId(path)
-    let startUploadRequested = request["startUpload"] as? Bool != false
+    let startUploadRequested = request["startUpload"] as? Bool != false &&
+      defaults.bool(forKey: "ios_backup_auto_enabled")
     let forceRestart = request["forceRestart"] as? Bool == true
       let attributes = try FileManager.default.attributesOfItem(atPath: path)
       let fileSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
@@ -1684,6 +1710,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func requestUploadDispatch() {
+    guard defaults.bool(forKey: "ios_backup_auto_enabled") else { return }
     uploadsLock.lock()
     uploadDispatchRequested = true
     guard uploadDispatcherTask == nil else {
@@ -1717,10 +1744,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
       return
     }
     while !Task.isCancelled {
+      guard defaults.bool(forKey: "ios_backup_auto_enabled") else { break }
       withUploadsLock { uploadDispatchRequested = false }
 
       do {
         while !Task.isCancelled,
+              defaults.bool(forKey: "ios_backup_auto_enabled"),
               let job = try jobStore.get().claimNextUploadJob() {
           guard let jobId = job["id"] as? String,
                 let generation = job["generation"] as? String,

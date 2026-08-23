@@ -212,6 +212,40 @@ class LanBackupStateStoreSummaryTest {
     }
 
     @Test
+    fun enablingUploadsDoesNotReviveStructuredFailurePause() {
+        val userPaused = store.upsertJob(
+            source("user-paused.mp4").path,
+            sessions("session-user-paused"),
+        ).job
+        store.updateJob(userPaused.getString("id"), userPaused.getString("generation")) {
+            it.put("state", "paused")
+            true
+        }
+        val credentialPaused = store.upsertJob(
+            source("credential-paused.mp4").path,
+            sessions("session-credential-paused"),
+        ).job
+        store.updateJob(
+            credentialPaused.getString("id"),
+            credentialPaused.getString("generation"),
+        ) {
+            it.put("state", "paused")
+                .put("failureKind", "credential_invalid")
+                .put("errorMessage", "需要重新配对")
+            true
+        }
+
+        assertEquals(1, store.setUploadsEnabled(true))
+        assertEquals("pending", store.readJob(userPaused.getString("id"))!!.getString("state"))
+        val preserved = store.readJob(credentialPaused.getString("id"))!!
+        assertEquals("paused", preserved.getString("state"))
+        assertEquals("credential_invalid", preserved.getString("failureKind"))
+        assertEquals("需要重新配对", preserved.getString("errorMessage"))
+        assertEquals(1L, store.summary().pendingCount)
+        assertEquals(1L, store.summary().pausedCount)
+    }
+
+    @Test
     fun tenThousandProgressRevisionsAreCoalescedLatestWins() {
         val notices = mutableListOf<LanBackupRevisionNotifier.Notice>()
         val listener: (LanBackupRevisionNotifier.Notice) -> Unit = { notice ->

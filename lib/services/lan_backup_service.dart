@@ -331,6 +331,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     try {
       final BackupSummaryDto summary = await _platform
           .initialize(<String, Object?>{
+            'autoEnabled': autoEnabled,
             'unbackedRetentionDays': unbackedRetention.days,
             'backedRetentionDays': backedRetention.days,
           });
@@ -899,6 +900,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
 
   @override
   Future<void> setAutoEnabled(bool enabled) async {
+    await _platform.setAutoEnabled(enabled);
     _snapshot = _snapshot.copyWith(autoEnabled: enabled);
     _log('backup_auto_toggle', <String, Object?>{'enabled': enabled});
     notifyListeners();

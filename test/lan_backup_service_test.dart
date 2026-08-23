@@ -966,8 +966,14 @@ void main() {
     final MethodChannel channel = MethodChannel(
       'app.packingproof.mobile/lan_backup_log_test_${root.path.hashCode}',
     );
+    var nativeAutoEnabled = true;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (MethodCall call) async => null);
+        .setMockMethodCallHandler(channel, (MethodCall call) async {
+          if (call.method == 'setAutoEnabled') {
+            nativeAutoEnabled = call.arguments! as bool;
+          }
+          return null;
+        });
     addTearDown(() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
@@ -982,6 +988,7 @@ void main() {
     );
     addTearDown(service.dispose);
     await service.setAutoEnabled(false);
+    expect(nativeAutoEnabled, isFalse);
     final DateTime startedAt = DateTime.utc(2026, 7, 25, 10);
     await service.enqueueFinalizedFile(video.path, <RecordingSession>[
       RecordingSession(
@@ -1942,6 +1949,10 @@ class _TestChannelBackupPlatform implements BackupNativePlatform {
       _summary;
 
   @override
+  Future<void> setAutoEnabled(bool enabled) =>
+      _channel.invokeMethod<void>('setAutoEnabled', enabled);
+
+  @override
   Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths) async =>
       BackupJobsByPathsDto(
         revision: _summary.revision,
@@ -2059,6 +2070,9 @@ class _TrackingBackupPlatform extends Fake implements BackupNativePlatform {
   @override
   Future<BackupSummaryDto> initialize(Map<Object?, Object?> request) async =>
       _backupSnapshot(deviceName: '初始化');
+
+  @override
+  Future<void> setAutoEnabled(bool enabled) async {}
 
   @override
   Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths) async {

@@ -302,6 +302,9 @@ class _FakeBackupPlatform implements BackupNativePlatform {
       backupSummary;
 
   @override
+  Future<void> setAutoEnabled(bool enabled) async {}
+
+  @override
   Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths) async =>
       BackupJobsByPathsDto(
         revision: backupSummary.revision,

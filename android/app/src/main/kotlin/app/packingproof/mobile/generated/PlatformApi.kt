@@ -2700,6 +2700,7 @@ class CameraEventApi(private val binaryMessenger: BinaryMessenger, private val m
 interface BackupNativeHostApi {
   fun summary(callback: (Result<BackupSummaryDto>) -> Unit)
   fun initialize(request: Map<String?, Any?>, callback: (Result<BackupSummaryDto>) -> Unit)
+  fun setAutoEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit)
   fun jobsForPaths(paths: List<String>, callback: (Result<BackupJobsByPathsDto>) -> Unit)
   fun cleanupEvents(afterRevision: Long, limit: Long, callback: (Result<BackupCleanupPageDto>) -> Unit)
   fun acknowledgeCleanupEvents(throughRevision: Long, callback: (Result<Unit>) -> Unit)
@@ -2758,6 +2759,25 @@ interface BackupNativeHostApi {
               } else {
                 val data = result.getOrNull()
                 reply.reply(PlatformApiPigeonUtils.wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.setAutoEnabled$separatedMessageChannelSuffix", codec, taskQueue)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val enabledArg = args[0] as Boolean
+            api.setAutoEnabled(enabledArg) { result: Result<Unit> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(PlatformApiPigeonUtils.wrapError(error))
+              } else {
+                reply.reply(PlatformApiPigeonUtils.wrapResult(null))
               }
             }
           }

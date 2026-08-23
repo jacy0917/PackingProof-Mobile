@@ -1030,6 +1030,32 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(summary["failedCount"] as? Int64, 2)
   }
 
+  func testEnablingUploadsDoesNotReviveStructuredFailurePause() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    var userPaused = makeBackupJob(id: "user-paused")
+    userPaused["state"] = "paused"
+    try store.upsert(userPaused)
+    var credentialPaused = makeBackupJob(id: "credential-paused")
+    credentialPaused["state"] = "paused"
+    credentialPaused["failureKind"] = "credential_invalid"
+    credentialPaused["errorMessage"] = "需要重新配对"
+    try store.upsert(credentialPaused)
+
+    XCTAssertEqual(try store.setUploadsEnabled(true), 1)
+    XCTAssertEqual(try store.readJob(id: "user-paused")?["state"] as? String, "pending")
+    let preserved = try XCTUnwrap(store.readJob(id: "credential-paused"))
+    XCTAssertEqual(preserved["state"] as? String, "paused")
+    XCTAssertEqual(preserved["failureKind"] as? String, "credential_invalid")
+    XCTAssertEqual(preserved["errorMessage"] as? String, "需要重新配对")
+    let summary = try store.summaryValues()
+    XCTAssertEqual(summary["pendingCount"] as? Int64, 1)
+    XCTAssertEqual(summary["pausedCount"] as? Int64, 1)
+  }
+
   func testBackupCleanupEventIsCreatedAndAcknowledgedTransactionally() throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }

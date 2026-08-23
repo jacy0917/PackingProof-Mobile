@@ -21,6 +21,9 @@ class UnsupportedBackupNativePlatform implements BackupNativePlatform {
   }
 
   @override
+  Future<void> setAutoEnabled(bool enabled) => _unsupported();
+
+  @override
   Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths) =>
       _unsupported();
 

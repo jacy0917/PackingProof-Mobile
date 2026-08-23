@@ -530,6 +530,55 @@ final class IosBackupJobStore {
     }
   }
 
+  /// Atomically pauses or resumes all unfinished upload work. No recording or
+  /// upload progress is removed; generations rotate so late completions from a
+  /// cancelled transfer cannot overwrite the paused state.
+  func setUploadsEnabled(_ enabled: Bool) throws -> Int {
+    lock.lock()
+    defer { lock.unlock() }
+    let sourceStates = enabled ? "'paused'" : "'pending','uploading'"
+    let failureGuard = enabled ? " AND failure_kind IS NULL" : ""
+    var countStatement: OpaquePointer?
+    try prepare(
+      "SELECT COUNT(*) FROM backup_jobs WHERE state IN (\(sourceStates))\(failureGuard)",
+      statement: &countStatement, operation: "统计待切换备份任务"
+    )
+    defer { sqlite3_finalize(countStatement) }
+    guard sqlite3_step(countStatement) == SQLITE_ROW else {
+      throw databaseError(operation: "统计待切换备份任务", code: sqlite3_errcode(db))
+    }
+    let changed = Int(integer(countStatement, 0))
+    guard changed > 0 else { return 0 }
+    try writeTransactionUnlocked(operation: enabled ? "恢复备份队列" : "暂停备份队列") {
+      let revision = try nextRevisionUnlocked()
+      let targetState = enabled ? "pending" : "paused"
+      try execute(
+        "UPDATE backup_jobs SET state='\(targetState)', generation=lower(hex(randomblob(16))), error_message=NULL, failure_kind=NULL, revision=\(revision) WHERE state IN (\(sourceStates))\(failureGuard)",
+        operation: enabled ? "恢复备份任务" : "暂停备份任务"
+      )
+      if enabled {
+        try setMetaValueUnlocked(
+          "summary_pending_count",
+          try metaValueUnlocked("summary_pending_count") + Int64(changed)
+        )
+        try setMetaValueUnlocked(
+          "summary_paused_count",
+          try metaValueUnlocked("summary_paused_count") - Int64(changed)
+        )
+      } else {
+        let pending = try metaValueUnlocked("summary_pending_count")
+        let uploading = try metaValueUnlocked("summary_uploading_count")
+        try setMetaValueUnlocked("summary_pending_count", 0)
+        try setMetaValueUnlocked("summary_uploading_count", 0)
+        try setMetaValueUnlocked(
+          "summary_paused_count",
+          try metaValueUnlocked("summary_paused_count") + pending + uploading
+        )
+      }
+    }
+    return changed
+  }
+
   func cleanupCandidateJobsPage(
     afterId: String?, limit: Int = 100
   ) throws -> [[String: Any]] {
