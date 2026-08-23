@@ -533,7 +533,11 @@ class RunnerTests: XCTestCase {
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent("backup-reader-\(UUID().uuidString).mp4")
     defer { try? FileManager.default.removeItem(at: url) }
-    let source = Data((0..<(2 * 1024 * 1024 + 17)).map { UInt8($0 % 251) })
+    let sourceLength = 2 * 1024 * 1024 + 17
+    let sourceBytes: [UInt8] = (0..<sourceLength).map { index in
+      UInt8(index % 251)
+    }
+    let source = Data(sourceBytes)
     try source.write(to: url)
 
     let reader = try IosBackupFileReader(url: url)
