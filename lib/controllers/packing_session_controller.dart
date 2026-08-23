@@ -885,6 +885,26 @@ class PackingSessionController extends ChangeNotifier
     end: end,
   );
 
+  Future<LocalRecordingPage> loadAdjacentLocalRecordings({
+    required int page,
+    required int pageSize,
+    required LocalRecordingCursor cursor,
+    required LocalRecordingPageDirection direction,
+    required int knownTotal,
+    String keyword = '',
+    DateTime? start,
+    DateTime? end,
+  }) => _repository.queryAdjacentSessions(
+    page: page,
+    pageSize: pageSize,
+    cursor: cursor,
+    direction: direction,
+    knownTotal: knownTotal,
+    keyword: keyword,
+    start: start,
+    end: end,
+  );
+
   Future<void> disconnectBackup() => _lanBackupService.disconnect();
 
   Future<NetworkDiagnostics?> fetchNetworkDiagnostics() =>

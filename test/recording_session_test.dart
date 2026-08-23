@@ -789,7 +789,20 @@ void main() {
     );
 
     final SessionRepository repository = testRepository(root);
-    final List<RecordingSession> migrated = await repository.loadSessions();
+    List<RecordingSession> migrated = await repository.loadSessions();
+    for (
+      var attempt = 0;
+      attempt < 100 &&
+          migrated
+                  .map((RecordingSession item) => item.filePath)
+                  .toSet()
+                  .length <
+              migrated.length;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      migrated = await repository.loadSessions();
+    }
 
     expect(migrated, hasLength(2));
     expect(

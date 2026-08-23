@@ -288,27 +288,6 @@ class SessionRepository {
     }
   }
 
-  Future<List<RecordingSession>> loadSessions({
-    bool includeMissingFiles = false,
-  }) => _serializeSessionMutation(
-    () => _loadSessionsUnlocked(includeMissingFiles: includeMissingFiles),
-  );
-
-  Future<List<RecordingSession>> _loadSessionsUnlocked({
-    required bool includeMissingFiles,
-  }) async {
-    await initialize();
-    final List<RecordingSession> sessions = await _recordingDatabase
-        .loadActiveSessions();
-    final List<RecordingSession> resolved = await _resolveAndRepair(sessions);
-    if (includeMissingFiles) return resolved;
-    return resolved
-        .where(
-          (RecordingSession session) => File(session.filePath).existsSync(),
-        )
-        .toList(growable: false);
-  }
-
   Future<LocalRecordingPage> querySessions({
     required int page,
     required int pageSize,
@@ -333,6 +312,43 @@ class SessionRepository {
       page: result.page,
       pageSize: result.pageSize,
       total: result.total,
+      firstCursor: result.firstCursor,
+      lastCursor: result.lastCursor,
+    );
+  }
+
+  Future<LocalRecordingPage> queryAdjacentSessions({
+    required int page,
+    required int pageSize,
+    required LocalRecordingCursor cursor,
+    required LocalRecordingPageDirection direction,
+    required int knownTotal,
+    String keyword = '',
+    DateTime? start,
+    DateTime? end,
+  }) async {
+    await initialize();
+    final LocalRecordingPage result = await _recordingDatabase
+        .queryAdjacentActiveSessions(
+          page: page,
+          pageSize: pageSize,
+          cursor: cursor,
+          direction: direction,
+          knownTotal: knownTotal,
+          keyword: keyword,
+          start: start,
+          end: end,
+        );
+    final List<RecordingSession> resolved = await _resolveAndRepair(
+      result.data,
+    );
+    return LocalRecordingPage(
+      data: resolved,
+      page: result.page,
+      pageSize: result.pageSize,
+      total: result.total,
+      firstCursor: result.firstCursor,
+      lastCursor: result.lastCursor,
     );
   }
 
@@ -437,10 +453,19 @@ class SessionRepository {
       'backup_registration_cursor';
 
   Future<List<RecordingSession>> _loadRecentSessionsUnlocked() async =>
-      (await _recordingDatabase.queryActiveSessions(
-        page: 1,
-        pageSize: 50,
-      )).data;
+      _recordingDatabase.loadRecentActiveSessions();
+
+  Future<List<RecordingSession>> loadRecentSessions() async {
+    await initialize();
+    return _resolveAndRepair(await _loadRecentSessionsUnlocked());
+  }
+
+  Future<List<RecordingSession>> findActiveSessionsByIds(
+    Set<String> ids,
+  ) async {
+    await initialize();
+    return _resolveAndRepair(await _recordingDatabase.findActiveByIds(ids));
+  }
 
   Future<void> dispose() => _disposeFuture ??= _dispose();
 

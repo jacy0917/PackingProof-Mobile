@@ -11,6 +11,23 @@ List<T> flattenRecordingHistoryPages<T>(Map<int, List<T>> pages) {
       .toList(growable: false);
 }
 
+void trimRecordingHistoryPageCache<T>(
+  Map<int, T> pages, {
+  required int currentDataPage,
+  int radius = 2,
+}) {
+  assert(currentDataPage >= 1);
+  assert(radius >= 0);
+  final int firstRetainedPage = (currentDataPage - radius).clamp(
+    1,
+    currentDataPage,
+  );
+  final int lastRetainedPage = currentDataPage + radius;
+  pages.removeWhere(
+    (int page, T _) => page < firstRetainedPage || page > lastRetainedPage,
+  );
+}
+
 int estimateRecordingHistoryCount({
   required RecordingSourceFilter sourceFilter,
   required int localCount,
@@ -49,10 +66,17 @@ List<T> recordingHistoryPageItems<T>({
   required Iterable<T> items,
   required int page,
   required int pageSize,
+  int firstLoadedPage = 0,
 }) {
   assert(page >= 0);
   assert(pageSize > 0);
-  return items.skip(page * pageSize).take(pageSize).toList(growable: false);
+  assert(firstLoadedPage >= 0);
+  final int relativePage = page - firstLoadedPage;
+  if (relativePage < 0) return List<T>.empty(growable: false);
+  return items
+      .skip(relativePage * pageSize)
+      .take(pageSize)
+      .toList(growable: false);
 }
 
 typedef RecordingHistoryNextPagePlan = ({
@@ -108,6 +132,7 @@ RecordingHistoryPagination<T> buildRecordingHistoryPagination<T>({
   required Iterable<T> visibleItems,
   required int requestedPage,
   required int pageSize,
+  int firstLoadedPage = 0,
 }) {
   final List<T> items = visibleItems.toList(growable: false);
   final int estimatedCount = estimateRecordingHistoryCount(
@@ -134,6 +159,7 @@ RecordingHistoryPagination<T> buildRecordingHistoryPagination<T>({
       items: items,
       page: page,
       pageSize: pageSize,
+      firstLoadedPage: firstLoadedPage,
     ),
   );
 }

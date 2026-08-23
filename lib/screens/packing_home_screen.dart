@@ -665,6 +665,7 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
       onRecordingOrientationChanged: _controller.setRecordingOrientation,
       onMinimumBarcodeLengthChanged: _controller.setMinimumBarcodeLength,
       onHistoryPageSizeChanged: _controller.setHistoryPageSize,
+      onLoadAdjacentLocalRecordings: _controller.loadAdjacentLocalRecordings,
       onAutoBackupChanged: _controller.setLanBackupAutoEnabled,
       onBackupRetentionChanged: _controller.setBackupRetention,
       onBackupNow: _controller.backupAllSessions,

@@ -2,6 +2,8 @@ part of 'recordings_screen.dart';
 
 mixin _RecordingsHistoryManagement on _RecordingsHistoryDataCoordinator {
   final Set<String> _selectedIds = <String>{};
+  final Set<String> _selectedLocalIds = <String>{};
+  final Map<String, String> _selectedTrackingNumbers = <String, String>{};
   bool _managing = false;
 
   List<RecordingHistoryItem> get _visibleItems;
@@ -11,12 +13,17 @@ mixin _RecordingsHistoryManagement on _RecordingsHistoryDataCoordinator {
     setState(() {
       _managing = true;
       _selectedIds.clear();
+      _selectedLocalIds.clear();
+      _selectedTrackingNumbers.clear();
       if (keepVisible != null) {
         final int index = _visibleItems.indexWhere(
           (item) => item.session.id == keepVisible.id,
         );
         if (index >= 0) {
-          _historyPage = index ~/ _historyPageSize;
+          final int firstLoadedPage = _localPages.isEmpty
+              ? 0
+              : _localPages.keys.reduce((int a, int b) => a < b ? a : b) - 1;
+          _historyPage = firstLoadedPage + index ~/ _historyPageSize;
         }
       }
     });
@@ -27,6 +34,8 @@ mixin _RecordingsHistoryManagement on _RecordingsHistoryDataCoordinator {
     setState(() {
       _managing = false;
       _selectedIds.clear();
+      _selectedLocalIds.clear();
+      _selectedTrackingNumbers.clear();
     });
     widget.onManagingChanged?.call(false);
   }
@@ -51,8 +60,24 @@ mixin _RecordingsHistoryManagement on _RecordingsHistoryDataCoordinator {
 
   void _toggleSelection(String id) {
     setState(() {
-      if (!_selectedIds.add(id)) {
+      if (_selectedIds.add(id)) {
+        RecordingHistoryItem? selected;
+        for (final RecordingHistoryItem item in _visibleItems) {
+          if (item.session.id == id) {
+            selected = item;
+            break;
+          }
+        }
+        if (selected != null) {
+          _selectedTrackingNumbers[id] = selected.session.displayCode;
+        }
+        if (_sessions.any((RecordingSession session) => session.id == id)) {
+          _selectedLocalIds.add(id);
+        }
+      } else {
         _selectedIds.remove(id);
+        _selectedLocalIds.remove(id);
+        _selectedTrackingNumbers.remove(id);
       }
     });
   }
@@ -64,8 +89,20 @@ mixin _RecordingsHistoryManagement on _RecordingsHistoryDataCoordinator {
     setState(() {
       if (_selectedIds.containsAll(pageIds) && pageIds.isNotEmpty) {
         _selectedIds.removeAll(pageIds);
+        _selectedLocalIds.removeAll(pageIds);
+        for (final String id in pageIds) {
+          _selectedTrackingNumbers.remove(id);
+        }
       } else {
         _selectedIds.addAll(pageIds);
+        for (final RecordingSession session in currentPageSessions) {
+          _selectedTrackingNumbers[session.id] = session.displayCode;
+          if (_sessions.any(
+            (RecordingSession local) => local.id == session.id,
+          )) {
+            _selectedLocalIds.add(session.id);
+          }
+        }
       }
     });
   }
@@ -74,12 +111,7 @@ mixin _RecordingsHistoryManagement on _RecordingsHistoryDataCoordinator {
     if (_selectedIds.isEmpty) {
       return;
     }
-    final Set<String> localIds = _selectedIds
-        .where(
-          (String id) =>
-              _sessions.any((RecordingSession session) => session.id == id),
-        )
-        .toSet();
+    final Set<String> localIds = Set<String>.of(_selectedLocalIds);
     if (localIds.isEmpty) {
       ScaffoldMessenger.of(
         context,
@@ -120,6 +152,8 @@ mixin _RecordingsHistoryManagement on _RecordingsHistoryDataCoordinator {
       _sessions.removeWhere((RecordingSession item) => ids.contains(item.id));
       _refreshLocalRecordingStats();
       _selectedIds.clear();
+      _selectedLocalIds.clear();
+      _selectedTrackingNumbers.clear();
       _managing = false;
     });
     widget.onManagingChanged?.call(false);
@@ -130,9 +164,8 @@ mixin _RecordingsHistoryManagement on _RecordingsHistoryDataCoordinator {
     final List<String> codes = <String>[];
     final Set<String> seen = <String>{};
     int duplicateRows = 0;
-    for (final RecordingHistoryItem item in _visibleItems) {
-      if (!_selectedIds.contains(item.session.id)) continue;
-      final String code = item.session.displayCode;
+    for (final String id in _selectedIds) {
+      final String code = _selectedTrackingNumbers[id] ?? '';
       if (code.isEmpty || code == RecordingSession.unrecognizedLabel) continue;
       if (!seen.add(code)) {
         duplicateRows++;

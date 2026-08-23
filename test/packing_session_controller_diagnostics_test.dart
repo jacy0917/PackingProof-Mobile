@@ -1099,13 +1099,11 @@ class _UnknownPostCommitRepository extends SessionRepository {
   }
 
   @override
-  Future<List<RecordingSession>> loadSessions({
-    bool includeMissingFiles = false,
-  }) {
+  Future<List<RecordingSession>> findActiveSessionsByIds(Set<String> ids) {
     if (completedCommitted) {
       throw StateError('confirmation read failed');
     }
-    return super.loadSessions(includeMissingFiles: includeMissingFiles);
+    return super.findActiveSessionsByIds(ids);
   }
 }
 

@@ -10,6 +10,8 @@ import 'package:packing_proof_mobile/services/continuous_camera_service.dart';
 import 'package:packing_proof_mobile/services/recording_database.dart';
 import 'package:sqflite/sqflite.dart';
 
+import 'test_repository.dart';
+
 void main() {
   test('原生实时水印结果映射为最终数据库状态', () {
     expect(

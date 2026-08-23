@@ -9,6 +9,8 @@ import 'package:packing_proof_mobile/services/recording_database.dart'
     as production;
 import 'package:sqflite/sqflite.dart';
 
+import 'test_repository.dart';
+
 class RecordingDatabase extends production.RecordingDatabase {
   RecordingDatabase({
     required super.path,

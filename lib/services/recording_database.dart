@@ -15,15 +15,28 @@ class LocalRecordingPage {
     required this.page,
     required this.pageSize,
     required this.total,
+    this.firstCursor,
+    this.lastCursor,
   });
 
   final List<RecordingSession> data;
   final int page;
   final int pageSize;
   final int total;
+  final LocalRecordingCursor? firstCursor;
+  final LocalRecordingCursor? lastCursor;
 
   int get pageCount => total <= 0 ? 0 : (total + pageSize - 1) ~/ pageSize;
 }
+
+class LocalRecordingCursor {
+  const LocalRecordingCursor({required this.startedAt, required this.id});
+
+  final int startedAt;
+  final String id;
+}
+
+enum LocalRecordingPageDirection { older, newer }
 
 class RecordingBackupRow {
   const RecordingBackupRow({
@@ -434,17 +447,6 @@ class RecordingDatabase {
     await source.copy(archivePath);
   }
 
-  Future<List<RecordingSession>> loadActiveSessions() async {
-    final Database db = await _db;
-    final List<Map<String, Object?>> rows = await db.query(
-      'recording_sessions',
-      columns: _sessionPayloadColumns,
-      where: 'is_deleted = 0',
-      orderBy: 'started_at DESC, id DESC',
-    );
-    return rows.map(_sessionFromRow).toList(growable: false);
-  }
-
   Future<List<({String id, String filePath})>> loadActiveSessionPaths() async {
     final Database db = await _db;
     final List<Map<String, Object?>> rows = await db.query(
@@ -468,6 +470,52 @@ class RecordingDatabase {
     DateTime? start,
     DateTime? end,
   }) async {
+    if (page != 1) {
+      throw ArgumentError.value(
+        page,
+        'page',
+        '首屏查询只能请求第 1 页，后续页必须使用 keyset 游标',
+      );
+    }
+    return _queryActiveSessions(
+      page: page,
+      pageSize: pageSize,
+      keyword: keyword,
+      start: start,
+      end: end,
+    );
+  }
+
+  Future<LocalRecordingPage> queryAdjacentActiveSessions({
+    required int page,
+    required int pageSize,
+    required LocalRecordingCursor cursor,
+    required LocalRecordingPageDirection direction,
+    required int knownTotal,
+    String keyword = '',
+    DateTime? start,
+    DateTime? end,
+  }) => _queryActiveSessions(
+    page: page,
+    pageSize: pageSize,
+    keyword: keyword,
+    start: start,
+    end: end,
+    cursor: cursor,
+    direction: direction,
+    knownTotal: knownTotal,
+  );
+
+  Future<LocalRecordingPage> _queryActiveSessions({
+    required int page,
+    required int pageSize,
+    required String keyword,
+    required DateTime? start,
+    required DateTime? end,
+    LocalRecordingCursor? cursor,
+    LocalRecordingPageDirection? direction,
+    int? knownTotal,
+  }) async {
     final Database db = await _db;
     final int normalizedPage = page < 1 ? 1 : page;
     final int normalizedSize = pageSize.clamp(1, 100);
@@ -486,27 +534,99 @@ class RecordingDatabase {
       conditions.add('started_at < ?');
       args.add(end.millisecondsSinceEpoch);
     }
+    final String countWhere = conditions.join(' AND ');
+    final List<Object?> countArgs = List<Object?>.of(args, growable: false);
+    if (cursor != null && direction != null) {
+      final ({String primary, String tieBreak}) comparisons =
+          switch (direction) {
+            LocalRecordingPageDirection.older => (primary: '<', tieBreak: '<'),
+            LocalRecordingPageDirection.newer => (primary: '>', tieBreak: '>'),
+          };
+      // Android 7.0/7.1 ship SQLite 3.9.2; row-value comparisons were not
+      // supported until SQLite 3.15. Keep the compound keyset predicate scalar.
+      conditions.add(
+        '(started_at ${comparisons.primary} ? OR '
+        '(started_at = ? AND id ${comparisons.tieBreak} ?))',
+      );
+      args.addAll(<Object?>[cursor.startedAt, cursor.startedAt, cursor.id]);
+    }
     final String where = conditions.join(' AND ');
-    final List<Map<String, Object?>> countRows = await db.rawQuery(
-      'SELECT COUNT(1) AS total FROM recording_sessions WHERE $where',
-      args,
+    final int total;
+    if (knownTotal == null) {
+      final List<Map<String, Object?>> countRows = await db.rawQuery(
+        'SELECT COUNT(1) AS total FROM recording_sessions '
+        'WHERE $countWhere',
+        countArgs,
+      );
+      total = Sqflite.firstIntValue(countRows) ?? 0;
+    } else {
+      total = knownTotal;
+    }
+    final bool ascending = direction == LocalRecordingPageDirection.newer;
+    List<Map<String, Object?>> rows = await db.rawQuery(
+      'SELECT ${<String>[..._sessionPayloadColumns, 'started_at', 'id'].join(', ')} '
+      'FROM recording_sessions INDEXED BY idx_recording_active_time '
+      'WHERE $where '
+      'ORDER BY started_at ${ascending ? 'ASC' : 'DESC'}, '
+      'id ${ascending ? 'ASC' : 'DESC'} LIMIT ?',
+      <Object?>[...args, normalizedSize],
     );
-    final int total = Sqflite.firstIntValue(countRows) ?? 0;
-    final List<Map<String, Object?>> rows = await db.query(
-      'recording_sessions',
-      columns: _sessionPayloadColumns,
-      where: where,
-      whereArgs: args,
-      orderBy: 'started_at DESC, id DESC',
-      limit: normalizedSize,
-      offset: (normalizedPage - 1) * normalizedSize,
-    );
+    if (ascending) rows = rows.reversed.toList(growable: false);
+    LocalRecordingCursor cursorFor(Map<String, Object?> row) =>
+        LocalRecordingCursor(
+          startedAt: row['started_at']! as int,
+          id: row['id']! as String,
+        );
     return LocalRecordingPage(
       data: rows.map(_sessionFromRow).toList(growable: false),
       page: normalizedPage,
       pageSize: normalizedSize,
       total: total,
+      firstCursor: rows.isEmpty ? null : cursorFor(rows.first),
+      lastCursor: rows.isEmpty ? null : cursorFor(rows.last),
     );
+  }
+
+  @visibleForTesting
+  Future<List<String>> explainActiveSessionCursorQueryForTesting({
+    required LocalRecordingCursor cursor,
+    LocalRecordingPageDirection direction = LocalRecordingPageDirection.older,
+  }) async {
+    final Database db = await _db;
+    final String comparison = direction == LocalRecordingPageDirection.older
+        ? '<'
+        : '>';
+    final String order = direction == LocalRecordingPageDirection.older
+        ? 'DESC'
+        : 'ASC';
+    final List<Map<String, Object?>> rows = await db.rawQuery(
+      'EXPLAIN QUERY PLAN SELECT id FROM recording_sessions '
+      'INDEXED BY idx_recording_active_time '
+      'WHERE is_deleted = 0 AND '
+      '(started_at $comparison ? OR '
+      '(started_at = ? AND id $comparison ?)) '
+      'ORDER BY started_at $order, id $order LIMIT ?',
+      <Object?>[cursor.startedAt, cursor.startedAt, cursor.id, 100],
+    );
+    return rows
+        .map((Map<String, Object?> row) => row.values.join(' '))
+        .toList(growable: false);
+  }
+
+  /// 录像写入热路径只需要刷新界面最近记录，不计算随总量增长的完整总数。
+  Future<List<RecordingSession>> loadRecentActiveSessions({
+    int limit = 50,
+  }) async {
+    final Database db = await _db;
+    final int normalizedLimit = limit.clamp(1, 100);
+    final List<Map<String, Object?>> rows = await db.query(
+      'recording_sessions',
+      columns: _sessionPayloadColumns,
+      where: 'is_deleted = 0',
+      orderBy: 'started_at DESC, id DESC',
+      limit: normalizedLimit,
+    );
+    return rows.map(_sessionFromRow).toList(growable: false);
   }
 
   Future<bool> hasRecentTrackingNumber(

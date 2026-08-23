@@ -14,6 +14,27 @@ void main() {
     );
   });
 
+  test('本地页缓存仅保留当前页前后各两页', () {
+    final Map<int, String> pages = <int, String>{
+      for (var page = 1; page <= 12; page++) page: 'page-$page',
+    };
+
+    trimRecordingHistoryPageCache(pages, currentDataPage: 7);
+
+    expect(pages.keys, <int>[5, 6, 7, 8, 9]);
+    expect(pages, hasLength(5));
+  });
+
+  test('靠近首屏时页缓存不会为凑足五页越过当前页后两页', () {
+    final Map<int, String> pages = <int, String>{
+      for (var page = 1; page <= 8; page++) page: 'page-$page',
+    };
+
+    trimRecordingHistoryPageCache(pages, currentDataPage: 1);
+
+    expect(pages.keys, <int>[1, 2, 3]);
+  });
+
   test('不同来源沿用原有估算总数规则', () {
     int estimate(RecordingSourceFilter sourceFilter) =>
         estimateRecordingHistoryCount(
@@ -81,6 +102,18 @@ void main() {
         pageSize: 2,
       ),
       <int>[3, 4],
+    );
+  });
+
+  test('缓存窗口从深页开始时按相对页码切片', () {
+    expect(
+      recordingHistoryPageItems(
+        items: <int>[30, 31, 40, 41, 50, 51],
+        page: 4,
+        pageSize: 2,
+        firstLoadedPage: 3,
+      ),
+      <int>[40, 41],
     );
   });
 

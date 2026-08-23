@@ -6,8 +6,7 @@ mixin _RecordingsHistoryDataCoordinator on _RecordingsBackupCoordinator {
   @override
   final Map<int, List<RemoteRecording>> _remotePages =
       <int, List<RemoteRecording>>{};
-  final Map<int, List<RecordingSession>> _localPages =
-      <int, List<RecordingSession>>{};
+  final Map<int, LocalRecordingPage> _localPages = <int, LocalRecordingPage>{};
   final Map<int, ({RemoteRecordingStatus status, bool exists, String reason})>
   _remoteStatuses = {};
   @override
@@ -80,17 +79,13 @@ mixin _RecordingsHistoryDataCoordinator on _RecordingsBackupCoordinator {
       }
     });
     try {
-      final LocalRecordingPage result = await callback(
-        page: pageNumber,
-        pageSize: _historyPageSize,
-        keyword: _query,
-        start: _activeDateWindow?.start,
-        end: _activeDateWindow?.end,
-      );
+      final LocalRecordingPage? result = await _fetchLocalPage(pageNumber);
+      if (result == null) return;
       if (!mounted || generation != _localRequestGeneration) return;
       setState(() {
-        _localPages[result.page] = result.data;
+        _localPages[result.page] = result;
         _localTotal = result.total;
+        _trimLocalPageCache();
         _rebuildLocalRecordings();
         _refreshLocalRecordingStats();
       });
@@ -107,19 +102,14 @@ mixin _RecordingsHistoryDataCoordinator on _RecordingsBackupCoordinator {
   }
 
   Future<void> _loadLocalPageWithoutBusy(int pageNumber, int generation) async {
-    final callback = widget.onLoadLocalRecordings;
-    if (callback == null || _localPages.containsKey(pageNumber)) return;
-    final LocalRecordingPage page = await callback(
-      page: pageNumber,
-      pageSize: _historyPageSize,
-      keyword: _query,
-      start: _activeDateWindow?.start,
-      end: _activeDateWindow?.end,
-    );
+    if (_localPages.containsKey(pageNumber)) return;
+    final LocalRecordingPage? page = await _fetchLocalPage(pageNumber);
+    if (page == null) return;
     if (!mounted || generation != _localRequestGeneration) return;
     setState(() {
-      _localPages[page.page] = page.data;
+      _localPages[page.page] = page;
       _localTotal = page.total;
+      _trimLocalPageCache();
       _rebuildLocalRecordings();
       _refreshLocalRecordingStats();
     });
@@ -128,7 +118,74 @@ mixin _RecordingsHistoryDataCoordinator on _RecordingsBackupCoordinator {
   void _rebuildLocalRecordings() {
     _sessions
       ..clear()
-      ..addAll(flattenRecordingHistoryPages(_localPages));
+      ..addAll(
+        flattenRecordingHistoryPages(<int, List<RecordingSession>>{
+          for (final MapEntry<int, LocalRecordingPage> entry
+              in _localPages.entries)
+            entry.key: entry.value.data,
+        }),
+      );
+  }
+
+  Future<LocalRecordingPage?> _fetchLocalPage(int pageNumber) async {
+    final callback = widget.onLoadLocalRecordings;
+    if (callback == null) return null;
+    if (pageNumber == 1) {
+      return callback(
+        page: 1,
+        pageSize: _historyPageSize,
+        keyword: _query,
+        start: _activeDateWindow?.start,
+        end: _activeDateWindow?.end,
+      );
+    }
+    final adjacentCallback = widget.onLoadAdjacentLocalRecordings;
+    if (adjacentCallback != null) {
+      final LocalRecordingPage? previousPage = _localPages[pageNumber - 1];
+      final LocalRecordingCursor? olderCursor = previousPage?.lastCursor;
+      if (olderCursor != null) {
+        return adjacentCallback(
+          page: pageNumber,
+          pageSize: _historyPageSize,
+          cursor: olderCursor,
+          direction: LocalRecordingPageDirection.older,
+          knownTotal: _localTotal,
+          keyword: _query,
+          start: _activeDateWindow?.start,
+          end: _activeDateWindow?.end,
+        );
+      }
+      final LocalRecordingPage? nextPage = _localPages[pageNumber + 1];
+      final LocalRecordingCursor? newerCursor = nextPage?.firstCursor;
+      if (newerCursor != null) {
+        return adjacentCallback(
+          page: pageNumber,
+          pageSize: _historyPageSize,
+          cursor: newerCursor,
+          direction: LocalRecordingPageDirection.newer,
+          knownTotal: _localTotal,
+          keyword: _query,
+          start: _activeDateWindow?.start,
+          end: _activeDateWindow?.end,
+        );
+      }
+      return null;
+    }
+    // 仅供未迁移的注入式测试/嵌入方兼容；正式仓库加载器始终走上面的游标 API。
+    return callback(
+      page: pageNumber,
+      pageSize: _historyPageSize,
+      keyword: _query,
+      start: _activeDateWindow?.start,
+      end: _activeDateWindow?.end,
+    );
+  }
+
+  void _trimLocalPageCache() {
+    trimRecordingHistoryPageCache(
+      _localPages,
+      currentDataPage: _historyPage + 1,
+    );
   }
 
   @override

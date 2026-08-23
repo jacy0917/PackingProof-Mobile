@@ -38,9 +38,7 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
                 maximumAttempts: _maximumWatermarkAttempts,
               );
           if (claim == null || !claim.claimed) {
-            _sessions = await _repository.loadSessions(
-              includeMissingFiles: true,
-            );
+            _sessions = await _repository.loadRecentSessions();
             await _logWatermarkEvent(
               kind: 'watermark_claim_skipped',
               extra: <String, Object?>{
@@ -61,7 +59,7 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
             return;
           }
           processingSession = claim.session;
-          _sessions = await _repository.loadSessions(includeMissingFiles: true);
+          _sessions = await _repository.loadRecentSessions();
         }
         inputBytes = await _watermarkFileBytes(savedPath);
         await _logWatermarkEvent(
@@ -120,8 +118,8 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
             // upsert 可能已提交、仅后续 recent reload 失败；先重读再决定补偿。
             late final List<RecordingSession> latestSessions;
             try {
-              latestSessions = await _repository.loadSessions(
-                includeMissingFiles: true,
+              latestSessions = await _repository.findActiveSessionsByIds(
+                <String>{finalized.id},
               );
             } on Object {
               throw const _WatermarkFinalizationStateUnknownException();
@@ -134,7 +132,7 @@ mixin _PackingSessionWatermarkCoordinator on _PackingSessionStorageCoordinator {
                       WatermarkProcessingStatus.completed,
             );
             if (completedWasPersisted) {
-              _sessions = latestSessions;
+              _sessions = await _repository.loadRecentSessions();
             } else if (finalPath != savedPath) {
               // 只有确认 DB 未指向新成片时才清理，绝不删原片或状态不明的成片。
               try {
