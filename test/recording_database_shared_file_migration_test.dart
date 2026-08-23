@@ -118,6 +118,19 @@ void main() {
       count: 10000,
       payloadJson: '{invalid-json',
     );
+    final Database incomplete = await databaseFactory.openDatabase(
+      databasePath,
+      options: OpenDatabaseOptions(singleInstance: false),
+    );
+    await incomplete.delete(
+      'recording_metadata',
+      where: 'key IN (?, ?)',
+      whereArgs: const <Object?>[
+        'shared_file_materialization_v1',
+        'recording_file_owners_ready_v1',
+      ],
+    );
+    await incomplete.close();
 
     var visitedRows = 0;
     final RecordingDatabase database = RecordingDatabase(

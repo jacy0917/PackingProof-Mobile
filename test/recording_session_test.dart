@@ -7,6 +7,7 @@ import 'package:packing_proof_mobile/models/recording_session.dart';
 import 'package:packing_proof_mobile/models/recording_operation_mode.dart';
 import 'package:packing_proof_mobile/models/work_mode.dart';
 import 'package:packing_proof_mobile/services/session_repository.dart';
+import 'package:sqflite/sqflite.dart';
 
 import 'test_repository.dart';
 
@@ -540,6 +541,30 @@ void main() {
     expect(logs.single.trackingNumber, 'AUDIT001');
     expect(logs.single.reason, '手动删除');
     expect(logs.single.fileSizeBytes, 4);
+
+    await repository.dispose();
+    final Database raw = await databaseFactory.openDatabase(
+      '${root.path}/recordings.db',
+      options: OpenDatabaseOptions(singleInstance: false),
+    );
+    expect(
+      await raw.query(
+        'recording_metadata',
+        columns: const <String>['key'],
+        where: 'key IN (?, ?)',
+        whereArgs: const <Object?>[
+          'shared_file_materialization_v1',
+          'recording_file_owners_ready_v1',
+        ],
+      ),
+      hasLength(2),
+    );
+    await raw.close();
+
+    final SessionRepository reopened = testRepository(root);
+    expect(await reopened.loadSessions(includeMissingFiles: true), isEmpty);
+    expect((await reopened.loadDeleteLogs()).single.sessionId, 'audit-session');
+    expect(File(path).existsSync(), isFalse);
   });
 
   test('文件缺失只标记状态，不丢弃录像历史', () async {

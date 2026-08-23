@@ -272,6 +272,7 @@ class RecordingDatabase {
         )
       ''');
       await _createRecordingFileOwnersTable(db);
+      await _markSharedFileMigrationComplete(db);
       await db.execute(
         'CREATE INDEX idx_recording_active_time '
         'ON recording_sessions(is_deleted, started_at DESC, id DESC)',
@@ -2435,20 +2436,27 @@ class RecordingDatabase {
 
   Future<void> _completeSharedFileMigration(Database db) =>
       db.transaction((Transaction txn) async {
-        await txn.insert('recording_metadata', <String, Object?>{
-          'key': _sharedFileMigrationKey,
-          'value': DateTime.now().toUtc().toIso8601String(),
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-        await txn.insert('recording_metadata', <String, Object?>{
-          'key': _recordingFileOwnersReadyKey,
-          'value': DateTime.now().toUtc().toIso8601String(),
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-        await txn.delete(
-          'recording_metadata',
-          where: 'key = ?',
-          whereArgs: <Object?>[_sharedFileMigrationCursorKey],
-        );
+        await _markSharedFileMigrationComplete(txn);
       });
+
+  static Future<void> _markSharedFileMigrationComplete(
+    DatabaseExecutor db,
+  ) async {
+    final String completedAt = DateTime.now().toUtc().toIso8601String();
+    await db.insert('recording_metadata', <String, Object?>{
+      'key': _sharedFileMigrationKey,
+      'value': completedAt,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert('recording_metadata', <String, Object?>{
+      'key': _recordingFileOwnersReadyKey,
+      'value': completedAt,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.delete(
+      'recording_metadata',
+      where: 'key = ?',
+      whereArgs: <Object?>[_sharedFileMigrationCursorKey],
+    );
+  }
 
   static Future<void> _resetSharedFileMigration(DatabaseExecutor db) async {
     await db.delete(

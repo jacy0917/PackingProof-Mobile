@@ -25,8 +25,8 @@ void main() {
     if (await root.exists()) await root.delete(recursive: true);
   });
 
-  test('迁移暂停时删除规范化路径别名记录仍保留唯一原片', () async {
-    await _seedSharedSessions(root, <String>[
+  test('真实 v2 库迁移暂停时删除路径别名记录仍保留唯一原片', () async {
+    await _seedV2SharedSessions(root, <String>[
       source.path,
       '${source.parent.path}/./legacy.mp4',
     ]);
@@ -104,6 +104,69 @@ void main() {
       isTrue,
     );
   });
+}
+
+Future<void> _seedV2SharedSessions(Directory root, List<String> paths) async {
+  final Database database = await openDatabase(
+    '${root.path}/recordings.db',
+    version: 2,
+    onCreate: (Database db, int version) async {
+      await db.execute('''
+        CREATE TABLE recording_sessions (
+          id TEXT PRIMARY KEY,
+          file_path TEXT NOT NULL,
+          started_at INTEGER NOT NULL,
+          ended_at INTEGER NOT NULL,
+          tracking_number TEXT NOT NULL DEFAULT '',
+          order_id TEXT NOT NULL DEFAULT '',
+          search_text TEXT NOT NULL DEFAULT '',
+          payload_json TEXT NOT NULL,
+          file_size_bytes INTEGER NOT NULL DEFAULT 0,
+          is_deleted INTEGER NOT NULL DEFAULT 0,
+          deleted_at INTEGER,
+          delete_reason TEXT NOT NULL DEFAULT '',
+          missing_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          recording_orientation TEXT NOT NULL DEFAULT 'portrait',
+          watermark_status TEXT NOT NULL DEFAULT 'completed',
+          watermark_attempt_count INTEGER NOT NULL DEFAULT 0
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE recording_delete_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          file_path TEXT NOT NULL,
+          session_id TEXT NOT NULL DEFAULT '',
+          tracking_number TEXT NOT NULL DEFAULT '',
+          file_size_bytes INTEGER NOT NULL DEFAULT 0,
+          deleted_at INTEGER NOT NULL,
+          reason TEXT NOT NULL DEFAULT ''
+        )
+      ''');
+    },
+  );
+  final DateTime startedAt = DateTime.utc(2026, 8, 23, 8);
+  for (var index = 0; index < paths.length; index++) {
+    final RecordingSession session = RecordingSession(
+      id: 'legacy-$index',
+      filePath: paths[index],
+      startedAt: startedAt.add(Duration(seconds: index)),
+      endedAt: startedAt.add(Duration(seconds: index + 1)),
+      markers: const <Never>[],
+    );
+    await database.insert('recording_sessions', <String, Object?>{
+      'id': session.id,
+      'file_path': session.filePath,
+      'started_at': session.startedAt.millisecondsSinceEpoch,
+      'ended_at': session.endedAt.millisecondsSinceEpoch,
+      'payload_json': jsonEncode(session.toJson()),
+      'file_size_bytes': await File(paths[index]).length(),
+      'created_at': index + 1,
+      'updated_at': index + 1,
+    });
+  }
+  await database.close();
 }
 
 Future<void> _seedSharedSessions(Directory root, List<String> paths) async {
