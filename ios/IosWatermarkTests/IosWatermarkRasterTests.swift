@@ -23,6 +23,61 @@ final class IosWatermarkRasterTests: XCTestCase {
     )
   }
 
+  func testHostPolicyMaintainsAndRecoversWatermarkDuringSplitFinalization() {
+    XCTAssertTrue(
+      IosLiveWatermarkHostPolicy.canMaintainPreview(
+        writerActive: false,
+        preservingSplit: true
+      )
+    )
+    XCTAssertFalse(
+      IosLiveWatermarkHostPolicy.preparationFailureIsFatal(
+        IosLiveWatermarkError.planNotReady
+      )
+    )
+    XCTAssertFalse(
+      IosLiveWatermarkHostPolicy.preparationFailureIsFatal(
+        IosLiveWatermarkError.planExpired(
+          requestedSecond: 12,
+          availableSecond: 10
+        )
+      )
+    )
+    XCTAssertFalse(
+      IosLiveWatermarkHostPolicy.shouldPublishPreviewFrame(
+        watermarkRequired: true,
+        transientPreparationFailure: true
+      )
+    )
+    XCTAssertTrue(
+      IosLiveWatermarkHostPolicy.shouldPublishPreviewFrame(
+        watermarkRequired: true,
+        transientPreparationFailure: false
+      )
+    )
+  }
+
+  func testHostPolicyClearsPreservedWatermarkOnlyAfterSplitFailure() {
+    XCTAssertTrue(
+      IosLiveWatermarkHostPolicy.shouldClearPreservedPreview(
+        writerActive: false,
+        preservingSplit: true
+      )
+    )
+    XCTAssertFalse(
+      IosLiveWatermarkHostPolicy.shouldClearPreservedPreview(
+        writerActive: true,
+        preservingSplit: true
+      )
+    )
+    XCTAssertFalse(
+      IosLiveWatermarkHostPolicy.shouldClearPreservedPreview(
+        writerActive: false,
+        preservingSplit: false
+      )
+    )
+  }
+
   func testAttributedTextUsesFixedPreviewLineHeight() throws {
     let fontSize: CGFloat = 40
     let text = IosWatermarkStyle.attributedText(

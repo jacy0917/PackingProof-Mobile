@@ -398,6 +398,7 @@ final class IosCameraHostApi:
             return
           }
           if case .failure(let error) = finishResult {
+            self.clearPreservedWatermarkPreview()
             if self.recordingLifecycle.complete(request, succeeded: false) {
               completion(.failure(error))
             }
@@ -419,6 +420,7 @@ final class IosCameraHostApi:
               )))
             }
           } catch {
+            self.clearPreservedWatermarkPreview()
             self.eventApi.nativeError(
               message: "切换录像文件失败：\(error.localizedDescription)",
               completion: { _ in }
@@ -811,9 +813,14 @@ final class IosCameraHostApi:
         return
       }
       var shouldAppendVideo = true
-      if (writer != nil || preservesWatermarkDuringSplit)
-          && !currentTrackingNumber.isEmpty
-          && !currentWatermarkFailed {
+      var transientWatermarkFailure = false
+      let watermarkRequired = IosLiveWatermarkHostPolicy.canMaintainPreview(
+        writerActive: writer != nil,
+        preservingSplit: preservesWatermarkDuringSplit
+      )
+        && !currentTrackingNumber.isEmpty
+        && !currentWatermarkFailed
+      if watermarkRequired {
         do {
           try liveWatermarkRenderer.apply(
             to: pixelBuffer,
@@ -821,10 +828,11 @@ final class IosCameraHostApi:
             trackingNumber: currentTrackingNumber
           )
         } catch let error where iosLiveWatermarkErrorIsTransient(error) {
+          transientWatermarkFailure = true
           if writer != nil {
             shouldAppendVideo = false
-            prepareInitialWatermarkPlanIfNeeded(from: pixelBuffer)
           }
+          prepareInitialWatermarkPlanIfNeeded(from: pixelBuffer)
         } catch {
           if writer != nil {
             currentWatermarkFailed = true
@@ -836,12 +844,17 @@ final class IosCameraHostApi:
           }
         }
       }
-      bufferLock.lock()
-      latestPixelBuffer = pixelBuffer
-      bufferLock.unlock()
-      let textureId = currentTextureId
-      if textureId >= 0 && !isDisposed {
-        textures.textureFrameAvailable(textureId)
+      if IosLiveWatermarkHostPolicy.shouldPublishPreviewFrame(
+        watermarkRequired: watermarkRequired,
+        transientPreparationFailure: transientWatermarkFailure
+      ) {
+        bufferLock.lock()
+        latestPixelBuffer = pixelBuffer
+        bufferLock.unlock()
+        let textureId = currentTextureId
+        if textureId >= 0 && !isDisposed {
+          textures.textureFrameAvailable(textureId)
+        }
       }
       if shouldAppendVideo {
         appendVideo(sampleBuffer, pixelBuffer: pixelBuffer)
@@ -1365,7 +1378,12 @@ final class IosCameraHostApi:
   }
 
   private func prepareInitialWatermarkPlanIfNeeded(from pixelBuffer: CVPixelBuffer) {
-    guard !watermarkPreparationPending, writer != nil, !currentWatermarkFailed else {
+    guard !watermarkPreparationPending,
+          IosLiveWatermarkHostPolicy.canMaintainPreview(
+            writerActive: writer != nil,
+            preservingSplit: preservesWatermarkDuringSplit
+          ),
+          !currentWatermarkFailed else {
       return
     }
     watermarkPreparationPending = true
@@ -1379,11 +1397,18 @@ final class IosCameraHostApi:
     ) { [weak self] result in
       guard let self else { return }
       self.sessionQueue.async {
-        guard self.writer != nil, self.currentSegmentSerial == segmentSerial else {
+        guard IosLiveWatermarkHostPolicy.canMaintainPreview(
+                writerActive: self.writer != nil,
+                preservingSplit: self.preservesWatermarkDuringSplit
+              ),
+              self.currentSegmentSerial == segmentSerial else {
           return
         }
         self.watermarkPreparationPending = false
         if case .failure(let error) = result {
+          if !IosLiveWatermarkHostPolicy.preparationFailureIsFatal(error) {
+            return
+          }
           self.currentWatermarkFailed = true
           self.currentWatermarkError = String(describing: error)
           self.eventApi.nativeError(
@@ -1393,6 +1418,19 @@ final class IosCameraHostApi:
         }
       }
     }
+  }
+
+  private func clearPreservedWatermarkPreview() {
+    guard IosLiveWatermarkHostPolicy.shouldClearPreservedPreview(
+      writerActive: writer != nil,
+      preservingSplit: preservesWatermarkDuringSplit
+    ) else { return }
+    preservesWatermarkDuringSplit = false
+    currentTrackingNumber = ""
+    currentWatermarkFailed = false
+    currentWatermarkError = nil
+    liveWatermarkRenderer.reset()
+    watermarkPreparationPending = false
   }
 
   private func appendVideo(_ sampleBuffer: CMSampleBuffer, pixelBuffer: CVPixelBuffer) {

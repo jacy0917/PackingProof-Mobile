@@ -180,6 +180,33 @@ func iosLiveWatermarkErrorIsTransient(_ error: Error) -> Bool {
   }
 }
 
+enum IosLiveWatermarkHostPolicy {
+  static func canMaintainPreview(
+    writerActive: Bool,
+    preservingSplit: Bool
+  ) -> Bool {
+    writerActive || preservingSplit
+  }
+
+  static func preparationFailureIsFatal(_ error: Error) -> Bool {
+    !iosLiveWatermarkErrorIsTransient(error)
+  }
+
+  static func shouldPublishPreviewFrame(
+    watermarkRequired: Bool,
+    transientPreparationFailure: Bool
+  ) -> Bool {
+    !watermarkRequired || !transientPreparationFailure
+  }
+
+  static func shouldClearPreservedPreview(
+    writerActive: Bool,
+    preservingSplit: Bool
+  ) -> Bool {
+    preservingSplit && !writerActive
+  }
+}
+
 struct IosLiveWatermarkGeometry {
   static func outputSize(
     sourceWidth: Int,
