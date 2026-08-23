@@ -993,20 +993,11 @@ class _RecordingsScreenState extends State<RecordingsScreen>
         : _localTotal;
     final bool hasOtherDeviceRecordings = _hasOtherDeviceRecordings;
     final List<RecordingSession> existingLocalSessions = _existingLocalSessions;
-    final Set<String> confirmedBackupPaths = _backupJobsByPath.entries
-        .where(
-          (MapEntry<String, List<LanBackupJob>> entry) =>
-              entry.value.any(_isJobConfirmedAvailable),
-        )
-        .map((MapEntry<String, List<LanBackupJob>> entry) => entry.key)
-        .toSet();
-    final bool allLocalFilesBackedUp = _localRecordingPaths
-        .map(lanBackupFileIdentity)
-        .every(confirmedBackupPaths.contains);
-    final int remainingBackupCount = _localRecordingPaths
-        .map(lanBackupFileIdentity)
-        .where((String path) => !confirmedBackupPaths.contains(path))
-        .length;
+    final int remainingBackupCount = _backupSnapshot.endpoint == null
+        ? widget.recordingStatistics?.total ?? localLogicalCount
+        : _backupSnapshot.pendingCount;
+    final bool allLocalFilesBackedUp =
+        _backupSnapshot.endpoint != null && remainingBackupCount == 0;
     final RecordingHistoryPagination<RecordingHistoryItem> pagination =
         buildRecordingHistoryPagination(
           sourceFilter: _sourceFilter,

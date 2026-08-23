@@ -1689,16 +1689,47 @@ void main() {
           onSpeechPreview: () async {},
           onSessionUpdated: (_) async {},
           onDeleteSessions: (_) async {},
-          localRecordingFileProbe: (String path) async => (
-            exists: path == videoPath,
-            bytes: path == videoPath ? 1 : 0,
-          ),
+          localRecordingFileProbe: (String path) async =>
+              (exists: path == videoPath, bytes: path == videoPath ? 1 : 0),
         ),
       ),
     );
     await tester.pumpAndSettle();
 
     expect(find.text('还有 4 个录像等待备份'), findsOneWidget);
+  });
+
+  testWidgets('未连接电脑时从数据库统计显示未备份总数', (WidgetTester tester) async {
+    final DateTime startedAt = DateTime(2026, 8, 23, 12);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingsScreen(
+          sessions: <RecordingSession>[
+            RecordingSession(
+              id: 'loaded-page-row',
+              filePath: File('pubspec.yaml').absolute.path,
+              startedAt: startedAt,
+              endedAt: startedAt.add(const Duration(seconds: 5)),
+              markers: const <BarcodeMarker>[],
+            ),
+          ],
+          recordingStatistics: const LocalRecordingStatistics(total: 10000),
+          workMode: WorkMode.continuousScan,
+          speechEnabled: true,
+          maxVolumeEnabled: true,
+          onWorkModeChanged: (_) async {},
+          onSpeechEnabledChanged: (_) async {},
+          onMaxVolumeEnabledChanged: (_) async {},
+          onSpeechPreview: () async {},
+          onSessionUpdated: (_) async {},
+          onDeleteSessions: (_) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('10000 个未备份'), findsOneWidget);
+    expect(find.text('1 个未备份'), findsNothing);
   });
 
   testWidgets('本机录像全部备份后只显示完成状态', (WidgetTester tester) async {
