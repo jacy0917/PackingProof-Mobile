@@ -27,6 +27,91 @@ enum IosVideoCodecCapabilities {
   }
 }
 
+enum IosAudioSessionOwner: Hashable {
+  case camera
+  case prompt
+  case maxVolume
+}
+
+protocol IosAudioSessionProtocol: AnyObject {
+  func setCategory(
+    _ category: AVAudioSession.Category,
+    mode: AVAudioSession.Mode,
+    options: AVAudioSession.CategoryOptions
+  ) throws
+  func setActive(
+    _ active: Bool,
+    options: AVAudioSession.SetActiveOptions
+  ) throws
+}
+
+extension AVAudioSession: IosAudioSessionProtocol {}
+
+/// 协调相机、提示音和最大音量功能对进程级 AVAudioSession 的共享所有权。
+/// 任何 owner 存活时都保持录音会话 active，只有最后一个 owner 释放后才停用。
+final class IosSharedAudioSessionCoordinator {
+  static let shared = IosSharedAudioSessionCoordinator(
+    session: AVAudioSession.sharedInstance()
+  )
+
+  private let session: IosAudioSessionProtocol
+  private let lock = NSLock()
+  private var ownerCounts: [IosAudioSessionOwner: Int] = [:]
+
+  init(session: IosAudioSessionProtocol) {
+    self.session = session
+  }
+
+  func acquire(_ owner: IosAudioSessionOwner) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try activateUnlocked()
+    ownerCounts[owner, default: 0] += 1
+  }
+
+  func ensureActive(for owner: IosAudioSessionOwner) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard (ownerCounts[owner] ?? 0) > 0 else {
+      throw pigeonError(
+        "音频会话所有权已经释放",
+        code: "audio_session_owner_missing"
+      )
+    }
+    try activateUnlocked()
+  }
+
+  func release(_ owner: IosAudioSessionOwner) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let count = ownerCounts[owner], count > 0 else { return }
+    let totalOwnerCount = ownerCounts.values.reduce(0, +)
+    if totalOwnerCount == 1 {
+      try session.setActive(false, options: [.notifyOthersOnDeactivation])
+    }
+    if count == 1 {
+      ownerCounts.removeValue(forKey: owner)
+    } else {
+      ownerCounts[owner] = count - 1
+    }
+  }
+
+  func ownerCount(_ owner: IosAudioSessionOwner) -> Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return ownerCounts[owner] ?? 0
+  }
+
+  private func activateUnlocked() throws {
+    try session.setCategory(
+      .playAndRecord,
+      mode: .videoRecording,
+      options: [.defaultToSpeaker]
+    )
+    try session.setActive(true, options: [])
+  }
+}
+
 final class PigeonPlatform {
   private static var cameraHost: IosCameraHostApi?
   private static var promptAudioHost: IosPromptAudioHost?
@@ -48,9 +133,12 @@ final class PigeonPlatform {
       binaryMessenger: messenger,
       api: IosSystemMediaPresenterHostApi()
     )
+    let audioSessionCoordinator = IosSharedAudioSessionCoordinator.shared
     AlertAudioSessionHostApiSetup.setUp(
       binaryMessenger: messenger,
-      api: IosAlertAudioSessionHostApi()
+      api: IosAlertAudioSessionHostApi(
+        audioSessionCoordinator: audioSessionCoordinator
+      )
     )
     let backupEvents = BackupNativeEventApi(binaryMessenger: messenger)
     BackupNativeHostApiSetup.setUp(
@@ -59,7 +147,8 @@ final class PigeonPlatform {
     )
     let cameraHost = IosCameraHostApi(
       eventApi: CameraEventApi(binaryMessenger: messenger),
-      textures: registrar.textures()
+      textures: registrar.textures(),
+      audioSessionCoordinator: audioSessionCoordinator
     )
     self.cameraHost = cameraHost
     CameraHostApiSetup.setUp(
@@ -72,7 +161,9 @@ final class PigeonPlatform {
         eventApi: OrderReceiverEventApi(binaryMessenger: messenger)
       )
     )
-    let promptAudioHost = IosPromptAudioHost()
+    let promptAudioHost = IosPromptAudioHost(
+      audioSessionCoordinator: audioSessionCoordinator
+    )
     self.promptAudioHost = promptAudioHost
     let promptAudioChannel = FlutterMethodChannel(
       name: "app.packingproof.mobile/prompt_audio",
@@ -95,6 +186,14 @@ final class PigeonPlatform {
 private final class IosPromptAudioHost: NSObject {
   private var players: [String: AVAudioPlayer] = [:]
   private var completions: [String: FlutterResult] = [:]
+  private var audioSessionKeys = Set<String>()
+  private let audioSessionCoordinator: IosSharedAudioSessionCoordinator
+
+  init(
+    audioSessionCoordinator: IosSharedAudioSessionCoordinator = .shared
+  ) {
+    self.audioSessionCoordinator = audioSessionCoordinator
+  }
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
@@ -103,11 +202,27 @@ private final class IosPromptAudioHost: NSObject {
     case "play":
       play(call, result: result)
     case "stop":
-      stop()
-      result(nil)
+      do {
+        try stop()
+        result(nil)
+      } catch {
+        result(FlutterError(
+          code: "audio_session_release_failed",
+          message: error.localizedDescription,
+          details: nil
+        ))
+      }
     case "dispose":
-      dispose()
-      result(nil)
+      do {
+        try dispose()
+        result(nil)
+      } catch {
+        result(FlutterError(
+          code: "audio_session_release_failed",
+          message: error.localizedDescription,
+          details: nil
+        ))
+      }
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -154,28 +269,37 @@ private final class IosPromptAudioHost: NSObject {
       result(FlutterError(code: "not_prepared", message: "提示音尚未准备好", details: nil))
       return
     }
+    var addedAudioSessionKey = false
     do {
-      let session = AVAudioSession.sharedInstance()
-      try session.setCategory(
-        .playAndRecord,
-        mode: .videoRecording,
-        options: [.defaultToSpeaker]
-      )
-      try session.setActive(true)
+      if audioSessionKeys.contains(key) {
+        try audioSessionCoordinator.ensureActive(for: .prompt)
+      } else if audioSessionKeys.isEmpty {
+        try audioSessionCoordinator.acquire(.prompt)
+        audioSessionKeys.insert(key)
+        addedAudioSessionKey = true
+      } else {
+        try audioSessionCoordinator.ensureActive(for: .prompt)
+        audioSessionKeys.insert(key)
+        addedAudioSessionKey = true
+      }
       player.currentTime = 0
       player.delegate = self
       completions[key] = result
       if !player.play() {
         completions.removeValue(forKey: key)
+        try releaseAudioSession(for: key)
         result(FlutterError(code: "play_failed", message: "提示音播放失败", details: nil))
       }
     } catch {
       completions.removeValue(forKey: key)
+      if addedAudioSessionKey {
+        try? releaseAudioSession(for: key)
+      }
       result(FlutterError(code: "play_failed", message: error.localizedDescription, details: nil))
     }
   }
 
-  private func stop() {
+  private func stop() throws {
     for player in players.values {
       player.stop()
     }
@@ -183,11 +307,26 @@ private final class IosPromptAudioHost: NSObject {
       completion(nil)
     }
     completions.removeAll()
+    try releaseAllAudioSessions()
   }
 
-  private func dispose() {
-    stop()
+  private func dispose() throws {
+    try stop()
     players.removeAll()
+  }
+
+  private func releaseAudioSession(for key: String) throws {
+    guard audioSessionKeys.contains(key) else { return }
+    if audioSessionKeys.count == 1 {
+      try audioSessionCoordinator.release(.prompt)
+    }
+    audioSessionKeys.remove(key)
+  }
+
+  private func releaseAllAudioSessions() throws {
+    guard !audioSessionKeys.isEmpty else { return }
+    try audioSessionCoordinator.release(.prompt)
+    audioSessionKeys.removeAll()
   }
 }
 
@@ -199,7 +338,16 @@ extension IosPromptAudioHost: AVAudioPlayerDelegate {
     else {
       return
     }
-    completion(nil)
+    do {
+      try releaseAudioSession(for: entry.key)
+      completion(nil)
+    } catch {
+      completion(FlutterError(
+        code: "audio_session_release_failed",
+        message: error.localizedDescription,
+        details: nil
+      ))
+    }
   }
 }
 
@@ -417,15 +565,24 @@ private final class IosSystemMediaPresenterHostApi: SystemMediaPresenterHostApi 
   }
 }
 
-private final class IosAlertAudioSessionHostApi: AlertAudioSessionHostApi {
+final class IosAlertAudioSessionHostApi: AlertAudioSessionHostApi {
+  private let audioSessionCoordinator: IosSharedAudioSessionCoordinator
+  private var audioSessionHeld = false
+
+  init(
+    audioSessionCoordinator: IosSharedAudioSessionCoordinator = .shared
+  ) {
+    self.audioSessionCoordinator = audioSessionCoordinator
+  }
+
   func beginSession(completion: @escaping (Result<Void, Error>) -> Void) {
     do {
-      try AVAudioSession.sharedInstance().setCategory(
-        .playAndRecord,
-        mode: .videoRecording,
-        options: [.defaultToSpeaker]
-      )
-      try AVAudioSession.sharedInstance().setActive(true)
+      if audioSessionHeld {
+        try audioSessionCoordinator.ensureActive(for: .maxVolume)
+      } else {
+        try audioSessionCoordinator.acquire(.maxVolume)
+        audioSessionHeld = true
+      }
       completion(.success(()))
     } catch {
       completion(.failure(error))
@@ -434,7 +591,10 @@ private final class IosAlertAudioSessionHostApi: AlertAudioSessionHostApi {
 
   func endSession(completion: @escaping (Result<Void, Error>) -> Void) {
     do {
-      try AVAudioSession.sharedInstance().setActive(false)
+      if audioSessionHeld {
+        try audioSessionCoordinator.release(.maxVolume)
+        audioSessionHeld = false
+      }
       completion(.success(()))
     } catch {
       completion(.failure(error))

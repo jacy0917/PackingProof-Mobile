@@ -1,3 +1,4 @@
+import AVFoundation
 import Flutter
 import CryptoKit
 import SQLite3
@@ -5,7 +6,148 @@ import UIKit
 import XCTest
 @testable import Runner
 
+private final class FakeIosAudioSession: IosAudioSessionProtocol {
+  enum Failure: Error {
+    case activation
+    case deactivation
+  }
+
+  var categoryCalls: [(
+    AVAudioSession.Category,
+    AVAudioSession.Mode,
+    AVAudioSession.CategoryOptions
+  )] = []
+  var activeCalls: [Bool] = []
+  var isActive = false
+  var failNextActivation = false
+  var failNextDeactivation = false
+
+  func setCategory(
+    _ category: AVAudioSession.Category,
+    mode: AVAudioSession.Mode,
+    options: AVAudioSession.CategoryOptions
+  ) throws {
+    categoryCalls.append((category, mode, options))
+  }
+
+  func setActive(
+    _ active: Bool,
+    options: AVAudioSession.SetActiveOptions
+  ) throws {
+    activeCalls.append(active)
+    if active && failNextActivation {
+      failNextActivation = false
+      throw Failure.activation
+    }
+    if !active && failNextDeactivation {
+      failNextDeactivation = false
+      throw Failure.deactivation
+    }
+    isActive = active
+  }
+}
+
 class RunnerTests: XCTestCase {
+
+  func testEndingMaxVolumeKeepsRunningCameraAudioSessionActive() throws {
+    let session = FakeIosAudioSession()
+    let coordinator = IosSharedAudioSessionCoordinator(session: session)
+    let maxVolume = IosAlertAudioSessionHostApi(
+      audioSessionCoordinator: coordinator
+    )
+
+    // 相机初始化后持续持有共享录音会话，即使当前工作段已经停止。
+    try coordinator.acquire(.camera)
+    var firstBegin: Result<Void, Error>?
+    maxVolume.beginSession { firstBegin = $0 }
+    try XCTUnwrap(firstBegin).get()
+    var duplicateBegin: Result<Void, Error>?
+    maxVolume.beginSession { duplicateBegin = $0 }
+    try XCTUnwrap(duplicateBegin).get()
+    var firstEnd: Result<Void, Error>?
+    maxVolume.endSession { firstEnd = $0 }
+    try XCTUnwrap(firstEnd).get()
+
+    XCTAssertTrue(session.isActive)
+    XCTAssertFalse(session.activeCalls.contains(false))
+    XCTAssertEqual(coordinator.ownerCount(.camera), 1)
+    XCTAssertEqual(coordinator.ownerCount(.maxVolume), 0)
+
+    // 第二轮工作开始前再次确保 active，不需要重建 AVCaptureSession。
+    try coordinator.ensureActive(for: .camera)
+    var secondBegin: Result<Void, Error>?
+    maxVolume.beginSession { secondBegin = $0 }
+    try XCTUnwrap(secondBegin).get()
+    var secondEnd: Result<Void, Error>?
+    maxVolume.endSession { secondEnd = $0 }
+    try XCTUnwrap(secondEnd).get()
+
+    XCTAssertTrue(session.isActive)
+    XCTAssertFalse(session.activeCalls.contains(false))
+    XCTAssertTrue(session.categoryCalls.allSatisfy {
+      $0.0 == .playAndRecord &&
+        $0.1 == .videoRecording &&
+        $0.2.contains(.defaultToSpeaker)
+    })
+
+    try coordinator.release(.camera)
+    XCTAssertFalse(session.isActive)
+    XCTAssertEqual(session.activeCalls.filter { !$0 }.count, 1)
+  }
+
+  func testAudioSessionActivationFailureIsNotReportedAsSuccess() {
+    let session = FakeIosAudioSession()
+    session.failNextActivation = true
+    let coordinator = IosSharedAudioSessionCoordinator(session: session)
+    let maxVolume = IosAlertAudioSessionHostApi(
+      audioSessionCoordinator: coordinator
+    )
+    var result: Result<Void, Error>?
+
+    maxVolume.beginSession { result = $0 }
+
+    XCTAssertThrowsError(try XCTUnwrap(result).get())
+    XCTAssertEqual(coordinator.ownerCount(.maxVolume), 0)
+    XCTAssertFalse(session.isActive)
+  }
+
+  func testIndependentCameraOwnersDoNotDeactivateEachOther() throws {
+    let session = FakeIosAudioSession()
+    let coordinator = IosSharedAudioSessionCoordinator(session: session)
+
+    try coordinator.acquire(.camera)
+    try coordinator.acquire(.camera)
+    XCTAssertEqual(coordinator.ownerCount(.camera), 2)
+
+    try coordinator.release(.camera)
+    XCTAssertEqual(coordinator.ownerCount(.camera), 1)
+    XCTAssertTrue(session.isActive)
+    XCTAssertFalse(session.activeCalls.contains(false))
+
+    try coordinator.release(.camera)
+    XCTAssertEqual(coordinator.ownerCount(.camera), 0)
+    XCTAssertFalse(session.isActive)
+    XCTAssertEqual(session.activeCalls.filter { !$0 }.count, 1)
+  }
+
+  func testAudioSessionDeactivationFailureIsReturnedToCaller() throws {
+    let session = FakeIosAudioSession()
+    let coordinator = IosSharedAudioSessionCoordinator(session: session)
+    let maxVolume = IosAlertAudioSessionHostApi(
+      audioSessionCoordinator: coordinator
+    )
+    var beginResult: Result<Void, Error>?
+    maxVolume.beginSession { beginResult = $0 }
+    try XCTUnwrap(beginResult).get()
+    session.failNextDeactivation = true
+    var endResult: Result<Void, Error>?
+
+    maxVolume.endSession { endResult = $0 }
+
+    XCTAssertThrowsError(try XCTUnwrap(endResult).get())
+    XCTAssertEqual(coordinator.ownerCount(.maxVolume), 1)
+    XCTAssertTrue(session.isActive)
+  }
 
   func testWatermarkCancellationBeforeSessionCreationCompletesOnceAndDeletesOutput() throws {
     let queue = DispatchQueue(label: "watermark-cancel-before-session")

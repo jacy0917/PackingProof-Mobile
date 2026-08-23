@@ -2,6 +2,96 @@ import AVFoundation
 import Flutter
 import UIKit
 
+enum IosAudioSampleEnergyProbe {
+  private static let maximumSamplesPerProbe = 256
+
+  static func normalizedPeak(in sampleBuffer: CMSampleBuffer) -> Double? {
+    guard
+      let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+      let description = CMAudioFormatDescriptionGetStreamBasicDescription(
+        formatDescription
+      )?.pointee,
+      description.mFormatID == kAudioFormatLinearPCM
+    else {
+      return nil
+    }
+
+    var requiredSize = 0
+    let sizeStatus = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+      sampleBuffer,
+      bufferListSizeNeededOut: &requiredSize,
+      bufferListOut: nil,
+      bufferListSize: 0,
+      blockBufferAllocator: nil,
+      blockBufferMemoryAllocator: nil,
+      flags: 0,
+      blockBufferOut: nil
+    )
+    guard sizeStatus == noErr, requiredSize >= MemoryLayout<AudioBufferList>.size else {
+      return nil
+    }
+
+    let storage = UnsafeMutableRawPointer.allocate(
+      byteCount: requiredSize,
+      alignment: MemoryLayout<AudioBufferList>.alignment
+    )
+    defer { storage.deallocate() }
+    let bufferList = storage.assumingMemoryBound(to: AudioBufferList.self)
+    var retainedBlockBuffer: CMBlockBuffer?
+    let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+      sampleBuffer,
+      bufferListSizeNeededOut: nil,
+      bufferListOut: bufferList,
+      bufferListSize: requiredSize,
+      blockBufferAllocator: kCFAllocatorDefault,
+      blockBufferMemoryAllocator: kCFAllocatorDefault,
+      flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment),
+      blockBufferOut: &retainedBlockBuffer
+    )
+    guard status == noErr else { return nil }
+
+    let isFloat = description.mFormatFlags & kAudioFormatFlagIsFloat != 0
+    let isSignedInteger = description.mFormatFlags & kAudioFormatFlagIsSignedInteger != 0
+    let bits = Int(description.mBitsPerChannel)
+    var remaining = maximumSamplesPerProbe
+    var peak = 0.0
+    for buffer in UnsafeMutableAudioBufferListPointer(bufferList) {
+      guard remaining > 0, let data = buffer.mData else { continue }
+      let bytes = Int(buffer.mDataByteSize)
+      if isFloat && bits == 32 {
+        let values = data.assumingMemoryBound(to: Float.self)
+        let count = min(bytes / MemoryLayout<Float>.stride, remaining)
+        for index in 0..<count {
+          peak = max(peak, min(1, abs(Double(values[index]))))
+        }
+        remaining -= count
+      } else if isFloat && bits == 64 {
+        let values = data.assumingMemoryBound(to: Double.self)
+        let count = min(bytes / MemoryLayout<Double>.stride, remaining)
+        for index in 0..<count {
+          peak = max(peak, min(1, abs(values[index])))
+        }
+        remaining -= count
+      } else if isSignedInteger && bits == 16 {
+        let values = data.assumingMemoryBound(to: Int16.self)
+        let count = min(bytes / MemoryLayout<Int16>.stride, remaining)
+        for index in 0..<count {
+          peak = max(peak, abs(Double(values[index])) / 32_768)
+        }
+        remaining -= count
+      } else if isSignedInteger && bits == 32 {
+        let values = data.assumingMemoryBound(to: Int32.self)
+        let count = min(bytes / MemoryLayout<Int32>.stride, remaining)
+        for index in 0..<count {
+          peak = max(peak, abs(Double(values[index])) / 2_147_483_648)
+        }
+        remaining -= count
+      }
+    }
+    return remaining == maximumSamplesPerProbe ? nil : peak
+  }
+}
+
 /// iOS 始终使用同一个 AVFoundation 完整管线，不提供 Android 的三档
 /// surface 组合探测或运行时模式切换。
 enum IosCameraCapabilityPolicy {
@@ -141,6 +231,7 @@ final class IosCameraHostApi:
 {
   private let eventApi: CameraEventApi
   private let textures: FlutterTextureRegistry
+  private let audioSessionCoordinator: IosSharedAudioSessionCoordinator
   private let session = AVCaptureSession()
   private let sessionQueue = DispatchQueue(label: "packingproof.camera.session")
   private let metadataQueue = DispatchQueue(label: "packingproof.camera.metadata")
@@ -169,6 +260,7 @@ final class IosCameraHostApi:
   private var disposed = false
   private var recoveryRuntimeError = false
   private var runtimeErrorObserver: NSObjectProtocol?
+  private var cameraAudioSessionHeld = false
 
   private var writer: AVAssetWriter?
   private var videoInput: AVAssetWriterInput?
@@ -190,9 +282,15 @@ final class IosCameraHostApi:
   private var currentAudioSampleCount: Int64 = 0
   private var currentAudioAppendFailedCount: Int64 = 0
   private var currentAudioLastError: String?
+  private var currentAudioEnergyProbeCount: Int64 = 0
+  private var currentAudioLowEnergyProbeCount: Int64 = 0
+  private var currentAudioPeak: Double = 0
   private var lastAudioSampleCount: Int64 = 0
   private var lastAudioAppendFailedCount: Int64 = 0
   private var lastAudioLastError: String?
+  private var lastAudioEnergyProbeCount: Int64 = 0
+  private var lastAudioLowEnergyProbeCount: Int64 = 0
+  private var lastAudioPeak: Double = 0
   private var lastCompletedSegmentSerial: Int64 = -1
   private var lastSegmentWriterStatus: String?
   private var lastSegmentWriterError: String?
@@ -204,9 +302,14 @@ final class IosCameraHostApi:
   /// 固定 sessionPreset .hd1920x1080，竖屏预览与录像输出 1080x1920。
   private var portraitSize: (width: Int, height: Int) { (1080, 1920) }
 
-  init(eventApi: CameraEventApi, textures: FlutterTextureRegistry) {
+  init(
+    eventApi: CameraEventApi,
+    textures: FlutterTextureRegistry,
+    audioSessionCoordinator: IosSharedAudioSessionCoordinator = .shared
+  ) {
     self.eventApi = eventApi
     self.textures = textures
+    self.audioSessionCoordinator = audioSessionCoordinator
     super.init()
     updateTextureId(textures.register(self))
     runtimeErrorObserver = NotificationCenter.default.addObserver(
@@ -224,9 +327,22 @@ final class IosCameraHostApi:
     recordingLifecycle.dispose()
     clearOutputDelegates()
     let session = self.session
+    let audioSessionCoordinator = self.audioSessionCoordinator
+    let shouldReleaseAudioSession = cameraAudioSessionHeld
+    cameraAudioSessionHeld = false
     sessionQueue.async {
       if session.isRunning {
         session.stopRunning()
+      }
+      if shouldReleaseAudioSession {
+        do {
+          try audioSessionCoordinator.release(.camera)
+        } catch {
+          NSLog(
+            "PackingProof failed to release camera audio session: %@",
+            error.localizedDescription
+          )
+        }
       }
     }
     if let observer = runtimeErrorObserver {
@@ -269,8 +385,8 @@ final class IosCameraHostApi:
         completion(.failure(pigeonError("摄像头已经关闭")))
         return
       }
-      self.configureRecordingAudioSession()
       do {
+        try self.ensureRecordingAudioSession()
         try self.addAudioInputIfNeeded()
       } catch {
         completion(.failure(error))
@@ -514,6 +630,7 @@ final class IosCameraHostApi:
     let audioSession = AVAudioSession.sharedInstance()
     let audioOptions = audioSession.categoryOptions
     let audioOptionNames = Self.audioSessionCategoryOptionNames(audioOptions)
+    let audioRoute = audioSession.currentRoute
     let lastSegment = lastSegmentDiagnosticsSnapshot()
     completion(.success([
       "device": [
@@ -536,15 +653,23 @@ final class IosCameraHostApi:
         "currentAudioSampleCount": currentAudioSampleCount,
         "currentAudioAppendFailedCount": currentAudioAppendFailedCount,
         "currentAudioLastError": currentAudioLastError,
+        "currentAudioEnergyProbeCount": currentAudioEnergyProbeCount,
+        "currentAudioLowEnergyProbeCount": currentAudioLowEnergyProbeCount,
+        "currentAudioPeak": currentAudioPeak,
         "liveWatermarkFailed": currentWatermarkFailed,
         "liveWatermarkError": currentWatermarkError,
         "lastAudioSampleCount": lastAudioSampleCount,
         "lastAudioAppendFailedCount": lastAudioAppendFailedCount,
         "lastAudioLastError": lastAudioLastError,
+        "lastAudioEnergyProbeCount": lastAudioEnergyProbeCount,
+        "lastAudioLowEnergyProbeCount": lastAudioLowEnergyProbeCount,
+        "lastAudioPeak": lastAudioPeak,
         "audioSessionCategory": audioSession.category.rawValue,
         "audioSessionMode": audioSession.mode.rawValue,
         "audioSessionCategoryOptions": audioOptionNames,
         "audioSessionCategoryOptionsRawValue": Int64(audioOptions.rawValue),
+        "audioSessionRouteInputs": audioRoute.inputs.map(Self.audioPortSnapshot),
+        "audioSessionRouteOutputs": audioRoute.outputs.map(Self.audioPortSnapshot),
         "lastSegmentWriterStatus": lastSegment.writerStatus,
         "lastSegmentWriterError": lastSegment.writerError,
         "lastSegmentAudioTrackCheckSucceeded": lastSegment.trackCheckSucceeded,
@@ -592,6 +717,14 @@ final class IosCameraHostApi:
       names.append("overrideMutedMicrophoneInterruption")
     }
     return names
+  }
+
+  private static func audioPortSnapshot(
+    _ port: AVAudioSessionPortDescription
+  ) -> [String: Any] {
+    [
+      "type": port.portType.rawValue,
+    ]
   }
 
   private func lastSegmentDiagnosticsSnapshot() -> (
@@ -763,7 +896,12 @@ final class IosCameraHostApi:
         self.textures.unregisterTexture(textureId)
         self.updateTextureId(-1)
       }
-      completion(.success(()))
+      do {
+        try self.releaseRecordingAudioSession()
+        completion(.success(()))
+      } catch {
+        completion(.failure(error))
+      }
     }
   }
 
@@ -781,6 +919,14 @@ final class IosCameraHostApi:
       self.finishCurrentWriter(false) { _ in }
       if self.session.isRunning {
         self.session.stopRunning()
+      }
+      do {
+        try self.releaseRecordingAudioSession()
+      } catch {
+        NSLog(
+          "PackingProof failed to release camera audio session during termination: %@",
+          error.localizedDescription
+        )
       }
       let textureId = self.currentTextureId
       if textureId >= 0 {
@@ -1019,19 +1165,25 @@ final class IosCameraHostApi:
   }
 
   /// 录像期音频会话：同时支持录音与播放提示音，避免被 .playback 降级。
-  private func configureRecordingAudioSession() {
-    try? AVAudioSession.sharedInstance().setCategory(
-      .playAndRecord,
-      mode: .videoRecording,
-      options: [.defaultToSpeaker]
-    )
-    try? AVAudioSession.sharedInstance().setActive(true)
+  private func ensureRecordingAudioSession() throws {
+    if cameraAudioSessionHeld {
+      try audioSessionCoordinator.ensureActive(for: .camera)
+    } else {
+      try audioSessionCoordinator.acquire(.camera)
+      cameraAudioSessionHeld = true
+    }
+  }
+
+  private func releaseRecordingAudioSession() throws {
+    guard cameraAudioSessionHeld else { return }
+    try audioSessionCoordinator.release(.camera)
+    cameraAudioSessionHeld = false
   }
 
   /// 工作开始前只负责让会话可运行，不重注册纹理、不处理 dispose 恢复。
   private func ensureRunningForWork() throws {
     if recordAudio {
-      configureRecordingAudioSession()
+      try ensureRecordingAudioSession()
     }
     try addAudioInputIfNeeded()
     configureOutputDelegates()
@@ -1264,7 +1416,7 @@ final class IosCameraHostApi:
 
   private func startWriter(path: String, trackingNumber: String) throws {
     if recordAudio {
-      configureRecordingAudioSession()
+      try ensureRecordingAudioSession()
     }
     let url = URL(fileURLWithPath: path)
     try? FileManager.default.removeItem(at: url)
@@ -1370,6 +1522,9 @@ final class IosCameraHostApi:
     self.currentAudioSampleCount = 0
     self.currentAudioAppendFailedCount = 0
     self.currentAudioLastError = nil
+    self.currentAudioEnergyProbeCount = 0
+    self.currentAudioLowEnergyProbeCount = 0
+    self.currentAudioPeak = 0
     // 常规路径已在 writer 对外可见前准备好首份完整水印。没有预览帧或
     // 同步准备瞬时失败时才走后台重试；就绪前不写入无水印视频帧。
     if !watermarkPrepared, let watermarkSourceBuffer {
@@ -1451,6 +1606,14 @@ final class IosCameraHostApi:
       return
     }
     currentAudioSampleCount += 1
+    if currentAudioSampleCount.isMultiple(of: 30),
+       let peak = IosAudioSampleEnergyProbe.normalizedPeak(in: sampleBuffer) {
+      currentAudioEnergyProbeCount += 1
+      currentAudioPeak = max(currentAudioPeak, peak)
+      if peak < 0.0005 {
+        currentAudioLowEnergyProbeCount += 1
+      }
+    }
     if !audioInput.append(sampleBuffer) {
       currentAudioAppendFailedCount += 1
       if currentAudioLastError == nil {
@@ -1496,9 +1659,15 @@ final class IosCameraHostApi:
     lastAudioSampleCount = currentAudioSampleCount
     lastAudioAppendFailedCount = currentAudioAppendFailedCount
     lastAudioLastError = currentAudioLastError
+    lastAudioEnergyProbeCount = currentAudioEnergyProbeCount
+    lastAudioLowEnergyProbeCount = currentAudioLowEnergyProbeCount
+    lastAudioPeak = currentAudioPeak
     currentAudioSampleCount = 0
     currentAudioAppendFailedCount = 0
     currentAudioLastError = nil
+    currentAudioEnergyProbeCount = 0
+    currentAudioLowEnergyProbeCount = 0
+    currentAudioPeak = 0
     recordingAudioActive = false
 
     let finishLock = NSLock()
