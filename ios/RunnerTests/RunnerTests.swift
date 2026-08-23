@@ -2217,7 +2217,7 @@ class RunnerTests: XCTestCase {
       }
     )
     defer { removeRetentionCleanupFixture(fixture) }
-    try fixture.store.upsert(fixture.job)
+    try fixture.store.upsert(makeVerifiedRetentionCleanupJob(fixture.job))
 
     try await fixture.api.performCleanup()
 
@@ -2270,7 +2270,7 @@ class RunnerTests: XCTestCase {
       }
     )
     defer { removeRetentionCleanupFixture(fixture) }
-    try fixture.store.upsert(fixture.job)
+    try fixture.store.upsert(makeVerifiedRetentionCleanupJob(fixture.job))
 
     try await fixture.api.performCleanup()
 
@@ -2297,7 +2297,7 @@ class RunnerTests: XCTestCase {
       }
     )
     defer { removeRetentionCleanupFixture(fixture) }
-    try fixture.store.upsert(fixture.job)
+    try fixture.store.upsert(makeVerifiedRetentionCleanupJob(fixture.job))
 
     try await fixture.api.performCleanup()
 
@@ -2317,7 +2317,7 @@ class RunnerTests: XCTestCase {
       afterCleanupRenameForTesting: { _ in throw MaintenanceTestError.expected }
     )
     defer { removeRetentionCleanupFixture(fixture) }
-    try fixture.store.upsert(fixture.job)
+    try fixture.store.upsert(makeVerifiedRetentionCleanupJob(fixture.job))
 
     do {
       try await fixture.api.performCleanup()
@@ -2355,7 +2355,7 @@ class RunnerTests: XCTestCase {
       }
     )
     defer { removeRetentionCleanupFixture(fixture) }
-    try fixture.store.upsert(fixture.job)
+    try fixture.store.upsert(makeVerifiedRetentionCleanupJob(fixture.job))
     try? await fixture.api.performCleanup()
 
     let recoveredApi = makeBackupApi(
@@ -2387,7 +2387,7 @@ class RunnerTests: XCTestCase {
       }
     )
     defer { removeRetentionCleanupFixture(fixture) }
-    try fixture.store.upsert(fixture.job)
+    try fixture.store.upsert(makeVerifiedRetentionCleanupJob(fixture.job))
     try? await fixture.api.performCleanup()
 
     let recoveredApi = makeBackupApi(
@@ -2436,7 +2436,7 @@ class RunnerTests: XCTestCase {
       }
     )
     defer { removeRetentionCleanupFixture(fixture) }
-    try fixture.store.upsert(fixture.job)
+    try fixture.store.upsert(makeVerifiedRetentionCleanupJob(fixture.job))
 
     try? await fixture.api.performCleanup()
 
@@ -2462,7 +2462,7 @@ class RunnerTests: XCTestCase {
       afterCleanupCommitForTesting: { _ in throw MaintenanceTestError.expected }
     )
     defer { removeRetentionCleanupFixture(fixture) }
-    try fixture.store.upsert(fixture.job)
+    try fixture.store.upsert(makeVerifiedRetentionCleanupJob(fixture.job))
     try? await fixture.api.performCleanup()
 
     XCTAssertNotNil(try fixture.store.readJob(id: "cleanup-commit-crash")?["localDeletedAt"])
@@ -4144,6 +4144,7 @@ class RunnerTests: XCTestCase {
       recordingsRoot: recordings,
       availableStorageBytesOverride: availableStorageBytesOverride,
       storageAttestationOverride: storageAttestationOverride,
+      cleanupConfigurationOverride: { true },
       beforeCleanupFileProofForTesting: beforeCleanupFileProofForTesting,
       beforeCleanupIntentClaimForTesting: beforeCleanupIntentClaimForTesting,
       beforeCleanupRenameForTesting: beforeCleanupRenameForTesting,
@@ -4162,6 +4163,12 @@ class RunnerTests: XCTestCase {
   }
 
   private func makeVerifiedStorageReclaimJob(
+    _ source: [String: Any]
+  ) -> [String: Any] {
+    makeVerifiedRetentionCleanupJob(source)
+  }
+
+  private func makeVerifiedRetentionCleanupJob(
     _ source: [String: Any]
   ) -> [String: Any] {
     var job = source
