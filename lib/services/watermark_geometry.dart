@@ -54,20 +54,7 @@ WatermarkPreviewMetrics watermarkPreviewMetrics({
     resolvedSourceVideoSize.width,
     resolvedSourceVideoSize.height,
   );
-  final double portraitHeight = math.max(
-    resolvedSourceVideoSize.width,
-    resolvedSourceVideoSize.height,
-  );
-  final double outputHeight = orientation == RecordingOrientation.portrait
-      ? portraitHeight
-      : portraitWidth;
-  final double maximumFontSize = orientation == RecordingOrientation.portrait
-      ? 35
-      : 61;
-  final double outputFontSize = (outputHeight * 0.032).clamp(
-    35,
-    maximumFontSize,
-  );
+  const double outputFontSize = 40;
   final double previewScale = viewportWidth / portraitWidth;
   return WatermarkPreviewMetrics(
     fontSize: outputFontSize * previewScale,

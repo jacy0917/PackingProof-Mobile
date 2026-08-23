@@ -45,10 +45,7 @@ void main() {
     );
 
     expect(landscapeLeft.outputRect.top, landscapeRight.outputRect.top);
-    expect(
-      landscapeLeft.outputRect.top,
-      1080 * landscapeWatermarkTopFraction,
-    );
+    expect(landscapeLeft.outputRect.top, 1080 * landscapeWatermarkTopFraction);
   });
 
   test('预览水印按实际采集尺寸映射竖屏与横屏字号描边', () {
@@ -57,8 +54,8 @@ void main() {
       viewportWidth: 390,
       sourceVideoSize: const Size(1080, 1920),
     );
-    expect(portrait.fontSize, closeTo(35 * 390 / 1080, 0.0001));
-    expect(portrait.strokeWidth, closeTo(3.5 * 390 / 1080, 0.0001));
+    expect(portrait.fontSize, closeTo(40 * 390 / 1080, 0.0001));
+    expect(portrait.strokeWidth, closeTo(4 * 390 / 1080, 0.0001));
 
     for (final RecordingOrientation orientation in <RecordingOrientation>[
       RecordingOrientation.landscapeLeft,
@@ -69,8 +66,8 @@ void main() {
         viewportWidth: 390,
         sourceVideoSize: const Size(1080, 1920),
       );
-      expect(landscape.fontSize, closeTo(35 * 390 / 1080, 0.0001));
-      expect(landscape.strokeWidth, closeTo(3.5 * 390 / 1080, 0.0001));
+      expect(landscape.fontSize, closeTo(40 * 390 / 1080, 0.0001));
+      expect(landscape.strokeWidth, closeTo(4 * 390 / 1080, 0.0001));
     }
 
     final WatermarkPreviewMetrics smoothLandscape = watermarkPreviewMetrics(
@@ -78,8 +75,8 @@ void main() {
       viewportWidth: 390,
       sourceVideoSize: const Size(1280, 720),
     );
-    expect(smoothLandscape.fontSize, closeTo(35 * 390 / 720, 0.0001));
-    expect(smoothLandscape.strokeWidth, closeTo(3.5 * 390 / 720, 0.0001));
+    expect(smoothLandscape.fontSize, closeTo(40 * 390 / 720, 0.0001));
+    expect(smoothLandscape.strokeWidth, closeTo(4 * 390 / 720, 0.0001));
   });
 
   test('预览水印拒绝无效视口并为无效采集尺寸使用安全回退', () {
@@ -92,8 +89,8 @@ void main() {
         viewportWidth: 390,
         sourceVideoSize: sourceVideoSize,
       );
-      expect(fallback.fontSize, closeTo(35 * 390 / 1080, 0.0001));
-      expect(fallback.strokeWidth, closeTo(3.5 * 390 / 1080, 0.0001));
+      expect(fallback.fontSize, closeTo(40 * 390 / 1080, 0.0001));
+      expect(fallback.strokeWidth, closeTo(4 * 390 / 1080, 0.0001));
     }
 
     for (final double viewportWidth in <double>[
