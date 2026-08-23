@@ -457,7 +457,7 @@ class RunnerTests: XCTestCase {
         $0["state"] = "completed"
       }
     )
-    XCTAssertEqual(store.readJob(id: id)?["revision"] as? Int64, second)
+    XCTAssertEqual(try store.readJob(id: id)?["revision"] as? Int64, second)
     XCTAssertEqual(try store.summaryValues()["revision"] as? Int64, second)
   }
 
@@ -541,11 +541,14 @@ class RunnerTests: XCTestCase {
     let claimed = try XCTUnwrap(store.claimNextUploadJob())
     XCTAssertEqual(claimed["id"] as? String, "pending")
     XCTAssertEqual(claimed["state"] as? String, "uploading")
-    XCTAssertEqual(store.readJob(id: "pending")?["state"] as? String, "uploading")
+    XCTAssertEqual(
+      try store.readJob(id: "pending")?["state"] as? String,
+      "uploading"
+    )
 
     _ = try store.updateJob(id: "pending") { $0["state"] = "completed" }
     XCTAssertNil(try store.claimNextUploadJob())
-    XCTAssertEqual(store.readJob(id: "paused")?["state"] as? String, "paused")
+    XCTAssertEqual(try store.readJob(id: "paused")?["state"] as? String, "paused")
   }
 
   func testTenThousandCleanupCandidatesAreReadInPagesOfAtMostOneHundred() throws {
@@ -580,7 +583,7 @@ class RunnerTests: XCTestCase {
         CASE WHEN value % 4 = 3 THEN '2026-08-23T00:01:00Z' ELSE NULL END,
         0,
         CASE WHEN value % 4 = 3 THEN printf('%064d', value) ELSE NULL END,
-        CASE WHEN value % 4 = 3 THEN \(BackupRequestAuthentication.VERSION) ELSE 0 END,
+        CASE WHEN value % 4 = 3 THEN \(IosBackupReceiptVerifier.version) ELSE 0 END,
         CASE WHEN value % 4 = 3 THEN '2026-08-23T00:02:00Z' ELSE NULL END,
         '[]', value
       FROM counter;
@@ -607,7 +610,7 @@ class RunnerTests: XCTestCase {
       storagePage = try store.storageRecoveryJobsPage(
         afterCreatedAtKey: createdAt,
         afterId: afterId,
-        minimumVerificationVersion: BackupRequestAuthentication.VERSION
+        minimumVerificationVersion: IosBackupReceiptVerifier.version
       )
       XCTAssertLessThanOrEqual(storagePage.jobs.count, 100)
       storageCount += storagePage.jobs.count
@@ -1704,7 +1707,7 @@ class RunnerTests: XCTestCase {
     try await awaitVoidResult { api.cancelJob(jobId: id, completion: $0) }
     await api.waitForUploadDispatcherForTesting()
 
-    XCTAssertEqual(store.readJob(id: id)?["state"] as? String, "paused")
+    XCTAssertEqual(try store.readJob(id: id)?["state"] as? String, "paused")
     XCTAssertEqual(api.uploadTaskCountsForTesting().active, 0)
   }
 
