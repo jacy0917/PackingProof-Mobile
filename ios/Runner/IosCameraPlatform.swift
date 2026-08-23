@@ -165,6 +165,89 @@ enum IosCameraWriterFinishPolicy {
   }
 }
 
+struct IosLastSegmentDiagnosticsState {
+  let writerStatus: String?
+  let writerError: String?
+  let trackCheckSucceeded: Bool?
+  let trackCount: Int64?
+  let trackPresent: Bool?
+  let trackInspectionError: String?
+}
+
+/// 保存最近完成片段的诊断，并拒绝旧片段迟到的异步音轨结果。
+final class IosLastSegmentDiagnostics {
+  private let lock = NSLock()
+  private var latestSerial: Int64 = -1
+  private var writerStatus: String?
+  private var writerError: String?
+  private var trackCheckSucceeded: Bool?
+  private var trackCount: Int64?
+  private var trackPresent: Bool?
+  private var trackInspectionError: String?
+
+  /// 返回 true 表示 writer 已完成，可在关键路径之外开始音轨检查。
+  func recordWriterResult(
+    serial: Int64,
+    writerStatus: String,
+    writerError: String?,
+    hasCompletedFile: Bool,
+    inspectionError: String?
+  ) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard serial >= latestSerial else { return false }
+    latestSerial = serial
+    self.writerStatus = writerStatus
+    self.writerError = writerError
+    if hasCompletedFile {
+      trackCheckSucceeded = nil
+      trackCount = nil
+      trackPresent = nil
+      trackInspectionError = nil
+      return true
+    }
+    trackCheckSucceeded = false
+    trackCount = nil
+    trackPresent = nil
+    trackInspectionError = inspectionError
+    return false
+  }
+
+  func recordTrackResult(
+    serial: Int64,
+    trackCount: Int64?,
+    inspectionError: String?
+  ) {
+    lock.lock()
+    defer { lock.unlock() }
+    guard serial == latestSerial else { return }
+    guard let trackCount, inspectionError == nil else {
+      trackCheckSucceeded = false
+      self.trackCount = nil
+      trackPresent = nil
+      trackInspectionError = inspectionError ?? "无法读取录像声音轨道"
+      return
+    }
+    trackCheckSucceeded = true
+    self.trackCount = trackCount
+    trackPresent = trackCount > 0
+    trackInspectionError = nil
+  }
+
+  func currentState() -> IosLastSegmentDiagnosticsState {
+    lock.lock()
+    defer { lock.unlock() }
+    return IosLastSegmentDiagnosticsState(
+      writerStatus: writerStatus,
+      writerError: writerError,
+      trackCheckSucceeded: trackCheckSucceeded,
+      trackCount: trackCount,
+      trackPresent: trackPresent,
+      trackInspectionError: trackInspectionError
+    )
+  }
+}
+
 /// 将高频事件限制为一个在途请求，并在忙碌或限速期间只保留最新值。
 /// 调用方必须在同一个串行队列上驱动所有状态转换。
 struct IosLatestPendingGate<Payload> {
@@ -291,13 +374,7 @@ final class IosCameraHostApi:
   private var lastAudioEnergyProbeCount: Int64 = 0
   private var lastAudioLowEnergyProbeCount: Int64 = 0
   private var lastAudioPeak: Double = 0
-  private var lastCompletedSegmentSerial: Int64 = -1
-  private var lastSegmentWriterStatus: String?
-  private var lastSegmentWriterError: String?
-  private var lastSegmentAudioTrackCheckSucceeded: Bool?
-  private var lastSegmentAudioTrackCount: Int64?
-  private var lastSegmentAudioTrackPresent: Bool?
-  private var lastSegmentAudioTrackInspectionError: String?
+  private let lastSegmentDiagnostics = IosLastSegmentDiagnostics()
 
   /// 固定 sessionPreset .hd1920x1080，竖屏预览与录像输出 1080x1920。
   private var portraitSize: (width: Int, height: Int) { (1080, 1920) }
@@ -735,15 +812,14 @@ final class IosCameraHostApi:
     trackPresent: Bool?,
     trackInspectionError: String?
   ) {
-    stateLock.lock()
-    defer { stateLock.unlock() }
+    let state = lastSegmentDiagnostics.currentState()
     return (
-      lastSegmentWriterStatus,
-      lastSegmentWriterError,
-      lastSegmentAudioTrackCheckSucceeded,
-      lastSegmentAudioTrackCount,
-      lastSegmentAudioTrackPresent,
-      lastSegmentAudioTrackInspectionError
+      state.writerStatus,
+      state.writerError,
+      state.trackCheckSucceeded,
+      state.trackCount,
+      state.trackPresent,
+      state.trackInspectionError
     )
   }
 
@@ -1786,30 +1862,39 @@ final class IosCameraHostApi:
     path: String?,
     inspectionError: String?
   ) {
-    stateLock.lock()
-    defer { stateLock.unlock() }
-    guard serial >= lastCompletedSegmentSerial else {
-      return
-    }
-    lastCompletedSegmentSerial = serial
-    lastSegmentWriterStatus = writerStatus
-    lastSegmentWriterError = writerError
+    let hasCompletedFile = path?.isEmpty == false
+    guard lastSegmentDiagnostics.recordWriterResult(
+      serial: serial,
+      writerStatus: writerStatus,
+      writerError: writerError,
+      hasCompletedFile: hasCompletedFile,
+      inspectionError: inspectionError
+    ), let path else { return }
 
-    guard let path, !path.isEmpty else {
-      lastSegmentAudioTrackCheckSucceeded = false
-      lastSegmentAudioTrackCount = nil
-      lastSegmentAudioTrackPresent = nil
-      lastSegmentAudioTrackInspectionError = inspectionError
-      return
-    }
+    // 音轨检查只用于诊断。同步读取 AVURLAsset tracks 会解析刚写完的 MP4，
+    // 不能阻塞 split completion 和下一段 writer 的启动。
+    inspectLastSegmentAudioTrack(serial: serial, path: path)
+  }
 
+  private func inspectLastSegmentAudioTrack(serial: Int64, path: String) {
     let url = URL(fileURLWithPath: path)
     let asset = AVURLAsset(url: url)
-    let audioTracks = asset.tracks(withMediaType: .audio)
-    lastSegmentAudioTrackCheckSucceeded = true
-    lastSegmentAudioTrackCount = Int64(audioTracks.count)
-    lastSegmentAudioTrackPresent = !audioTracks.isEmpty
-    lastSegmentAudioTrackInspectionError = nil
+    asset.loadTracks(withMediaType: .audio) { [weak self] tracks, error in
+      guard let self else { return }
+      if let error {
+        self.lastSegmentDiagnostics.recordTrackResult(
+          serial: serial,
+          trackCount: nil,
+          inspectionError: error.localizedDescription
+        )
+        return
+      }
+      self.lastSegmentDiagnostics.recordTrackResult(
+        serial: serial,
+        trackCount: tracks.map { Int64($0.count) },
+        inspectionError: tracks == nil ? "无法读取录像声音轨道" : nil
+      )
+    }
   }
 
   private var isDisposed: Bool {

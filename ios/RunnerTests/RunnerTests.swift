@@ -253,6 +253,80 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(peak, 1, accuracy: 0.000_001)
   }
 
+  func testCompletedSegmentTrackInspectionStartsPendingThenPublishes() {
+    let diagnostics = IosLastSegmentDiagnostics()
+
+    XCTAssertTrue(diagnostics.recordWriterResult(
+      serial: 7,
+      writerStatus: "completed",
+      writerError: nil,
+      hasCompletedFile: true,
+      inspectionError: nil
+    ))
+    var state = diagnostics.currentState()
+    XCTAssertNil(state.trackCheckSucceeded)
+    XCTAssertNil(state.trackCount)
+
+    diagnostics.recordTrackResult(
+      serial: 7,
+      trackCount: 1,
+      inspectionError: nil
+    )
+    state = diagnostics.currentState()
+    XCTAssertEqual(state.writerStatus, "completed")
+    XCTAssertEqual(state.trackCheckSucceeded, true)
+    XCTAssertEqual(state.trackCount, 1)
+    XCTAssertEqual(state.trackPresent, true)
+    XCTAssertNil(state.trackInspectionError)
+  }
+
+  func testLateTrackInspectionCannotOverwriteNewerSegment() {
+    let diagnostics = IosLastSegmentDiagnostics()
+    XCTAssertTrue(diagnostics.recordWriterResult(
+      serial: 3,
+      writerStatus: "completed",
+      writerError: nil,
+      hasCompletedFile: true,
+      inspectionError: nil
+    ))
+    XCTAssertTrue(diagnostics.recordWriterResult(
+      serial: 4,
+      writerStatus: "completed",
+      writerError: nil,
+      hasCompletedFile: true,
+      inspectionError: nil
+    ))
+
+    diagnostics.recordTrackResult(
+      serial: 3,
+      trackCount: 0,
+      inspectionError: nil
+    )
+
+    let state = diagnostics.currentState()
+    XCTAssertNil(state.trackCheckSucceeded)
+    XCTAssertNil(state.trackCount)
+    XCTAssertNil(state.trackPresent)
+  }
+
+  func testWriterFailureDoesNotScheduleTrackInspection() {
+    let diagnostics = IosLastSegmentDiagnostics()
+
+    XCTAssertFalse(diagnostics.recordWriterResult(
+      serial: 9,
+      writerStatus: "failed",
+      writerError: "writer failed",
+      hasCompletedFile: false,
+      inspectionError: "writer failed"
+    ))
+
+    let state = diagnostics.currentState()
+    XCTAssertEqual(state.writerStatus, "failed")
+    XCTAssertEqual(state.writerError, "writer failed")
+    XCTAssertEqual(state.trackCheckSucceeded, false)
+    XCTAssertEqual(state.trackInspectionError, "writer failed")
+  }
+
   func testWatermarkCancellationBeforeSessionCreationCompletesOnceAndDeletesOutput() throws {
     let queue = DispatchQueue(label: "watermark-cancel-before-session")
     queue.suspend()
