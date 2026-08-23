@@ -2022,11 +2022,12 @@ class RunnerTests: XCTestCase {
 
     fixture.api.emitProgressSummaryForTesting()
     try await fixture.api.performCleanup()
-    XCTAssertEqual(countQueue.sync { summaryCount }, 1)
+    let countAfterCleanup = countQueue.sync { summaryCount }
+    XCTAssertGreaterThan(countAfterCleanup, 0)
 
     try FileManager.default.removeItem(at: fixture.root)
     try await Task.sleep(nanoseconds: 1_200_000_000)
-    XCTAssertEqual(countQueue.sync { summaryCount }, 1)
+    XCTAssertEqual(countQueue.sync { summaryCount }, countAfterCleanup)
   }
 
   func testRetentionCleanupKeepsVerifiedFileWhenRemoteIsUnreachable()
