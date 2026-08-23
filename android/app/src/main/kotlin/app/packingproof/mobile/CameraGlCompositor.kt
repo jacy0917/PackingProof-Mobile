@@ -424,26 +424,12 @@ internal class CameraGlCompositor(
         if (watermarkEnabled && !watermarkOverlayFailed) requestWatermarkTextures(frameTimeMs)
         drawOutput(previewEglSurface, null, CameraGlOutput.PREVIEW, frameTimeMs)
         if (encoderEnabled.get()) {
-            val drawResult = drawOutput(
+            drawOutput(
                 encoderEglSurface,
                 input.timestamp,
                 CameraGlOutput.ENCODER,
                 frameTimeMs,
             )
-            if (drawResult.submitted) {
-                pendingTransitionFrameCallback?.let { callback ->
-                    pendingTransitionFrameCallback = null
-                    callback(input.timestamp / 1_000L, drawResult.watermarkRendered)
-                }
-                try {
-                    onEncodedWatermarkFrame(
-                        input.timestamp / 1_000L,
-                        drawResult.watermarkRendered,
-                    )
-                } catch (_: Throwable) {
-                    // Recording diagnostics must not interrupt frame delivery.
-                }
-            }
         }
     }
 
@@ -507,13 +493,40 @@ internal class CameraGlCompositor(
                 return CameraGlDrawResult(submitted = false, watermarkRendered = false)
             }
             if (presentationTimeNs != null) {
-                EGLExt.eglPresentationTimeANDROID(display, surface, presentationTimeNs)
+                checkEgl(
+                    EGLExt.eglPresentationTimeANDROID(display, surface, presentationTimeNs),
+                    "presentation_time",
+                )
+                notifyEncoderFrameWillSubmit(
+                    presentationTimeNs / 1_000L,
+                    watermarkRendered,
+                )
             }
             checkEgl(EGL14.eglSwapBuffers(display, surface), "swap_buffers")
             return CameraGlDrawResult(submitted = true, watermarkRendered = watermarkRendered)
         } catch (error: Throwable) {
             reportFailure(output, error)
             return CameraGlDrawResult(submitted = false, watermarkRendered = false)
+        }
+    }
+
+    /** Registers the frame before swap makes it visible to MediaCodec's callback thread. */
+    private fun notifyEncoderFrameWillSubmit(
+        presentationTimeUs: Long,
+        watermarkRendered: Boolean,
+    ) {
+        pendingTransitionFrameCallback?.let { callback ->
+            pendingTransitionFrameCallback = null
+            try {
+                callback(presentationTimeUs, watermarkRendered)
+            } catch (_: Throwable) {
+                // Split diagnostics must not interrupt frame delivery.
+            }
+        }
+        try {
+            onEncodedWatermarkFrame(presentationTimeUs, watermarkRendered)
+        } catch (_: Throwable) {
+            // Recording diagnostics must not interrupt frame delivery.
         }
     }
 

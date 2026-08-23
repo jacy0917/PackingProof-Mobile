@@ -142,6 +142,24 @@ class LiveWatermarkRuntimePolicyTest {
     }
 
     @Test
+    fun `small vendor timestamp quantization still matches submitted frame`() {
+        val tracker = EncodedWatermarkFrameTracker(matchToleranceUs = 2_000L)
+        tracker.recordSubmitted(100_000L, true)
+        tracker.recordSubmitted(133_333L, false)
+
+        assertEquals(true, tracker.takeForEncodedSample(101_500L))
+        assertEquals(false, tracker.takeForEncodedSample(132_000L))
+    }
+
+    @Test
+    fun `timestamp outside bounded tolerance remains unmatched`() {
+        val tracker = EncodedWatermarkFrameTracker(matchToleranceUs = 2_000L)
+        tracker.recordSubmitted(100_000L, true)
+
+        assertEquals(null, tracker.takeForEncodedSample(102_001L))
+    }
+
+    @Test
     fun `ten thousand submitted frames without encoder output remain bounded`() {
         val tracker = EncodedWatermarkFrameTracker(
             maxPendingFrames = 120,

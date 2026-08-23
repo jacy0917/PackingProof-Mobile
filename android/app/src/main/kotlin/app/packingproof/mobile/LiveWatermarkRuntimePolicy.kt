@@ -134,12 +134,14 @@ internal class LiveWatermarkSegmentState {
 internal class EncodedWatermarkFrameTracker(
     private val maxPendingFrames: Int = 300,
     private val maxPendingAgeUs: Long = 5_000_000L,
+    private val matchToleranceUs: Long = 2_000L,
 ) {
     private val submittedFrames = TreeMap<Long, Boolean>()
 
     init {
         require(maxPendingFrames > 0)
         require(maxPendingAgeUs > 0L)
+        require(matchToleranceUs >= 0L)
     }
 
     @Synchronized
@@ -159,8 +161,18 @@ internal class EncodedWatermarkFrameTracker(
 
     @Synchronized
     fun takeForEncodedSample(presentationTimeUs: Long): Boolean? {
-        submittedFrames.headMap(presentationTimeUs, false).clear()
-        return submittedFrames.remove(presentationTimeUs)
+        val oldestMatchPtsUs = presentationTimeUs - matchToleranceUs
+        submittedFrames.headMap(oldestMatchPtsUs, false).clear()
+        val floor = submittedFrames.floorEntry(presentationTimeUs)
+        val ceiling = submittedFrames.ceilingEntry(presentationTimeUs)
+        val nearest = listOfNotNull(floor, ceiling)
+            .minByOrNull { kotlin.math.abs(it.key - presentationTimeUs) }
+            ?: return null
+        if (kotlin.math.abs(nearest.key - presentationTimeUs) > matchToleranceUs) {
+            return null
+        }
+        submittedFrames.headMap(nearest.key, true).clear()
+        return nearest.value
     }
 
     @Synchronized
