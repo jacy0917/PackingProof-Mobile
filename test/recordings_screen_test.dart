@@ -4055,6 +4055,63 @@ void main() {
     expect(tester.binding.hasScheduledFrame, isFalse);
   });
 
+  testWidgets('稳定的数万级控制器快照不重复查询本地历史', (WidgetTester tester) async {
+    final DateTime startedAt = DateTime(2026, 8, 23, 12);
+    final RecordingSession session = _session(
+      'stable-session',
+      'STABLE-001',
+      startedAt,
+      filePath: 'pubspec.yaml',
+    );
+    final List<RecordingSession> stableSessions =
+        List<RecordingSession>.unmodifiable(<RecordingSession>[session]);
+    final Set<int> stableHiddenIds = Set<int>.unmodifiable(<int>{
+      for (var id = 0; id < 50000; id++) id,
+    });
+    var localQueryCount = 0;
+
+    Widget buildScreen() => MaterialApp(
+      home: RecordingsScreen(
+        sessions: stableSessions,
+        hiddenRemoteRecordingIds: stableHiddenIds,
+        workMode: WorkMode.continuousScan,
+        speechEnabled: true,
+        maxVolumeEnabled: true,
+        onLoadLocalRecordings:
+            ({
+              required page,
+              required pageSize,
+              keyword = '',
+              DateTime? start,
+              DateTime? end,
+            }) async {
+              localQueryCount++;
+              return LocalRecordingPage(
+                data: <RecordingSession>[session],
+                page: page,
+                pageSize: pageSize,
+                total: 1,
+              );
+            },
+        onWorkModeChanged: (_) async {},
+        onSpeechEnabledChanged: (_) async {},
+        onMaxVolumeEnabledChanged: (_) async {},
+        onSpeechPreview: () async {},
+        onSessionUpdated: (_) async {},
+        onDeleteSessions: (_) async {},
+      ),
+    );
+
+    await tester.pumpWidget(buildScreen());
+    await tester.pumpAndSettle();
+    expect(localQueryCount, 1);
+
+    await tester.pumpWidget(buildScreen());
+    await tester.pumpAndSettle();
+
+    expect(localQueryCount, 1);
+  });
+
   testWidgets('电脑断开时才重置历史页', (WidgetTester tester) async {
     tester.view.physicalSize = const Size(800, 1600);
     tester.view.devicePixelRatio = 1.0;

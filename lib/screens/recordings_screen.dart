@@ -500,7 +500,12 @@ class _RecordingsScreenState extends State<RecordingsScreen>
     _historyPageSize = widget.historyPageSize;
     _unbackedRetention = widget.unbackedRetention;
     _backedRetention = widget.backedRetention;
-    _hiddenRemoteIds.addAll(widget.hiddenRemoteRecordingIds);
+    if (!identical(
+      oldWidget.hiddenRemoteRecordingIds,
+      widget.hiddenRemoteRecordingIds,
+    )) {
+      _hiddenRemoteIds.addAll(widget.hiddenRemoteRecordingIds);
+    }
     if (oldWidget.focusBackupRevision != widget.focusBackupRevision &&
         widget.focusBackupRevision > 0) {
       WidgetsBinding.instance.addPostFrameCallback((_) {

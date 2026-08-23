@@ -195,8 +195,10 @@ class PackingSessionController extends ChangeNotifier
   ContinuousCameraInitialization? _nativeInitialization;
   @override
   PackingSessionPhase _phase = PackingSessionPhase.initializing;
-  @override
-  List<RecordingSession> _sessions = <RecordingSession>[];
+  // 条码候选和相机状态会频繁通知首页；仅在内容变化时复制不可变快照，
+  // 避免每次通知都为两个离屏录像页重新分配集合。
+  List<RecordingSession> _sessionItems = <RecordingSession>[];
+  List<RecordingSession> _sessionSnapshot = const <RecordingSession>[];
   LocalRecordingStatistics _localRecordingStatistics =
       const LocalRecordingStatistics();
   Timer? _elapsedTimer;
@@ -228,14 +230,31 @@ class PackingSessionController extends ChangeNotifier
   bool _torchEnabled = false;
   bool _workActive = false;
   int _operationGeneration = 0;
-  Set<int> _hiddenRemoteRecordingIds = <int>{};
+  Set<int> _hiddenRemoteRecordingIdItems = <int>{};
+  Set<int> _hiddenRemoteRecordingIdSnapshot = const <int>{};
+
+  @override
+  List<RecordingSession> get _sessions => _sessionItems;
+
+  @override
+  set _sessions(List<RecordingSession> value) {
+    _sessionItems = value;
+    _sessionSnapshot = List<RecordingSession>.unmodifiable(value);
+  }
+
+  Set<int> get _hiddenRemoteRecordingIds => _hiddenRemoteRecordingIdItems;
+
+  @override
+  set _hiddenRemoteRecordingIds(Set<int> value) {
+    _hiddenRemoteRecordingIdItems = value;
+    _hiddenRemoteRecordingIdSnapshot = Set<int>.unmodifiable(value);
+  }
 
   CameraController? get cameraController => _cameraController;
   int? get nativeTextureId => _nativeInitialization?.textureId;
   Size? get nativePreviewSize => _nativeInitialization?.portraitPreviewSize;
   PackingSessionPhase get phase => _phase;
-  List<RecordingSession> get sessions =>
-      List<RecordingSession>.unmodifiable(_sessions);
+  List<RecordingSession> get sessions => _sessionSnapshot;
   LocalRecordingStatistics get localRecordingStatistics =>
       _localRecordingStatistics;
   Duration get elapsed => _elapsed;
@@ -324,8 +343,7 @@ class PackingSessionController extends ChangeNotifier
   @override
   bool get isWorking => _workActive;
   RecordingOperationMode get operationMode => _operationMode;
-  Set<int> get hiddenRemoteRecordingIds =>
-      Set<int>.unmodifiable(_hiddenRemoteRecordingIds);
+  Set<int> get hiddenRemoteRecordingIds => _hiddenRemoteRecordingIdSnapshot;
   @override
   bool get isBusy =>
       _phase == PackingSessionPhase.initializing ||
