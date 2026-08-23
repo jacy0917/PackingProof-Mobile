@@ -427,7 +427,7 @@ class PackingSessionController extends ChangeNotifier
         // Local history remains available even when optional cleanup cannot run.
       }
       if (_lanBackupService.snapshot.autoEnabled) {
-        _runInBackground(_backupAllRepositorySessions('app_start'));
+        _scheduleAutomaticBackupBootstrap('app_start');
       } else {
         _runInBackground(_registerRepositorySessionsForRetention());
       }

@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -69,6 +71,7 @@ void main() {
     await controller.setLanBackupAutoEnabled(true);
     backup.retryConnectionResult = true;
     await controller.retryBackupConnection();
+    await controller.waitForAutomaticBackupBootstrapForTesting();
 
     expect(backup.backupCalls.map((call) => call.forceRestart), <bool>[
       true,
@@ -79,6 +82,107 @@ void main() {
       backup.backupCalls.map((call) => call.sessionIds.toSet()),
       everyElement(<String>{'backup-one', 'backup-two'}),
     );
+  });
+
+  test('自动备份触发立即返回且多个触发只由一个 runner 串行处理', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-backup-runner-',
+    );
+    final SessionRepository repository = testRepository(root);
+    await repository.initialize();
+    final DateTime startedAt = DateTime.utc(2026, 8, 23, 12);
+    final File video = File('${root.path}/runner.mp4');
+    await video.writeAsBytes(<int>[1]);
+    await repository.addSession(
+      RecordingSession(
+        id: 'runner',
+        filePath: video.path,
+        startedAt: startedAt,
+        endedAt: startedAt.add(const Duration(seconds: 1)),
+        markers: const <Never>[],
+      ),
+    );
+    await repository.resumeSharedFileMigration();
+    final Completer<void> firstBatchGate = Completer<void>();
+    final Completer<void> firstBatchStarted = Completer<void>();
+    final _RecordingLanBackupSink backup = _RecordingLanBackupSink()
+      ..backupGate = firstBatchGate.future
+      ..backupStarted = firstBatchStarted;
+    final PackingSessionController controller = PackingSessionController(
+      repository: repository,
+      speechService: _NoopSpeechSink(),
+      lanBackupService: backup,
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+    addTearDown(() async {
+      if (!firstBatchGate.isCompleted) firstBatchGate.complete();
+      await controller.shutdown();
+      controller.dispose();
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+
+    await controller
+        .setLanBackupAutoEnabled(true)
+        .timeout(const Duration(seconds: 5));
+    controller.scheduleAutomaticBackupBootstrapForTesting(
+      'connection_restored',
+    );
+    controller.scheduleAutomaticBackupBootstrapForTesting('pairing_completed');
+    await firstBatchStarted.future.timeout(const Duration(seconds: 5));
+
+    expect(backup.backupCalls, hasLength(1));
+    expect(backup.maximumConcurrentBackupCalls, 1);
+
+    firstBatchGate.complete();
+    backup.backupGate = null;
+    backup.backupStarted = null;
+    await controller.waitForAutomaticBackupBootstrapForTesting();
+
+    expect(backup.backupCalls, hasLength(2));
+    expect(backup.maximumConcurrentBackupCalls, 1);
+    expect(
+      backup.backupCalls.map((_BackupCall call) => call.forceRestart),
+      everyElement(isFalse),
+    );
+  });
+
+  test('关闭自动备份后在当前页完成时停止后续扫描', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-backup-runner-cancel-',
+    );
+    final _PagedBackupRepository repository = _PagedBackupRepository(
+      rootDirectory: root,
+      total: 1000,
+    );
+    final Completer<void> firstBatchGate = Completer<void>();
+    final Completer<void> firstBatchStarted = Completer<void>();
+    final _RecordingLanBackupSink backup = _RecordingLanBackupSink()
+      ..backupGate = firstBatchGate.future
+      ..backupStarted = firstBatchStarted;
+    final PackingSessionController controller = PackingSessionController(
+      repository: repository,
+      speechService: _NoopSpeechSink(),
+      lanBackupService: backup,
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+    addTearDown(() async {
+      if (!firstBatchGate.isCompleted) firstBatchGate.complete();
+      await controller.shutdown();
+      controller.dispose();
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+
+    await controller.setLanBackupAutoEnabled(true);
+    await firstBatchStarted.future.timeout(const Duration(seconds: 5));
+    await controller.setLanBackupAutoEnabled(false);
+    firstBatchGate.complete();
+    await controller.waitForAutomaticBackupBootstrapForTesting();
+
+    expect(backup.backupCalls, hasLength(1));
+    expect(backup.backupCalls.single.sessionIds, hasLength(100));
+    expect(backup.maximumConcurrentBackupCalls, 1);
   });
 
   test('启动增量备份中途关闭不跨过未处理页且下次可恢复', () async {
@@ -298,6 +402,82 @@ void main() {
     controller.dispose();
   });
 
+  for (final int total in <int>[2000, 10000, 50000]) {
+    test('$total 条备份入队始终保持每批最多 100 条', () async {
+      final Directory root = await Directory.systemTemp.createTemp(
+        'packing-proof-backup-scale-',
+      );
+      addTearDown(() async {
+        if (await root.exists()) await root.delete(recursive: true);
+      });
+      final _PagedBackupRepository repository = _PagedBackupRepository(
+        rootDirectory: root,
+        total: total,
+      );
+      final _RecordingLanBackupSink backup = _RecordingLanBackupSink();
+      final PackingSessionController controller = PackingSessionController(
+        repository: repository,
+        speechService: _NoopSpeechSink(),
+        lanBackupService: backup,
+        capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+        runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+      );
+
+      await controller.backupAllSessions();
+
+      expect(backup.backupCalls, hasLength((total / 100).ceil()));
+      expect(
+        backup.backupCalls.map((call) => call.sessionIds.length),
+        everyElement(lessThanOrEqualTo(100)),
+      );
+      expect(
+        backup.backupCalls.fold<int>(
+          0,
+          (int sum, _BackupCall call) => sum + call.sessionIds.length,
+        ),
+        total,
+      );
+      await controller.shutdown();
+      controller.dispose();
+    });
+  }
+
+  test('2000 条启动入队中断后从已提交游标继续', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-backup-scale-resume-',
+    );
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final _PagedBackupRepository repository = _PagedBackupRepository(
+      rootDirectory: root,
+      total: 2000,
+    );
+    final PackingSessionController controller = PackingSessionController(
+      repository: repository,
+      speechService: _NoopSpeechSink(),
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+    var pages = 0;
+    await controller.processStartupBackupIncrementForTesting((_) async {
+      pages++;
+      if (pages == 8) throw StateError('模拟第八页入队前中断');
+    });
+
+    expect(repository.savedCursor?.updatedAt, 700);
+
+    var resumedCount = 0;
+    await controller.processStartupBackupIncrementForTesting((page) async {
+      resumedCount += page.length;
+    });
+
+    expect(resumedCount, 1300);
+    expect(repository.savedCursor?.updatedAt, 2000);
+    await controller.shutdown();
+    controller.dispose();
+  });
+
   test('水印最终失败保持失败状态并立即备份保留文件', () async {
     final Directory root = await Directory.systemTemp.createTemp(
       'packing-proof-failed-watermark-backup-',
@@ -494,6 +674,64 @@ class _InterruptingCleanupRepository extends SessionRepository {
   }
 }
 
+class _PagedBackupRepository extends SessionRepository {
+  _PagedBackupRepository({
+    required Directory rootDirectory,
+    required this.total,
+  }) : testRoot = rootDirectory,
+       super(rootDirectory: rootDirectory);
+
+  final int total;
+  final Directory testRoot;
+  BackupRegistrationCursor? savedCursor;
+
+  @override
+  Future<BackupRegistrationCursor?>
+  loadBackupRegistrationHighWatermark() async => total == 0
+      ? null
+      : BackupRegistrationCursor(updatedAt: total, id: 'session-$total');
+
+  @override
+  Future<BackupIncrementPage?> loadBackupIncrement({
+    required BackupRegistrationCursor? after,
+    required BackupRegistrationCursor highWatermark,
+    int pageSize = 100,
+  }) async {
+    final int first = (after?.updatedAt ?? 0) + 1;
+    if (first > highWatermark.updatedAt) return null;
+    final int candidateLast = first + pageSize - 1;
+    final int last = candidateLast < highWatermark.updatedAt
+        ? candidateLast
+        : highWatermark.updatedAt;
+    final DateTime startedAt = DateTime.utc(2026, 8, 23);
+    final List<RecordingSession> sessions = <RecordingSession>[
+      for (int index = first; index <= last; index++)
+        RecordingSession(
+          id: 'session-$index',
+          filePath: '${testRoot.path}/video-$index.mp4',
+          startedAt: startedAt.add(Duration(seconds: index)),
+          endedAt: startedAt.add(Duration(seconds: index + 1)),
+          markers: const <Never>[],
+        ),
+    ];
+    return BackupIncrementPage(
+      sessions: sessions,
+      nextAfter: BackupRegistrationCursor(updatedAt: last, id: 'session-$last'),
+    );
+  }
+
+  @override
+  Future<BackupRegistrationCursor?> loadBackupRegistrationCursor() async =>
+      savedCursor;
+
+  @override
+  Future<void> saveBackupRegistrationCursor(
+    BackupRegistrationCursor cursor,
+  ) async {
+    savedCursor = cursor;
+  }
+}
+
 class _RecordingLanBackupSink extends ChangeNotifier implements LanBackupSink {
   LanBackupSnapshot _snapshot = const LanBackupSnapshot(autoEnabled: false);
   final List<_BackupCall> backupCalls = <_BackupCall>[];
@@ -505,6 +743,10 @@ class _RecordingLanBackupSink extends ChangeNotifier implements LanBackupSink {
   bool failNextCleanupAcknowledgement = false;
   int initializeCalls = 0;
   bool retryConnectionResult = false;
+  Future<void>? backupGate;
+  Completer<void>? backupStarted;
+  int _activeBackupCalls = 0;
+  int maximumConcurrentBackupCalls = 0;
   StorageSpaceResult storageResult = const StorageSpaceResult(
     availableBytes: 4 * 1024 * 1024 * 1024,
     availableBytesBefore: 4 * 1024 * 1024 * 1024,
@@ -540,12 +782,25 @@ class _RecordingLanBackupSink extends ChangeNotifier implements LanBackupSink {
     List<RecordingSession> sessions, {
     bool forceRestart = false,
   }) async {
+    _activeBackupCalls++;
+    maximumConcurrentBackupCalls = max(
+      maximumConcurrentBackupCalls,
+      _activeBackupCalls,
+    );
     backupCalls.add(
       _BackupCall(
         sessionIds: sessions.map((session) => session.id).toList(),
         forceRestart: forceRestart,
       ),
     );
+    final Completer<void>? started = backupStarted;
+    if (started != null && !started.isCompleted) started.complete();
+    try {
+      final Future<void>? gate = backupGate;
+      if (gate != null) await gate;
+    } finally {
+      _activeBackupCalls--;
+    }
   }
 
   @override

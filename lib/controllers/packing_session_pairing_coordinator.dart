@@ -196,7 +196,9 @@ mixin _PackingSessionPairingCoordinator on _PackingSessionOrderCoordinator {
       _pairingMessage = null;
       notifyListeners();
     });
-    await _backupAllRepositorySessions('pairing_completed');
+    if (_lanBackupService.snapshot.autoEnabled) {
+      _scheduleAutomaticBackupBootstrap('pairing_completed');
+    }
     notifyListeners();
   }
 
