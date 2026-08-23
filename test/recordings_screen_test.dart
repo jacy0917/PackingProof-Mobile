@@ -2070,7 +2070,11 @@ void main() {
     ).colorScheme;
     expect(
       autoButton.style?.backgroundColor?.resolve(const <WidgetState>{}),
-      colors.errorContainer,
+      colors.error,
+    );
+    expect(
+      autoButton.style?.foregroundColor?.resolve(const <WidgetState>{}),
+      colors.onError,
     );
   });
 

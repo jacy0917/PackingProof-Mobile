@@ -582,9 +582,13 @@ class _ComputerBackupSettings extends StatelessWidget {
                         minimumSize: const Size.fromHeight(46),
                         backgroundColor: snapshot.autoEnabled
                             ? null
+                            : Theme.of(context).brightness == Brightness.light
+                            ? colors.error
                             : colors.errorContainer,
                         foregroundColor: snapshot.autoEnabled
                             ? null
+                            : Theme.of(context).brightness == Brightness.light
+                            ? colors.onError
                             : colors.onErrorContainer,
                       ),
                       child: Text(snapshot.autoEnabled ? '暂停上传' : '继续上传'),
