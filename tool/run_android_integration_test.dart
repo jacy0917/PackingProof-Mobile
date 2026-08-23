@@ -71,7 +71,7 @@ final class AndroidIntegrationTestInvocation {
     'test',
     '--no-pub',
     '--no-uninstall',
-    '--device',
+    '--device-id',
     deviceId,
     target,
   ];

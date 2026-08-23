@@ -18,6 +18,8 @@ void main() {
 
     expect(integrationTestApplicationId, isNot(productionApplicationId));
     expect(invocation.flutterArguments, contains('--no-uninstall'));
+    expect(invocation.flutterArguments, contains('--device-id'));
+    expect(invocation.flutterArguments, isNot(contains('--device')));
     expect(invocation.flutterArguments, contains('safe-test-device'));
   });
 
