@@ -9,10 +9,15 @@ mixin _PackingSessionStorageCoordinator on _PackingSessionBackupCoordinator {
   Timer? _storageMonitorTimer;
   String? _storageWarningMessage;
   bool _storageCheckRunning = false;
+  StorageSpaceResult? _lastStorageResult;
   int _queuedStorageNoticePriority = -1;
   StorageNotice? _storageNoticeToShow;
   int _storageNoticeRevision = 0;
   bool _storageStopRequested = false;
+  Future<void>? _storageStopFuture;
+
+  bool get _cachedStorageInsufficient =>
+      _lastStorageResult?.insufficient == true;
 
   StorageNotice? takeStorageNoticeForDisplay() {
     final StorageNotice? notice = _storageNoticeToShow;
@@ -50,6 +55,7 @@ mixin _PackingSessionStorageCoordinator on _PackingSessionBackupCoordinator {
     try {
       final StorageSpaceResult result = await _lanBackupService
           .checkAndReclaimStorage();
+      _lastStorageResult = result;
       if (result.deletedCount > 0) {
         final String message =
             '存储空间不足，已提前清理 ${result.deletedCount} 个已备份录像，'
@@ -79,13 +85,8 @@ mixin _PackingSessionStorageCoordinator on _PackingSessionBackupCoordinator {
         );
         _storageWarningMessage = '存储空间不足 2GB，正在停止录像';
         notifyListeners();
-        if (allowStop && isWorking && !isBusy) {
-          _storageStopRequested = true;
-          try {
-            await stopWork();
-          } finally {
-            _storageStopRequested = false;
-          }
+        if (allowStop && isWorking) {
+          _runInBackground(_requestStorageStopWhenIdle());
         }
       } else if (!_disposed && (result.deletedCount > 0 || result.warning)) {
         notifyListeners();
@@ -115,7 +116,7 @@ mixin _PackingSessionStorageCoordinator on _PackingSessionBackupCoordinator {
 
   Future<void> _handleNativeStorageCritical() async {
     unawaited(_cameraDiagnostics.recordEvent(kind: 'storage_critical'));
-    await _checkAndHandleStorage(allowStop: false);
+    _runInBackground(_checkAndHandleStorage(allowStop: false));
     await _queueStorageNotice(
       const StorageNotice(
         severity: StorageNoticeSeverity.stopped,
@@ -124,7 +125,26 @@ mixin _PackingSessionStorageCoordinator on _PackingSessionBackupCoordinator {
     );
     _storageWarningMessage = '存储空间不足，正在停止录像';
     if (!_disposed) notifyListeners();
-    if (!isWorking || isBusy) return;
+    if (isWorking) await _requestStorageStopWhenIdle();
+  }
+
+  Future<void> _requestStorageStopWhenIdle() {
+    final Future<void>? pending = _storageStopFuture;
+    if (pending != null) return pending;
+    late final Future<void> task;
+    task = _stopForStorageWhenIdle().whenComplete(() {
+      if (identical(_storageStopFuture, task)) _storageStopFuture = null;
+    });
+    _storageStopFuture = task;
+    return task;
+  }
+
+  Future<void> _stopForStorageWhenIdle() async {
+    if (_disposed || !isWorking) return;
+    while (!_disposed && isWorking && isBusy) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    if (_disposed || !isWorking || _storageStopRequested) return;
     _storageStopRequested = true;
     try {
       await stopWork();

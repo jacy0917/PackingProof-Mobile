@@ -140,6 +140,7 @@ class PackingSessionController extends ChangeNotifier
   static const Duration initialModeAnnouncementDelay = Duration(
     milliseconds: 250,
   );
+  static const Duration _shutdownOperationTimeout = Duration(milliseconds: 400);
   static const int recordingFps = 30;
 
   @override
@@ -174,6 +175,7 @@ class PackingSessionController extends ChangeNotifier
   int _pendingPreviewTransitions = 0;
   final Set<Future<void>> _backgroundTasks = <Future<void>>{};
   Future<void>? _shutdownFuture;
+  bool _shutdownAbandonedStop = false;
 
   PlatformCapabilities get capabilities => _capabilities;
 
@@ -1034,6 +1036,9 @@ class PackingSessionController extends ChangeNotifier
     _elapsedTimer?.cancel();
     _elapsedTimer = null;
     final NativeRecordingStop stopped = await camera.stopWork();
+    if (_shutdownAbandonedStop) {
+      throw StateError('控制器已关闭，忽略迟到的原生停录结果');
+    }
     final RecordingSegmentDraft? draft = _timeline.finish(stopped.endedAt);
     if (draft == null) {
       throw StateError('找不到当前录像片段');
@@ -1256,10 +1261,7 @@ class PackingSessionController extends ChangeNotifier
     if (camera == null || recordingId == null || completedId == null) {
       return null;
     }
-    final StorageSpaceResult storage = await _checkAndHandleStorage(
-      allowStop: true,
-    );
-    if (storage.insufficient || !isWorking) return null;
+    if (_cachedStorageInsufficient || !isWorking) return null;
     final int nextIndex = _segmentIndex + 1;
     final OrderInfo? completedOrderInfo = _activeOrderInfo;
     final String nextId =
@@ -1635,17 +1637,45 @@ class PackingSessionController extends ChangeNotifier
     );
   }
 
-  Future<void> _drainBackgroundTasks() async {
-    while (_backgroundTasks.isNotEmpty) {
-      final List<Future<void>> pending = _backgroundTasks.toList(
-        growable: false,
-      );
+  Future<void> _drainBackgroundTasksForShutdown() async {
+    final List<Future<void>> pending = _backgroundTasks.toList(growable: false);
+    if (pending.isEmpty) return;
+    try {
       await Future.wait<void>(
         pending.map(
           (Future<void> task) => task.catchError((Object _, StackTrace _) {}),
         ),
+      ).timeout(_shutdownOperationTimeout);
+    } on TimeoutException {
+      developer.log(
+        'PackingSessionController stopped waiting for background tasks during shutdown',
       );
+    } finally {
       _backgroundTasks.removeAll(pending);
+    }
+  }
+
+  Future<bool> _awaitShutdownOperation<T>(
+    String operation,
+    Future<T> task,
+  ) async {
+    try {
+      await task.timeout(_shutdownOperationTimeout);
+      return true;
+    } on TimeoutException catch (error, stackTrace) {
+      developer.log(
+        'PackingSessionController stopped waiting for $operation during shutdown',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return false;
+    } on Object catch (error, stackTrace) {
+      developer.log(
+        'PackingSessionController failed $operation during shutdown',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return true;
     }
   }
 
@@ -1653,17 +1683,22 @@ class PackingSessionController extends ChangeNotifier
 
   Future<void> _shutdown() async {
     _disposed = true;
+    _stopStorageMonitor();
     await _cancelWatermarkForShutdown();
-    if (isWorking) {
-      try {
-        await stopWork();
-      } on Object catch (error, stackTrace) {
-        developer.log(
-          'PackingSessionController failed to stop active recording during shutdown',
-          error: error,
-          stackTrace: stackTrace,
-        );
-      }
+    final Future<void>? storageStop = _storageStopFuture;
+    if (storageStop != null) {
+      final bool stopped = await _awaitShutdownOperation<void>(
+        'for storage stop',
+        storageStop,
+      );
+      _shutdownAbandonedStop = !stopped;
+    }
+    if (isWorking && !_storageStopRequested) {
+      final bool stopped = await _awaitShutdownOperation<RecordingSession?>(
+        'to stop active recording',
+        stopWork(),
+      );
+      _shutdownAbandonedStop = !stopped;
     }
     _clearPendingComputerReplacement();
     _elapsedTimer?.cancel();
@@ -1693,7 +1728,7 @@ class PackingSessionController extends ChangeNotifier
     if (_pendingPreviewTransitions > 0) {
       await _previewStateTail.catchError((Object _, StackTrace _) {});
     }
-    await _drainBackgroundTasks();
+    await _drainBackgroundTasksForShutdown();
 
     Future<void> cleanup(
       String component,
@@ -1723,11 +1758,17 @@ class PackingSessionController extends ChangeNotifier
       cleanup('lanBackupService', _lanBackupService.dispose),
     ]);
     _orderInfoSubscription = null;
-    await cleanup('repository', _repository.dispose);
-    await Future.wait<void>(<Future<void>>[
-      _runtimeLog.flush(),
-      _cameraDiagnostics.flush(),
-    ]);
+    await _awaitShutdownOperation<void>(
+      'to close repository',
+      cleanup('repository', _repository.dispose),
+    );
+    await _awaitShutdownOperation<void>(
+      'to flush diagnostics',
+      Future.wait<void>(<Future<void>>[
+        _runtimeLog.flush(),
+        _cameraDiagnostics.flush(),
+      ]),
+    );
   }
 
   String _sessionId(DateTime value) {

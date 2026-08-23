@@ -122,7 +122,7 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
           }
         };
         nativeCamera.onStorageCritical = () {
-          unawaited(_handleNativeStorageCritical());
+          _runInBackground(_handleNativeStorageCritical());
         };
         nativeCamera.onProbeFinished = _handleNativeProbeFinished;
         nativeCamera.onRecordingFallback = _handleNativeRecordingFallback;
