@@ -315,17 +315,14 @@ internal data class CameraGlOutputGeometry(
 internal object CameraGlOutputGeometryPolicy {
     fun create(inputWidth: Int, inputHeight: Int, sensorOrientation: Int): CameraGlOutputGeometry {
         require(inputWidth > 0 && inputHeight > 0)
-        val quarterTurns = when (((sensorOrientation % 360) + 360) % 360) {
-            90 -> 3
-            180 -> 2
-            270 -> 1
-            else -> 0
-        }
-        val swapsDimensions = quarterTurns % 2 != 0
+        val normalizedOrientation = ((sensorOrientation % 360) + 360) % 360
+        val swapsDimensions = normalizedOrientation == 90 || normalizedOrientation == 270
         return CameraGlOutputGeometry(
             width = if (swapsDimensions) inputHeight else inputWidth,
             height = if (swapsDimensions) inputWidth else inputHeight,
-            inputQuarterTurns = quarterTurns,
+            // SurfaceTexture's transform matrix already includes the camera buffer transform.
+            // Applying the sensor angle again rotates the composed preview and encoder output twice.
+            inputQuarterTurns = 0,
         )
     }
 }

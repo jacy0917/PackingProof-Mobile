@@ -292,11 +292,11 @@ class LiveWatermarkRuntimePolicyTest {
     @Test
     fun `GL output rotates landscape camera input once into portrait coordinates`() {
         assertEquals(
-            CameraGlOutputGeometry(1080, 1920, 3),
+            CameraGlOutputGeometry(1080, 1920, 0),
             CameraGlOutputGeometryPolicy.create(1920, 1080, 90),
         )
         assertEquals(
-            CameraGlOutputGeometry(1080, 1920, 1),
+            CameraGlOutputGeometry(1080, 1920, 0),
             CameraGlOutputGeometryPolicy.create(1920, 1080, 270),
         )
         assertEquals(
