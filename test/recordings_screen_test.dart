@@ -4104,6 +4104,99 @@ void main() {
     expect(find.text('NO-6'), findsOneWidget);
   });
 
+  testWidgets('自动备份完成通知不会把历史翻页重置到首页', (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    final DateTime startedAt = DateTime(2026, 8, 23, 12);
+    final List<RecordingSession> all = List<RecordingSession>.generate(
+      12,
+      (int index) => _session(
+        'backup-page-$index',
+        'BACKUP-${index + 1}',
+        startedAt.subtract(Duration(minutes: index)),
+        filePath: 'pubspec.yaml',
+      ),
+    );
+    final LanBackupEndpoint endpoint = LanBackupEndpoint(
+      baseUri: Uri.parse('http://192.168.1.20:5280'),
+      accessKey: '',
+      computerId: 'computer-1',
+      computerName: '电脑',
+    );
+    final ValueNotifier<LanBackupSnapshot> snapshots =
+        ValueNotifier<LanBackupSnapshot>(
+          LanBackupSnapshot(
+            endpoint: endpoint,
+            connectionStatus: LanConnectionStatus.connected,
+            summary: const LanBackupSummary(revision: 1),
+          ),
+        );
+    addTearDown(snapshots.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingsScreen(
+          sessions: all,
+          workMode: WorkMode.continuousScan,
+          speechEnabled: true,
+          maxVolumeEnabled: true,
+          backupSnapshot: snapshots.value,
+          backupListenable: snapshots,
+          backupSnapshotProvider: () => snapshots.value,
+          onLoadLocalRecordings:
+              ({
+                required page,
+                required pageSize,
+                keyword = '',
+                DateTime? start,
+                DateTime? end,
+              }) async {
+                final int offset = (page - 1) * pageSize;
+                return LocalRecordingPage(
+                  data: all.skip(offset).take(pageSize).toList(growable: false),
+                  page: page,
+                  pageSize: pageSize,
+                  total: all.length,
+                );
+              },
+          onLoadRemoteRecordings:
+              ({required page, required pageSize, keyword = ''}) async =>
+                  RemoteRecordingPage(
+                    data: const <RemoteRecording>[],
+                    page: page,
+                    pageSize: pageSize,
+                    total: 0,
+                    deviceTotal: 0,
+                  ),
+          onWorkModeChanged: (_) async {},
+          onSpeechEnabledChanged: (_) async {},
+          onMaxVolumeEnabledChanged: (_) async {},
+          onSpeechPreview: () async {},
+          onSessionUpdated: (_) async {},
+          onDeleteSessions: (_) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('recording-page-next')));
+    await tester.pumpAndSettle();
+    expect(find.text('2 / 3 页'), findsOneWidget);
+
+    snapshots.value = LanBackupSnapshot(
+      endpoint: endpoint,
+      connectionStatus: LanConnectionStatus.connected,
+      summary: const LanBackupSummary(
+        revision: 2,
+        completedRevision: 1,
+        completedCount: 1,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('2 / 3 页'), findsOneWidget);
+    expect(find.text('BACKUP-6'), findsOneWidget);
+  });
+
   testWidgets('隐藏页收到非备份通知时不触发重建', (WidgetTester tester) async {
     final ChangeNotifier notifier = ChangeNotifier();
     addTearDown(notifier.dispose);

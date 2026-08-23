@@ -25,6 +25,7 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
   set _remoteDeviceTotal(int value);
   int get _remoteRequestGeneration;
   set _remoteRequestGeneration(int value);
+  int get _historyPage;
   set _historyPage(int value);
   Iterable<String> get _backupLookupPaths;
 
@@ -296,6 +297,7 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
     if ((!_remoteCacheDirty && !force) ||
         !mounted ||
         !widget.active ||
+        _historyPage != 0 ||
         _loadingRemote ||
         _backupSnapshot.connectionStatus != LanConnectionStatus.connected) {
       return;

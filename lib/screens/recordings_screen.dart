@@ -942,6 +942,7 @@ class _RecordingsScreenState extends State<RecordingsScreen>
     final int dataPage = historyPage + 1;
     if (widget.onLoadLocalRecordings == null) {
       setState(() => _historyPage = historyPage);
+      if (historyPage == 0) _reloadRemoteAfterBackup();
       return;
     }
     if (!_remotePages.containsKey(dataPage) &&
@@ -957,6 +958,7 @@ class _RecordingsScreenState extends State<RecordingsScreen>
       _trimLocalPageCache();
       _rebuildLocalRecordings();
     });
+    if (historyPage == 0) _reloadRemoteAfterBackup();
   }
 
   void _setHistoryPageSize(int pageSize) {
