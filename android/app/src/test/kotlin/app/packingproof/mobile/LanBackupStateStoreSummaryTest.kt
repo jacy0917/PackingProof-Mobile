@@ -440,9 +440,9 @@ class LanBackupStateStoreSummaryTest {
             INSERT INTO backup_jobs(
                 id, generation, file_path, state, total_bytes, last_modified,
                 file_created_at, backup_completed_at, local_deleted_at,
-                content_sha256, verification_version, last_attested_at, sessions,
-                updated_revision
-            ) VALUES(?, ?, ?, ?, 1, 1, ?, ?, NULL, ?, ?, ?, '[]', ?)
+                remote_record_id, content_sha256, verification_version,
+                verification_receipt, last_attested_at, sessions, updated_revision
+            ) VALUES(?, ?, ?, ?, 1, 1, ?, ?, NULL, ?, ?, ?, ?, ?, '[]', ?)
             """.trimIndent(),
         )
         val attestedAt = Instant.now().toString()
@@ -459,16 +459,20 @@ class LanBackupStateStoreSummaryTest {
                 statement.bindString(5, "2026-08-23T00:00:00Z")
                 if (state == "completed") {
                     statement.bindString(6, "2026-08-23T00:01:00Z")
-                    statement.bindString(7, "a".repeat(64))
-                    statement.bindLong(8, BackupRequestAuthentication.VERSION.toLong())
-                    statement.bindString(9, attestedAt)
+                    statement.bindLong(7, index.toLong() + 1L)
+                    statement.bindString(8, "a".repeat(64))
+                    statement.bindLong(9, BackupRequestAuthentication.VERSION.toLong())
+                    statement.bindString(10, "receipt-$id")
+                    statement.bindString(11, attestedAt)
                 } else {
                     statement.bindNull(6)
                     statement.bindNull(7)
-                    statement.bindLong(8, 0)
-                    statement.bindNull(9)
+                    statement.bindNull(8)
+                    statement.bindLong(9, 0)
+                    statement.bindNull(10)
+                    statement.bindNull(11)
                 }
-                statement.bindLong(10, index.toLong())
+                statement.bindLong(12, index.toLong())
                 statement.executeInsert()
             }
             database.setTransactionSuccessful()
