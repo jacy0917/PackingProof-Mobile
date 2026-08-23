@@ -455,10 +455,10 @@ void main() {
     expect(watermarkOutline.textAlign, TextAlign.center);
     expect(watermarkOutline.style?.foreground?.style, PaintingStyle.stroke);
     expect(watermarkOutline.style?.foreground?.color, Colors.black);
-    expect(watermarkOutline.style?.fontSize, closeTo(44 * 390 / 1080, 0.0001));
+    expect(watermarkOutline.style?.fontSize, closeTo(40 * 390 / 1080, 0.0001));
     expect(
       watermarkOutline.style?.foreground?.strokeWidth,
-      closeTo(4.4 * 390 / 1080, 0.0001),
+      closeTo(4 * 390 / 1080, 0.0001),
     );
     expect(watermarkFill.textAlign, TextAlign.center);
     expect(watermarkFill.style?.color, Colors.white);

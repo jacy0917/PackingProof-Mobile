@@ -12,7 +12,7 @@ func iosWatermarkTopFraction(forOutputSize outputSize: CGSize) -> CGFloat {
 }
 
 func iosWatermarkFontSize(forOutputSize outputSize: CGSize) -> CGFloat {
-  let maximum: CGFloat = outputSize.height > outputSize.width ? 44 : 61
+  let maximum: CGFloat = outputSize.height > outputSize.width ? 40 : 61
   return max(35, min(maximum, outputSize.height * 0.032))
 }
 

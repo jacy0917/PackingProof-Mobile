@@ -6,6 +6,17 @@ import UIKit
 import XCTest
 
 final class IosWatermarkRasterTests: XCTestCase {
+  func testPortraitFontIsSmallerWithoutChangingLandscapeFont() {
+    XCTAssertEqual(
+      iosWatermarkFontSize(forOutputSize: CGSize(width: 1080, height: 1920)),
+      40
+    )
+    XCTAssertEqual(
+      iosWatermarkFontSize(forOutputSize: CGSize(width: 1920, height: 1080)),
+      35
+    )
+  }
+
   func testPlanReadinessErrorsRemainRetryable() {
     XCTAssertTrue(
       iosLiveWatermarkErrorIsTransient(IosLiveWatermarkError.planNotReady)

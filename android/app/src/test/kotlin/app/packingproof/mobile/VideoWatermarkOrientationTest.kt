@@ -111,8 +111,8 @@ class VideoWatermarkOrientationTest {
     }
 
     @Test
-    fun `caps portrait text at 44 while keeping 1080p landscape text at 35`() {
-        assertEquals(44f, watermarkTextSize(1920, "portrait"), 0.001f)
+    fun `caps portrait text at 40 while keeping 1080p landscape text at 35`() {
+        assertEquals(40f, watermarkTextSize(1920, "portrait"), 0.001f)
         assertEquals(35f, watermarkTextSize(1080, "landscapeLeft"), 0.001f)
         assertEquals(35f, watermarkTextSize(1080, "landscapeRight"), 0.001f)
     }
