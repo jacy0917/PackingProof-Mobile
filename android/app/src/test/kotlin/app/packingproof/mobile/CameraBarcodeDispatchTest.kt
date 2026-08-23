@@ -97,4 +97,29 @@ class CameraBarcodeDispatchTest {
             ),
         )
     }
+
+    @Test
+    fun ignoresAnalysisCompletedBySuspendedCameraSession() {
+        assertFalse(
+            shouldAcceptBarcodeAnalysisResult(
+                resultGeneration = 4,
+                activeGeneration = 5,
+                previewActive = true,
+            ),
+        )
+        assertFalse(
+            shouldAcceptBarcodeAnalysisResult(
+                resultGeneration = 5,
+                activeGeneration = 5,
+                previewActive = false,
+            ),
+        )
+        assertTrue(
+            shouldAcceptBarcodeAnalysisResult(
+                resultGeneration = 5,
+                activeGeneration = 5,
+                previewActive = true,
+            ),
+        )
+    }
 }

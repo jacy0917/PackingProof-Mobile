@@ -34,6 +34,15 @@ final class IosLatestPendingGateTests: XCTestCase {
     assertSend(gate.complete(now: 30.2), payload: "after-restart")
   }
 
+  func testResetReleasesOutstandingRequestFromPreviousCameraSession() {
+    var gate = IosLatestPendingGate<String>(minimumInterval: 0.1)
+
+    assertSend(gate.submit("previous-session", now: 40), payload: "previous-session")
+    gate.reset()
+
+    assertSend(gate.submit("resumed-session", now: 40.01), payload: "resumed-session")
+  }
+
   private func assertNone<Payload>(
     _ action: IosLatestPendingGate<Payload>.Action,
     file: StaticString = #filePath,

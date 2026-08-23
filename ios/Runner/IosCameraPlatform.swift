@@ -483,6 +483,13 @@ struct IosLatestPendingGate<Payload> {
     pending = nil
   }
 
+  mutating func reset() {
+    inFlight = false
+    pending = nil
+    nextSendTime = 0
+    wakeScheduled = false
+  }
+
   private mutating func drain(now: TimeInterval) -> Action {
     guard !inFlight, pending != nil else { return .none }
     if now < nextSendTime {
@@ -526,6 +533,7 @@ final class IosCameraHostApi:
   private let recordingLifecycle = IosCameraRecordingLifecycle()
   private var barcodeBatchGate =
     IosLatestPendingGate<[BarcodeCandidateDto]>(minimumInterval: 0.1)
+  private var barcodeGeneration: UInt64 = 0
 
   private var textureId: Int64 = -1
   private var latestPixelBuffer: CVPixelBuffer?
@@ -1349,8 +1357,14 @@ final class IosCameraHostApi:
           )))
           return
         }
-      } else if self.session.isRunning {
-        self.session.stopRunning()
+      } else {
+        self.metadataQueue.sync {
+          self.barcodeGeneration &+= 1
+          self.barcodeBatchGate.reset()
+        }
+        if self.session.isRunning {
+          self.session.stopRunning()
+        }
       }
       completion(.success(()))
     }
@@ -1578,12 +1592,13 @@ final class IosCameraHostApi:
       handleBarcodeBatchAction(barcodeBatchGate.submit(
         candidates,
         now: ProcessInfo.processInfo.systemUptime
-      ))
+      ), generation: barcodeGeneration)
     }
   }
 
   private func handleBarcodeBatchAction(
-    _ action: IosLatestPendingGate<[BarcodeCandidateDto]>.Action
+    _ action: IosLatestPendingGate<[BarcodeCandidateDto]>.Action,
+    generation: UInt64
   ) {
     switch action {
     case .none:
@@ -1593,6 +1608,7 @@ final class IosCameraHostApi:
         guard let self else { return }
         self.metadataQueue.async { [weak self] in
           guard let self else { return }
+          guard generation == self.barcodeGeneration else { return }
           guard !self.isDisposed,
                 self.pairingScanEnabled || self.workScanEnabled else {
             self.barcodeBatchGate.discardPending()
@@ -1603,12 +1619,13 @@ final class IosCameraHostApi:
           }
           self.handleBarcodeBatchAction(self.barcodeBatchGate.complete(
             now: ProcessInfo.processInfo.systemUptime
-          ))
+          ), generation: generation)
         }
       }
     case .schedule(let delay):
       metadataQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
         guard let self else { return }
+        guard generation == self.barcodeGeneration else { return }
         guard !self.isDisposed,
               self.pairingScanEnabled || self.workScanEnabled else {
           self.barcodeBatchGate.discardPending()
@@ -1619,7 +1636,7 @@ final class IosCameraHostApi:
         }
         self.handleBarcodeBatchAction(self.barcodeBatchGate.wake(
           now: ProcessInfo.processInfo.systemUptime
-        ))
+        ), generation: generation)
       }
     }
   }

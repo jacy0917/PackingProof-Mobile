@@ -247,6 +247,7 @@ class ContinuousSegmentCamera(
     private var storageFailureReported = false
 
     private var scannerBusy = false
+    @Volatile private var analysisGeneration = 0L
     @Volatile private var analysisStartedCount = 0L
     @Volatile private var analysisCompletedCount = 0L
     @Volatile private var analysisDetectedCount = 0L
@@ -1532,12 +1533,21 @@ class ContinuousSegmentCamera(
             return
         }
         scannerBusy = true
+        val generation = analysisGeneration
         lastAnalysisElapsedMs = SystemClock.elapsedRealtime()
         analysisStartedCount++
         try {
             val input = InputImage.fromMediaImage(image, sensorOrientation)
             barcodeScanner.process(input)
                 .addOnSuccessListener { barcodes ->
+                    if (!shouldAcceptBarcodeAnalysisResult(
+                            resultGeneration = generation,
+                            activeGeneration = analysisGeneration,
+                            previewActive = previewActive,
+                        )
+                    ) {
+                        return@addOnSuccessListener
+                    }
                     recordAnalysisResult(barcodes.size)
                     val detectedAtMs = System.currentTimeMillis()
                     val values = barcodes.mapNotNull { barcode ->
@@ -1552,13 +1562,23 @@ class ContinuousSegmentCamera(
                     emit("barcodeFrame", values)
                 }
                 .addOnFailureListener { error ->
+                    if (!shouldAcceptBarcodeAnalysisResult(
+                            resultGeneration = generation,
+                            activeGeneration = analysisGeneration,
+                            previewActive = previewActive,
+                        )
+                    ) {
+                        return@addOnFailureListener
+                    }
                     recordAnalysisResult(0, error)
                     emit("barcodeFrame", emptyList<Any>())
                 }
                 .addOnCompleteListener {
                     cameraHandler?.post {
                         image.close()
-                        scannerBusy = false
+                        if (generation == analysisGeneration) {
+                            scannerBusy = false
+                        }
                     }
                 }
         } catch (error: Throwable) {
@@ -2064,6 +2084,12 @@ class ContinuousSegmentCamera(
             }
             if (!active) {
                 previewActive = false
+                // Closing Camera2 can leave the ML Kit task for the last frame
+                // unresolved. Invalidate that task so it cannot permanently keep
+                // the next camera session in the busy state or emit a stale code.
+                analysisGeneration++
+                scannerBusy = false
+                lastAnalysisElapsedMs = 0L
                 previewResumeResult?.let {
                     replyError(it, "preview_suspended", "摄像头恢复已取消")
                 }
@@ -2935,6 +2961,12 @@ internal fun shouldAnalyzeBarcodeFrame(
     (pairingScanEnabled || workScanEnabled) &&
     !scannerBusy &&
     elapsedSinceLastAnalysisMs >= analysisIntervalMs
+
+internal fun shouldAcceptBarcodeAnalysisResult(
+    resultGeneration: Long,
+    activeGeneration: Long,
+    previewActive: Boolean,
+): Boolean = previewActive && resultGeneration == activeGeneration
 
 internal fun barcodeFormatName(format: Int): String? = when (format) {
     Barcode.FORMAT_EAN_13 -> "ean13"
