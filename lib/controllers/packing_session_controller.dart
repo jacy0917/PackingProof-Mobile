@@ -67,6 +67,36 @@ enum PackingSessionPhase {
   error,
 }
 
+/// 低频业务边界计时，只在一次操作结束时输出聚合结果。
+///
+/// 阶段名称由调用点使用固定字面量传入；payload 不接收路径、单号或错误文本，
+/// 避免性能诊断意外收集业务数据。
+class _PackingOperationTiming {
+  _PackingOperationTiming() : _total = Stopwatch()..start();
+
+  final Stopwatch _total;
+  final Map<String, int> _stagesMs = <String, int>{};
+
+  Future<T> measure<T>(String stage, Future<T> Function() action) async {
+    final Stopwatch stopwatch = Stopwatch()..start();
+    try {
+      return await action();
+    } finally {
+      stopwatch.stop();
+      _stagesMs[stage] = stopwatch.elapsedMilliseconds;
+    }
+  }
+
+  Map<String, Object?> finish({required String outcome}) {
+    _total.stop();
+    return <String, Object?>{
+      'outcome': outcome,
+      'totalMs': _total.elapsedMilliseconds,
+      'stagesMs': Map<String, int>.unmodifiable(_stagesMs),
+    };
+  }
+}
+
 String _codecFallbackMessage(String reason) => switch (reason) {
   'no_hevc_decoder' => '本机不支持 H.265 解码，新录像已改用 H.264',
   'hevc_encoder_unavailable' => '本机 H.265 编码器不可用，新录像已改用 H.264',
@@ -625,6 +655,8 @@ class PackingSessionController extends ChangeNotifier
       return;
     }
     await _repository.pauseSharedFileMigration();
+    final _PackingOperationTiming timing = _PackingOperationTiming();
+    String timingOutcome = 'error';
     try {
       unawaited(
         _runtimeLog.log(
@@ -642,18 +674,20 @@ class PackingSessionController extends ChangeNotifier
       _alternatingNoCodeSince = null;
       _queuedStorageNoticePriority = -1;
       _storageWarningMessage = null;
-      final StorageSpaceResult storage = await _checkAndHandleStorage(
-        allowStop: false,
+      final StorageSpaceResult storage = await timing.measure(
+        'storageReclaim',
+        () => _checkAndHandleStorage(allowStop: false),
       );
       if (storage.insufficient) {
+        timingOutcome = 'insufficient_storage';
         _errorMessage = '存储空间不足 2GB，请清理空间或连接电脑完成录像备份';
         notifyListeners();
         await _resumeSharedFileMigrationIfIdle();
         return;
       }
 
-      await _beginMaxVolumeIfNeeded();
-      await _boostMaxVolumeIfNeeded();
+      await timing.measure('maxVolumeBegin', _beginMaxVolumeIfNeeded);
+      await timing.measure('maxVolumeBoost', _boostMaxVolumeIfNeeded);
 
       _errorMessage = null;
       _lastMarker = null;
@@ -664,19 +698,26 @@ class PackingSessionController extends ChangeNotifier
       _stabilityTracker.reset();
       _speechService.resetIncidents();
       if (_speechService case final SpeechPromptService speech) {
-        await speech.prepareDuplicateOrderWarning();
+        await timing.measure(
+          'fixedSpeechPrewarm',
+          speech.prepareDuplicateOrderWarning,
+        );
       }
       _beginInitialPromptFlow();
 
-      await WakelockPlus.enable();
-      await setPreviewActive(true);
-      await _setNativeWorkScanEnabled(true);
+      await timing.measure('wakelock', WakelockPlus.enable);
+      await timing.measure('preview', () => setPreviewActive(true));
+      await timing.measure('workScan', () => _setNativeWorkScanEnabled(true));
       unawaited(_captureCameraDiagnosticsSnapshot('start_work'));
       _workActive = true;
       _startStorageMonitor();
-      await _orderInfoReceiver.setBackgroundKeepAlive(false);
+      await timing.measure(
+        'orderReceiver',
+        () => _orderInfoReceiver.setBackgroundKeepAlive(false),
+      );
       _setElapsed(Duration.zero);
       _setPhase(PackingSessionPhase.waitingForBarcode);
+      timingOutcome = 'success';
       unawaited(
         _runtimeLog.log(
           kind: 'start_work_done',
@@ -685,6 +726,7 @@ class PackingSessionController extends ChangeNotifier
       );
       _scheduleInitialModeAnnouncement();
     } on CameraException catch (error) {
+      timingOutcome = 'camera_error';
       unawaited(
         _runtimeLog.log(
           kind: 'start_work_error',
@@ -706,6 +748,7 @@ class PackingSessionController extends ChangeNotifier
       _setCameraError(error);
       await _resumeSharedFileMigrationIfIdle();
     } on Object catch (error) {
+      timingOutcome = 'error';
       unawaited(
         _runtimeLog.log(
           kind: 'start_work_error',
@@ -728,6 +771,13 @@ class PackingSessionController extends ChangeNotifier
       _setPhase(PackingSessionPhase.error);
       _speakErrorMessage(error.toString());
       await _resumeSharedFileMigrationIfIdle();
+    } finally {
+      unawaited(
+        _runtimeLog.log(
+          kind: 'start_work_stage_timing',
+          extra: timing.finish(outcome: timingOutcome),
+        ),
+      );
     }
   }
 
@@ -1023,22 +1073,47 @@ class PackingSessionController extends ChangeNotifier
     if (camera == null || _nativeInitialization == null) {
       throw StateError('摄像头尚未准备完成');
     }
-    _setPhase(PackingSessionPhase.starting);
-    await WidgetsBinding.instance.endOfFrame;
-    final String recordingId = _sessionId(DateTime.now());
-    final String path = await _repository.recordingPath(recordingId);
-    final NativeRecordingStart started = await camera.startWork(
-      path,
-      recordAudio: _recordAudioEnabled,
-      trackingNumber: trackingNumber,
-    );
-    _recordingId = recordingId;
-    _activeSegmentId = recordingId;
-    _segmentIndex = 1;
-    _timeline.start(started.startedAt);
-    _setElapsed(Duration.zero);
-    _setPhase(PackingSessionPhase.recording);
-    _startElapsedTimer();
+    final _PackingOperationTiming timing = _PackingOperationTiming();
+    String timingOutcome = 'error';
+    try {
+      _setPhase(PackingSessionPhase.starting);
+      await timing.measure(
+        'endOfFrame',
+        () => WidgetsBinding.instance.endOfFrame,
+      );
+      final String recordingId = _sessionId(DateTime.now());
+      final String path = await timing.measure(
+        'recordingPath',
+        () => _repository.recordingPath(recordingId),
+      );
+      final NativeRecordingStart started = await timing.measure(
+        'nativeStart',
+        () => camera.startWork(
+          path,
+          recordAudio: _recordAudioEnabled,
+          trackingNumber: trackingNumber,
+        ),
+      );
+      unawaited(_captureCameraDiagnosticsSnapshot('native_start'));
+      _recordingId = recordingId;
+      _activeSegmentId = recordingId;
+      _segmentIndex = 1;
+      _timeline.start(started.startedAt);
+      _setElapsed(Duration.zero);
+      _setPhase(PackingSessionPhase.recording);
+      _startElapsedTimer();
+      timingOutcome = 'success';
+    } finally {
+      unawaited(
+        _runtimeLog.log(
+          kind: 'native_recording_timing',
+          extra: <String, Object?>{
+            'operation': 'start',
+            ...timing.finish(outcome: timingOutcome),
+          },
+        ),
+      );
+    }
   }
 
   Future<List<RecordingSession>> _finishRecording() async {
@@ -1318,56 +1393,81 @@ class PackingSessionController extends ChangeNotifier
       return null;
     }
     if (_cachedStorageInsufficient || !isWorking) return null;
-    final int nextIndex = _segmentIndex + 1;
-    final OrderInfo? completedOrderInfo = _activeOrderInfo;
-    final String nextId =
-        '${recordingId}_${nextIndex.toString().padLeft(3, '0')}';
-    final String nextPath = await _repository.recordingPath(nextId);
-    final NativeRecordingSplit split = await camera.split(
-      nextPath,
-      trackingNumber: code,
-    );
-    final RecordingSegmentTransition? transition = _timeline.startNext(
-      code,
-      split.boundaryAt,
-    );
-    if (transition == null) {
-      throw StateError('录像时间线无法开始下一段');
-    }
-    _activeSegmentId = nextId;
-    _segmentIndex = nextIndex;
-    if (_isCurrentSegmentCode(code)) {
-      _setActiveOrderInfo(null, announce: false);
-      _resetSegmentElapsed();
-      onSegmentStarted(transition.marker);
-    }
-    final String savedPath = await _repository.finalizeVideo(
-      sourcePath: split.completedPath,
-      sessionId: completedId,
-      startedAt: transition.completed.startedAt,
-      trackingNumber: transition.completed.markers.isEmpty
-          ? ''
-          : transition.completed.markers.first.code,
-      operationMode: _operationMode,
-    );
-    final RecordingSession completed =
-        _standaloneSession(
-          id: completedId,
-          path: savedPath,
-          draft: transition.completed,
-          orderInfo: completedOrderInfo,
-        ).copyWith(
-          watermarkStatus: nativeWatermarkStatus(split.watermarkDisposition),
+    final _PackingOperationTiming timing = _PackingOperationTiming();
+    String timingOutcome = 'error';
+    try {
+      final int nextIndex = _segmentIndex + 1;
+      final OrderInfo? completedOrderInfo = _activeOrderInfo;
+      final String nextId =
+          '${recordingId}_${nextIndex.toString().padLeft(3, '0')}';
+      final String nextPath = await timing.measure(
+        'recordingPath',
+        () => _repository.recordingPath(nextId),
+      );
+      final NativeRecordingSplit split = await timing.measure(
+        'nativeSplit',
+        () => camera.split(nextPath, trackingNumber: code),
+      );
+      unawaited(_captureCameraDiagnosticsSnapshot('native_split'));
+      final RecordingSegmentTransition? transition = _timeline.startNext(
+        code,
+        split.boundaryAt,
+      );
+      if (transition == null) {
+        throw StateError('录像时间线无法开始下一段');
+      }
+      _activeSegmentId = nextId;
+      _segmentIndex = nextIndex;
+      if (_isCurrentSegmentCode(code)) {
+        _setActiveOrderInfo(null, announce: false);
+        _resetSegmentElapsed();
+        onSegmentStarted(transition.marker);
+      }
+      final String savedPath = await timing.measure(
+        'finalizeVideo',
+        () => _repository.finalizeVideo(
+          sourcePath: split.completedPath,
+          sessionId: completedId,
+          startedAt: transition.completed.startedAt,
+          trackingNumber: transition.completed.markers.isEmpty
+              ? ''
+              : transition.completed.markers.first.code,
+          operationMode: _operationMode,
+        ),
+      );
+      final RecordingSession completed =
+          _standaloneSession(
+            id: completedId,
+            path: savedPath,
+            draft: transition.completed,
+            orderInfo: completedOrderInfo,
+          ).copyWith(
+            watermarkStatus: nativeWatermarkStatus(split.watermarkDisposition),
+          );
+      _sessions = await timing.measure(
+        'persistSession',
+        () => _repository.addSession(completed),
+      );
+      if (nativeWatermarkNeedsPostProcess(split.watermarkDisposition)) {
+        await timing.measure('watermarkRecovery', _resumePendingWatermarks);
+      } else {
+        _runInBackground(
+          _enqueueBackupIfNeeded(savedPath, <RecordingSession>[completed]),
         );
-    _sessions = await _repository.addSession(completed);
-    if (nativeWatermarkNeedsPostProcess(split.watermarkDisposition)) {
-      await _resumePendingWatermarks();
-    } else {
-      _runInBackground(
-        _enqueueBackupIfNeeded(savedPath, <RecordingSession>[completed]),
+      }
+      timingOutcome = 'success';
+      return transition.marker;
+    } finally {
+      unawaited(
+        _runtimeLog.log(
+          kind: 'native_recording_timing',
+          extra: <String, Object?>{
+            'operation': 'split',
+            ...timing.finish(outcome: timingOutcome),
+          },
+        ),
       );
     }
-    return transition.marker;
   }
 
   @override

@@ -1,6 +1,203 @@
 import AVFoundation
 import Flutter
+import os.log
 import UIKit
+
+/// 单次录像生命周期操作的聚合计时。
+///
+/// 只接受调用点定义的阶段名和毫秒数，不保存路径、条码或错误文本。
+final class IosCameraOperationTiming: @unchecked Sendable {
+  let operation: String
+
+  private let startedAtNs: UInt64
+  private let lock = NSLock()
+  private var stagesMs: [String: Int64] = [:]
+  private var isFinished = false
+
+  init(
+    operation: String,
+    startedAtNs: UInt64 = DispatchTime.now().uptimeNanoseconds
+  ) {
+    self.operation = operation
+    self.startedAtNs = startedAtNs
+  }
+
+  func record(stage: String, durationMs: Int64) {
+    lock.lock()
+    stagesMs[stage] = max(0, durationMs)
+    lock.unlock()
+  }
+
+  func record(stage: String, since startedAtNs: UInt64) {
+    record(
+      stage: stage,
+      durationMs: Self.elapsedMilliseconds(
+        from: startedAtNs,
+        to: DispatchTime.now().uptimeNanoseconds
+      )
+    )
+  }
+
+  /// 原子地结束计时；重复结束返回 nil，避免取消与完成竞态重复关闭 signpost。
+  func finish(
+    succeeded: Bool,
+    endedAtNs: UInt64 = DispatchTime.now().uptimeNanoseconds
+  ) -> [String: Any]? {
+    lock.lock()
+    guard !isFinished else {
+      lock.unlock()
+      return nil
+    }
+    isFinished = true
+    let stageSnapshot = stagesMs
+    lock.unlock()
+    return [
+      "operation": operation,
+      "succeeded": succeeded,
+      "totalMs": Self.elapsedMilliseconds(from: startedAtNs, to: endedAtNs),
+      "stagesMs": stageSnapshot,
+    ]
+  }
+
+  static func elapsedMilliseconds(from start: UInt64, to end: UInt64) -> Int64 {
+    guard end >= start else { return 0 }
+    return Int64((end - start) / 1_000_000)
+  }
+}
+
+private struct IosCameraPendingFirstWrittenFrame {
+  let operation: String
+  let writerReadyAtNs: UInt64
+  let signpostID: OSSignpostID
+}
+
+/// writer 就绪到首个视频帧真正 append 成功的计时。
+///
+/// 独立持有 signpost 生命周期，销毁时也会幂等收口，不依赖 Flutter registry。
+final class IosCameraFirstWrittenFrameTiming: @unchecked Sendable {
+  private static let log = OSLog(
+    subsystem: "app.packingproof.mobile",
+    category: "CameraPerformance"
+  )
+
+  private let lock = NSLock()
+  private let onFinished: (@Sendable (Bool) -> Void)?
+  private var pending: IosCameraPendingFirstWrittenFrame?
+  private var lastSnapshot: [String: Any]?
+
+  init(onFinished: (@Sendable (Bool) -> Void)? = nil) {
+    self.onFinished = onFinished
+  }
+
+  deinit {
+    cancelIfNeeded()
+  }
+
+  func begin(
+    operation: String,
+    startedAtNs: UInt64 = DispatchTime.now().uptimeNanoseconds
+  ) {
+    let signpostID = OSSignpostID(log: Self.log)
+    os_signpost(
+      .begin,
+      log: Self.log,
+      name: "CameraFirstWrittenVideoFrame",
+      signpostID: signpostID,
+      "operation=%{public}@",
+      operation as NSString
+    )
+    let next = IosCameraPendingFirstWrittenFrame(
+      operation: operation,
+      writerReadyAtNs: startedAtNs,
+      signpostID: signpostID
+    )
+    lock.lock()
+    let replaced = pending
+    pending = next
+    lastSnapshot = nil
+    lock.unlock()
+    if let replaced {
+      finishCancelled(replaced)
+    }
+  }
+
+  @discardableResult
+  func recordWrittenFrameIfNeeded(
+    endedAtNs: UInt64 = DispatchTime.now().uptimeNanoseconds
+  ) -> Bool {
+    lock.lock()
+    guard let pending else {
+      lock.unlock()
+      return false
+    }
+    let durationMs = IosCameraOperationTiming.elapsedMilliseconds(
+      from: pending.writerReadyAtNs,
+      to: endedAtNs
+    )
+    let snapshot: [String: Any] = [
+      "operation": pending.operation,
+      "writerReadyToFirstWrittenFrameMs": durationMs,
+    ]
+    self.pending = nil
+    lastSnapshot = snapshot
+    lock.unlock()
+    os_signpost(
+      .end,
+      log: Self.log,
+      name: "CameraFirstWrittenVideoFrame",
+      signpostID: pending.signpostID,
+      "operation=%{public}@ duration_ms=%{public}lld written=1",
+      pending.operation as NSString,
+      durationMs
+    )
+    onFinished?(true)
+    return true
+  }
+
+  @discardableResult
+  func cancelIfNeeded() -> Bool {
+    lock.lock()
+    guard let pending else {
+      lock.unlock()
+      return false
+    }
+    self.pending = nil
+    lock.unlock()
+    finishCancelled(pending)
+    return true
+  }
+
+  func snapshot() -> [String: Any]? {
+    lock.lock()
+    defer { lock.unlock() }
+    return lastSnapshot
+  }
+
+  private func finishCancelled(_ pending: IosCameraPendingFirstWrittenFrame) {
+    os_signpost(
+      .end,
+      log: Self.log,
+      name: "CameraFirstWrittenVideoFrame",
+      signpostID: pending.signpostID,
+      "operation=%{public}@ written=0",
+      pending.operation as NSString
+    )
+    onFinished?(false)
+  }
+}
+
+enum IosCameraVideoAppendPolicy {
+  @discardableResult
+  static func appendWhenReady(
+    isReady: Bool,
+    append: () -> Bool,
+    onWritten: () -> Void
+  ) -> Bool {
+    guard isReady, append() else { return false }
+    onWritten()
+    return true
+  }
+}
 
 enum IosAudioSampleEnergyProbe {
   private static let maximumSamplesPerProbe = 256
@@ -312,6 +509,11 @@ final class IosCameraHostApi:
   AVCaptureAudioDataOutputSampleBufferDelegate,
   AVCaptureMetadataOutputObjectsDelegate
 {
+  private static let performanceLog = OSLog(
+    subsystem: "app.packingproof.mobile",
+    category: "CameraPerformance"
+  )
+
   private let eventApi: CameraEventApi
   private let textures: FlutterTextureRegistry
   private let audioSessionCoordinator: IosSharedAudioSessionCoordinator
@@ -320,6 +522,7 @@ final class IosCameraHostApi:
   private let metadataQueue = DispatchQueue(label: "packingproof.camera.metadata")
   private let bufferLock = NSLock()
   private let stateLock = NSLock()
+  private let performanceLock = NSLock()
   private let recordingLifecycle = IosCameraRecordingLifecycle()
   private var barcodeBatchGate =
     IosLatestPendingGate<[BarcodeCandidateDto]>(minimumInterval: 0.1)
@@ -375,6 +578,8 @@ final class IosCameraHostApi:
   private var lastAudioLowEnergyProbeCount: Int64 = 0
   private var lastAudioPeak: Double = 0
   private let lastSegmentDiagnostics = IosLastSegmentDiagnostics()
+  private let firstWrittenFrameTiming = IosCameraFirstWrittenFrameTiming()
+  private var lastOperationTiming: [String: Any]?
 
   /// 固定 sessionPreset .hd1920x1080，竖屏预览与录像输出 1080x1920。
   private var portraitSize: (width: Int, height: Int) { (1080, 1920) }
@@ -402,6 +607,7 @@ final class IosCameraHostApi:
   deinit {
     markDisposed()
     recordingLifecycle.dispose()
+    firstWrittenFrameTiming.cancelIfNeeded()
     clearOutputDelegates()
     let session = self.session
     let audioSessionCoordinator = self.audioSessionCoordinator
@@ -503,28 +709,83 @@ final class IosCameraHostApi:
     trackingNumber: String,
     completion: @escaping (Result<CameraRecordingStartDto, Error>) -> Void
   ) {
+    let timing = IosCameraOperationTiming(operation: "start")
+    let signpostID = OSSignpostID(log: Self.performanceLog)
+    os_signpost(
+      .begin,
+      log: Self.performanceLog,
+      name: "CameraRecordingStart",
+      signpostID: signpostID
+    )
     sessionQueue.async { [weak self] in
       guard let self, !self.isDisposed else {
+        if let self {
+          self.finishPerformanceOperation(
+            timing,
+            signpostID: signpostID,
+            signpostName: "CameraRecordingStart",
+            succeeded: false
+          )
+        } else {
+          Self.finishDetachedPerformanceOperation(
+            timing,
+            signpostID: signpostID,
+            signpostName: "CameraRecordingStart",
+            succeeded: false
+          )
+        }
         completion(.failure(pigeonError("摄像头已经关闭")))
         return
       }
       let request: IosCameraRecordingLifecycle.Request
       switch self.recordingLifecycle.begin(
         .start,
-        onCancelled: {
+        onCancelled: { [weak self] in
+          if let self {
+            self.finishPerformanceOperation(
+              timing,
+              signpostID: signpostID,
+              signpostName: "CameraRecordingStart",
+              succeeded: false
+            )
+          } else {
+            Self.finishDetachedPerformanceOperation(
+              timing,
+              signpostID: signpostID,
+              signpostName: "CameraRecordingStart",
+              succeeded: false
+            )
+          }
           completion(.failure(pigeonError("摄像头已经关闭")))
         }
       ) {
       case .success(let value):
         request = value
       case .failure(let rejection):
+        self.finishPerformanceOperation(
+          timing,
+          signpostID: signpostID,
+          signpostName: "CameraRecordingStart",
+          succeeded: false
+        )
         completion(.failure(self.recordingRequestError(rejection, for: .start)))
         return
       }
       self.recordAudio = recordAudio
       do {
-        try self.ensureRunningForWork()
-        try self.startWriter(path: path, trackingNumber: trackingNumber)
+        try self.recordPerformanceStage(
+          "ensureSession",
+          operation: "start",
+          signpostName: "CameraEnsureSession",
+          timing: timing,
+          action: self.ensureRunningForWork
+        )
+        try self.startWriter(
+          path: path,
+          trackingNumber: trackingNumber,
+          operation: "start",
+          timing: timing
+        )
         let startedAt = self.currentStartedAtMs
         self.eventApi.segmentStarted(
           event: CameraSegmentStartedDto(
@@ -535,6 +796,12 @@ final class IosCameraHostApi:
           completion: { _ in }
         )
         if self.recordingLifecycle.complete(request, succeeded: true) {
+          self.finishPerformanceOperation(
+            timing,
+            signpostID: signpostID,
+            signpostName: "CameraRecordingStart",
+            succeeded: true
+          )
           completion(.success(CameraRecordingStartDto(
             path: path,
             startedAtMs: startedAt
@@ -542,6 +809,12 @@ final class IosCameraHostApi:
         }
       } catch {
         if self.recordingLifecycle.complete(request, succeeded: false) {
+          self.finishPerformanceOperation(
+            timing,
+            signpostID: signpostID,
+            signpostName: "CameraRecordingStart",
+            succeeded: false
+          )
           completion(.failure(error))
         }
       }
@@ -553,26 +826,76 @@ final class IosCameraHostApi:
     trackingNumber: String,
     completion: @escaping (Result<CameraRecordingSplitDto, Error>) -> Void
   ) {
+    let timing = IosCameraOperationTiming(operation: "split")
+    let signpostID = OSSignpostID(log: Self.performanceLog)
+    os_signpost(
+      .begin,
+      log: Self.performanceLog,
+      name: "CameraRecordingSplit",
+      signpostID: signpostID
+    )
     sessionQueue.async { [weak self] in
       guard let self, !self.isDisposed else {
+        if let self {
+          self.finishPerformanceOperation(
+            timing,
+            signpostID: signpostID,
+            signpostName: "CameraRecordingSplit",
+            succeeded: false
+          )
+        } else {
+          Self.finishDetachedPerformanceOperation(
+            timing,
+            signpostID: signpostID,
+            signpostName: "CameraRecordingSplit",
+            succeeded: false
+          )
+        }
         completion(.failure(pigeonError("摄像头已经关闭")))
         return
       }
       let request: IosCameraRecordingLifecycle.Request
       switch self.recordingLifecycle.begin(
         .split,
-        onCancelled: {
+        onCancelled: { [weak self] in
+          if let self {
+            self.finishPerformanceOperation(
+              timing,
+              signpostID: signpostID,
+              signpostName: "CameraRecordingSplit",
+              succeeded: false
+            )
+          } else {
+            Self.finishDetachedPerformanceOperation(
+              timing,
+              signpostID: signpostID,
+              signpostName: "CameraRecordingSplit",
+              succeeded: false
+            )
+          }
           completion(.failure(pigeonError("摄像头已经关闭")))
         }
       ) {
       case .success(let value):
         request = value
       case .failure(let rejection):
+        self.finishPerformanceOperation(
+          timing,
+          signpostID: signpostID,
+          signpostName: "CameraRecordingSplit",
+          succeeded: false
+        )
         completion(.failure(self.recordingRequestError(rejection, for: .split)))
         return
       }
       guard self.currentPath != nil else {
         if self.recordingLifecycle.complete(request, succeeded: false) {
+          self.finishPerformanceOperation(
+            timing,
+            signpostID: signpostID,
+            signpostName: "CameraRecordingSplit",
+            succeeded: false
+          )
           completion(.failure(pigeonError("当前没有正在录制的视频")))
         }
         return
@@ -580,19 +903,55 @@ final class IosCameraHostApi:
       let completedPath = self.currentPath ?? ""
       let completedStartedAt = self.currentStartedAtMs
       let boundaryAt = Int64(Date().timeIntervalSince1970 * 1000)
+      let finishStartedAtNs = DispatchTime.now().uptimeNanoseconds
+      let finishSignpostID = OSSignpostID(log: Self.performanceLog)
+      os_signpost(
+        .begin,
+        log: Self.performanceLog,
+        name: "CameraWriterFinish",
+        signpostID: finishSignpostID,
+        "operation=%{public}@",
+        timing.operation as NSString
+      )
       self.finishCurrentWriter(preserveWatermarkPreview: true) { [weak self] finishResult in
+        let finishMs = IosCameraOperationTiming.elapsedMilliseconds(
+          from: finishStartedAtNs,
+          to: DispatchTime.now().uptimeNanoseconds
+        )
+        timing.record(stage: "writerFinish", durationMs: finishMs)
+        os_signpost(
+          .end,
+          log: Self.performanceLog,
+          name: "CameraWriterFinish",
+          signpostID: finishSignpostID,
+          "operation=%{public}@ duration_ms=%{public}lld",
+          timing.operation as NSString,
+          finishMs
+        )
         guard let self else {
+          Self.finishDetachedPerformanceOperation(
+            timing,
+            signpostID: signpostID,
+            signpostName: "CameraRecordingSplit",
+            succeeded: false
+          )
           return
         }
         self.sessionQueue.async {
-          guard !self.isDisposed,
-                self.recordingLifecycle.isPending(request) else {
+          guard !self.isDisposed else {
             self.recordingLifecycle.dispose()
             return
           }
+          guard self.recordingLifecycle.isPending(request) else { return }
           if case .failure(let error) = finishResult {
             self.clearPreservedWatermarkPreview()
             if self.recordingLifecycle.complete(request, succeeded: false) {
+              self.finishPerformanceOperation(
+                timing,
+                signpostID: signpostID,
+                signpostName: "CameraRecordingSplit",
+                succeeded: false
+              )
               completion(.failure(error))
             }
             return
@@ -601,9 +960,17 @@ final class IosCameraHostApi:
             let completedDisposition = try finishResult.get()
             try self.startWriter(
               path: nextPath,
-              trackingNumber: trackingNumber
+              trackingNumber: trackingNumber,
+              operation: "split",
+              timing: timing
             )
             if self.recordingLifecycle.complete(request, succeeded: true) {
+              self.finishPerformanceOperation(
+                timing,
+                signpostID: signpostID,
+                signpostName: "CameraRecordingSplit",
+                succeeded: true
+              )
               completion(.success(CameraRecordingSplitDto(
                 completedPath: completedPath,
                 nextPath: nextPath,
@@ -619,6 +986,12 @@ final class IosCameraHostApi:
               completion: { _ in }
             )
             if self.recordingLifecycle.complete(request, succeeded: false) {
+              self.finishPerformanceOperation(
+                timing,
+                signpostID: signpostID,
+                signpostName: "CameraRecordingSplit",
+                succeeded: false
+              )
               completion(.failure(error))
             }
           }
@@ -709,6 +1082,7 @@ final class IosCameraHostApi:
     let audioOptionNames = Self.audioSessionCategoryOptionNames(audioOptions)
     let audioRoute = audioSession.currentRoute
     let lastSegment = lastSegmentDiagnosticsSnapshot()
+    let performance = performanceDiagnosticsSnapshot()
     completion(.success([
       "device": [
         "manufacturer": "Apple",
@@ -753,6 +1127,8 @@ final class IosCameraHostApi:
         "lastSegmentAudioTrackCount": lastSegment.trackCount,
         "lastSegmentAudioTrackPresent": lastSegment.trackPresent,
         "lastSegmentAudioTrackInspectionError": lastSegment.trackInspectionError,
+        "lastCameraOperationTiming": performance.operation,
+        "lastFirstWrittenVideoFrameTiming": performance.firstWrittenFrame,
         "cameraPipelineVersion": 1,
         "recordingSpec": recordingSpecName,
         "cameraId": device?.uniqueID ?? "",
@@ -821,6 +1197,93 @@ final class IosCameraHostApi:
       state.trackPresent,
       state.trackInspectionError
     )
+  }
+
+  private func performanceDiagnosticsSnapshot() -> (
+    operation: [String: Any]?,
+    firstWrittenFrame: [String: Any]?
+  ) {
+    performanceLock.lock()
+    let operation = lastOperationTiming
+    performanceLock.unlock()
+    return (operation, firstWrittenFrameTiming.snapshot())
+  }
+
+  private func finishPerformanceOperation(
+    _ timing: IosCameraOperationTiming,
+    signpostID: OSSignpostID,
+    signpostName: StaticString,
+    succeeded: Bool
+  ) {
+    guard let snapshot = timing.finish(succeeded: succeeded) else { return }
+    performanceLock.lock()
+    lastOperationTiming = snapshot
+    performanceLock.unlock()
+    os_signpost(
+      .end,
+      log: Self.performanceLog,
+      name: signpostName,
+      signpostID: signpostID,
+      "operation=%{public}@ succeeded=%{public}d total_ms=%{public}lld",
+      timing.operation as NSString,
+      succeeded ? 1 : 0,
+      snapshot["totalMs"] as? Int64 ?? 0
+    )
+  }
+
+  private static func finishDetachedPerformanceOperation(
+    _ timing: IosCameraOperationTiming,
+    signpostID: OSSignpostID,
+    signpostName: StaticString,
+    succeeded: Bool
+  ) {
+    guard let snapshot = timing.finish(succeeded: succeeded) else { return }
+    os_signpost(
+      .end,
+      log: performanceLog,
+      name: signpostName,
+      signpostID: signpostID,
+      "operation=%{public}@ succeeded=%{public}d total_ms=%{public}lld",
+      timing.operation as NSString,
+      succeeded ? 1 : 0,
+      snapshot["totalMs"] as? Int64 ?? 0
+    )
+  }
+
+  private func recordPerformanceStage<T>(
+    _ stage: String,
+    operation: String,
+    signpostName: StaticString,
+    timing: IosCameraOperationTiming,
+    action: () throws -> T
+  ) rethrows -> T {
+    let signpostID = OSSignpostID(log: Self.performanceLog)
+    let startedAtNs = DispatchTime.now().uptimeNanoseconds
+    os_signpost(
+      .begin,
+      log: Self.performanceLog,
+      name: signpostName,
+      signpostID: signpostID,
+      "operation=%{public}@",
+      operation as NSString
+    )
+    defer {
+      let durationMs = IosCameraOperationTiming.elapsedMilliseconds(
+        from: startedAtNs,
+        to: DispatchTime.now().uptimeNanoseconds
+      )
+      timing.record(stage: stage, durationMs: durationMs)
+      os_signpost(
+        .end,
+        log: Self.performanceLog,
+        name: signpostName,
+        signpostID: signpostID,
+        "operation=%{public}@ duration_ms=%{public}lld",
+        operation as NSString,
+        durationMs
+      )
+    }
+    return try action()
   }
 
   func setPairingScanEnabled(
@@ -955,6 +1418,7 @@ final class IosCameraHostApi:
   func dispose(completion: @escaping (Result<Void, Error>) -> Void) {
     markDisposed()
     recordingLifecycle.dispose()
+    firstWrittenFrameTiming.cancelIfNeeded()
     // 先移除采样回调，避免 App 终止时 AVCaptureSession 再回调到已释放的
     // self，触发 use-after-free（SIGSEGV）。
     clearOutputDelegates()
@@ -985,6 +1449,7 @@ final class IosCameraHostApi:
   func prepareForTermination() {
     markDisposed()
     recordingLifecycle.dispose()
+    firstWrittenFrameTiming.cancelIfNeeded()
     clearOutputDelegates()
     if let observer = runtimeErrorObserver {
       NotificationCenter.default.removeObserver(observer)
@@ -1495,92 +1960,142 @@ final class IosCameraHostApi:
 
   // MARK: - Recording
 
-  private func startWriter(path: String, trackingNumber: String) throws {
+  private func startWriter(
+    path: String,
+    trackingNumber: String,
+    operation: String,
+    timing: IosCameraOperationTiming
+  ) throws {
+    let stagePrefix = operation == "split" ? "next" : ""
     if recordAudio {
-      try acquireRecordingAudioSessionIfNeeded()
+      try recordPerformanceStage(
+        stagePrefix.isEmpty ? "audioSession" : "nextAudioSession",
+        operation: operation,
+        signpostName: "CameraAudioSession",
+        timing: timing,
+        action: acquireRecordingAudioSessionIfNeeded
+      )
     }
-    let url = URL(fileURLWithPath: path)
-    try? FileManager.default.removeItem(at: url)
-    let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-    let codec: AVVideoCodecType =
-      preferredVideoCodec.lowercased() == "hevc" ? .hevc : .h264
-    let size = portraitSize
-    let videoSettings: [String: Any] = [
-      AVVideoCodecKey: codec,
-      AVVideoWidthKey: size.width,
-      AVVideoHeightKey: size.height,
-      AVVideoCompressionPropertiesKey: [
-        AVVideoAverageBitRateKey: 8_000_000,
-        AVVideoExpectedSourceFrameRateKey: 30,
-      ],
-    ]
-    let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-    videoInput.expectsMediaDataInRealTime = true
-    videoInput.transform = iosRecordingTransform(for: recordingOrientationName)
-    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-      assetWriterInput: videoInput,
-      sourcePixelBufferAttributes: [
-        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-        kCVPixelBufferWidthKey as String: size.width,
-        kCVPixelBufferHeightKey as String: size.height,
+    let setup = try recordPerformanceStage(
+      stagePrefix.isEmpty ? "writerSetup" : "nextWriterSetup",
+      operation: operation,
+      signpostName: "CameraWriterSetup",
+      timing: timing
+    ) { () throws -> (
+      writer: AVAssetWriter,
+      videoInput: AVAssetWriterInput,
+      audioInput: AVAssetWriterInput?,
+      adaptor: AVAssetWriterInputPixelBufferAdaptor
+    ) in
+      let url = URL(fileURLWithPath: path)
+      try? FileManager.default.removeItem(at: url)
+      let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+      let codec: AVVideoCodecType =
+        preferredVideoCodec.lowercased() == "hevc" ? .hevc : .h264
+      let size = portraitSize
+      let videoSettings: [String: Any] = [
+        AVVideoCodecKey: codec,
+        AVVideoWidthKey: size.width,
+        AVVideoHeightKey: size.height,
+        AVVideoCompressionPropertiesKey: [
+          AVVideoAverageBitRateKey: 8_000_000,
+          AVVideoExpectedSourceFrameRateKey: 30,
+        ],
       ]
-    )
+      let videoInput = AVAssetWriterInput(
+        mediaType: .video,
+        outputSettings: videoSettings
+      )
+      videoInput.expectsMediaDataInRealTime = true
+      videoInput.transform = iosRecordingTransform(for: recordingOrientationName)
+      let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+        assetWriterInput: videoInput,
+        sourcePixelBufferAttributes: [
+          kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+          kCVPixelBufferWidthKey as String: size.width,
+          kCVPixelBufferHeightKey as String: size.height,
+        ]
+      )
 
-    var audioInput: AVAssetWriterInput?
-    if recordAudio {
-      guard audioOutput != nil else {
-        throw pigeonError(
-          "未找到麦克风输入",
-          code: "audio_input_missing"
+      var audioInput: AVAssetWriterInput?
+      if recordAudio {
+        guard audioOutput != nil else {
+          throw pigeonError(
+            "未找到麦克风输入",
+            code: "audio_input_missing"
+          )
+        }
+        let settings: [String: Any] = [
+          AVFormatIDKey: kAudioFormatMPEG4AAC,
+          AVSampleRateKey: 48_000,
+          AVNumberOfChannelsKey: 1,
+          AVEncoderBitRateKey: 96_000,
+        ]
+        audioInput = AVAssetWriterInput(
+          mediaType: .audio,
+          outputSettings: settings
         )
+        audioInput?.expectsMediaDataInRealTime = true
       }
-      let settings: [String: Any] = [
-        AVFormatIDKey: kAudioFormatMPEG4AAC,
-        AVSampleRateKey: 48_000,
-        AVNumberOfChannelsKey: 1,
-        AVEncoderBitRateKey: 96_000,
-      ]
-      audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
-      audioInput?.expectsMediaDataInRealTime = true
-    }
 
-    if writer.canAdd(videoInput) {
-      writer.add(videoInput)
-    } else {
-      throw pigeonError("无法创建录像视频轨道")
-    }
-    if let audioInput {
-      guard writer.canAdd(audioInput) else {
-        throw pigeonError(
-          "无法创建录像声音轨道",
-          code: "audio_track_creation_failed"
-        )
+      if writer.canAdd(videoInput) {
+        writer.add(videoInput)
+      } else {
+        throw pigeonError("无法创建录像视频轨道")
       }
-      writer.add(audioInput)
+      if let audioInput {
+        guard writer.canAdd(audioInput) else {
+          throw pigeonError(
+            "无法创建录像声音轨道",
+            code: "audio_track_creation_failed"
+          )
+        }
+        writer.add(audioInput)
+      }
+      return (writer, videoInput, audioInput, adaptor)
     }
+    let writer = setup.writer
+    let videoInput = setup.videoInput
+    let audioInput = setup.audioInput
+    let adaptor = setup.adaptor
 
-    bufferLock.lock()
-    let watermarkSourceBuffer = latestPixelBuffer
-    bufferLock.unlock()
     var watermarkPrepared = false
-    if let watermarkSourceBuffer {
-      do {
-        try liveWatermarkRenderer.prepare(
-          to: watermarkSourceBuffer,
-          orientation: recordingOrientationName,
-          trackingNumber: trackingNumber
-        )
-        watermarkPrepared = true
-      } catch {
-        currentWatermarkError = String(describing: error)
+    let watermarkSourceBuffer: CVPixelBuffer? = recordPerformanceStage(
+      stagePrefix.isEmpty ? "watermarkPrepare" : "nextWatermarkPrepare",
+      operation: operation,
+      signpostName: "CameraWatermarkPrepare",
+      timing: timing
+    ) {
+      bufferLock.lock()
+      let source = latestPixelBuffer
+      bufferLock.unlock()
+      if let source {
+        do {
+          try liveWatermarkRenderer.prepare(
+            to: source,
+            orientation: recordingOrientationName,
+            trackingNumber: trackingNumber
+          )
+          watermarkPrepared = true
+        } catch {
+          currentWatermarkError = String(describing: error)
+        }
+      } else {
+        liveWatermarkRenderer.reset()
       }
-    } else {
-      liveWatermarkRenderer.reset()
+      return source
     }
     watermarkPreparationPending = false
 
-    guard writer.startWriting() else {
-      throw writer.error ?? pigeonError("开始录像失败")
+    try recordPerformanceStage(
+      stagePrefix.isEmpty ? "startWriting" : "nextStartWriting",
+      operation: operation,
+      signpostName: "CameraWriterStartWriting",
+      timing: timing
+    ) {
+      guard writer.startWriting() else {
+        throw writer.error ?? pigeonError("开始录像失败")
+      }
     }
     self.writer = writer
     self.videoInput = videoInput
@@ -1599,6 +2114,7 @@ final class IosCameraHostApi:
     self.currentStartedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
     self.currentSegmentSerial += 1
     self.writerSessionStarted = false
+    firstWrittenFrameTiming.begin(operation: operation)
     self.recordingAudioActive = recordAudio && audioInput != nil
     self.currentAudioSampleCount = 0
     self.currentAudioAppendFailedCount = 0
@@ -1676,9 +2192,18 @@ final class IosCameraHostApi:
       writer.startSession(atSourceTime: timestamp)
       writerSessionStarted = true
     }
-    if videoInput.isReadyForMoreMediaData {
-      pixelBufferAdaptor?.append(pixelBuffer, withPresentationTime: timestamp)
-    }
+    IosCameraVideoAppendPolicy.appendWhenReady(
+      isReady: videoInput.isReadyForMoreMediaData,
+      append: { [pixelBufferAdaptor] in
+        pixelBufferAdaptor?.append(
+          pixelBuffer,
+          withPresentationTime: timestamp
+        ) == true
+      },
+      onWritten: { [firstWrittenFrameTiming] in
+        firstWrittenFrameTiming.recordWrittenFrameIfNeeded()
+      }
+    )
   }
 
   private func appendAudio(_ sampleBuffer: CMSampleBuffer) {
@@ -1714,6 +2239,7 @@ final class IosCameraHostApi:
       completion(.failure(IosCameraWriterFinishPolicy.missingWriterError()))
       return
     }
+    firstWrittenFrameTiming.cancelIfNeeded()
     let completedPath = currentPath
     let completedStartedAt = currentStartedAtMs
     let completedSegmentId = currentSegmentId

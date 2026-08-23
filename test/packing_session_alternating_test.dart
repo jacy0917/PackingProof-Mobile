@@ -253,6 +253,8 @@ class _TrackingDiagnosticsLogService extends DiagnosticsLogService {
       );
 
   final List<String> kinds = <String>[];
+  final List<({String kind, Map<String, Object?> extra})> events =
+      <({String kind, Map<String, Object?> extra})>[];
 
   @override
   Future<void> log({
@@ -260,6 +262,7 @@ class _TrackingDiagnosticsLogService extends DiagnosticsLogService {
     Map<String, Object?> extra = const <String, Object?>{},
   }) async {
     kinds.add(kind);
+    events.add((kind: kind, extra: Map<String, Object?>.from(extra)));
   }
 }
 
@@ -675,6 +678,85 @@ void main() {
       expect(backupPlatform.storageCheckCalls, checksBeforeSplit);
     } finally {
       backupPlatform.pendingStorageCheck = null;
+      await _stopWorkIfNeeded(tester, controller);
+      await tester.pump(const Duration(seconds: 4));
+    }
+  });
+
+  testWidgets('开始工作与原生切段只记录无业务标识的聚合阶段耗时', (WidgetTester tester) async {
+    camera.fullSupported = true;
+    try {
+      await tester.runAsync(() async {
+        await controller.initialize();
+        await controller.retryCapabilityProbe();
+        await controller.startWork();
+      });
+
+      final Map<String, Object?> startWorkTiming = runtimeLog.events
+          .lastWhere((event) => event.kind == 'start_work_stage_timing')
+          .extra;
+      expect(startWorkTiming['outcome'], 'success');
+      expect(startWorkTiming['totalMs'], isA<int>());
+      expect(
+        (startWorkTiming['stagesMs']! as Map).keys,
+        containsAll(<String>[
+          'storageReclaim',
+          'maxVolumeBegin',
+          'maxVolumeBoost',
+          'wakelock',
+          'preview',
+          'workScan',
+          'orderReceiver',
+        ]),
+      );
+
+      await _confirmBarcode(tester, controller, 'YT123456789071');
+      await _waitUntil(
+        tester,
+        () => controller.currentCode == 'YT123456789071',
+        reason: 'first barcode should emit native start timing',
+      );
+      await _confirmBarcode(tester, controller, 'YT123456789072');
+      await _waitUntil(
+        tester,
+        () => controller.sessions.isNotEmpty,
+        reason: 'second barcode should emit native split timing',
+      );
+
+      final List<Map<String, Object?>> nativeTimings = runtimeLog.events
+          .where((event) => event.kind == 'native_recording_timing')
+          .map((event) => event.extra)
+          .toList(growable: false);
+      expect(
+        nativeTimings.map((timing) => timing['operation']),
+        containsAll(<String>['start', 'split']),
+      );
+      final Map<String, Object?> splitTiming = nativeTimings.lastWhere(
+        (timing) => timing['operation'] == 'split',
+      );
+      expect(splitTiming['outcome'], 'success');
+      expect(
+        (splitTiming['stagesMs']! as Map).keys,
+        containsAll(<String>[
+          'recordingPath',
+          'nativeSplit',
+          'finalizeVideo',
+          'persistSession',
+        ]),
+      );
+
+      for (final event in <Map<String, Object?>>[
+        startWorkTiming,
+        ...nativeTimings,
+      ]) {
+        final String encoded = event.toString().toLowerCase();
+        expect(encoded, isNot(contains('trackingnumber')));
+        expect(encoded, isNot(contains('filepath')));
+        expect(encoded, isNot(contains('.mp4')));
+        expect(encoded, isNot(contains(root.path.toLowerCase())));
+        expect(encoded, isNot(contains('yt12345678907')));
+      }
+    } finally {
       await _stopWorkIfNeeded(tester, controller);
       await tester.pump(const Duration(seconds: 4));
     }

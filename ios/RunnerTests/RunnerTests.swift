@@ -47,6 +47,23 @@ private final class FakeIosAudioSession: IosAudioSessionProtocol {
   }
 }
 
+private final class FirstWrittenFrameFinishProbe: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedValues: [Bool] = []
+
+  func record(_ written: Bool) {
+    lock.lock()
+    storedValues.append(written)
+    lock.unlock()
+  }
+
+  var values: [Bool] {
+    lock.lock()
+    defer { lock.unlock() }
+    return storedValues
+  }
+}
+
 class RunnerTests: XCTestCase {
 
   func testEndingMaxVolumeKeepsRunningCameraAudioSessionActive() throws {
@@ -553,6 +570,147 @@ class RunnerTests: XCTestCase {
         CGSize(width: 1920, height: 1080)
       )
     }
+  }
+
+  func testCameraOperationTimingContainsOnlyAggregateStageData() throws {
+    let timing = IosCameraOperationTiming(
+      operation: "split",
+      startedAtNs: 1_000_000_000
+    )
+    timing.record(stage: "writerFinish", durationMs: 417)
+    timing.record(stage: "nextWriterSetup", durationMs: 23)
+    timing.record(stage: "nextWatermarkPrepare", durationMs: 11)
+
+    let snapshot = try XCTUnwrap(timing.finish(
+      succeeded: true,
+      endedAtNs: 1_500_000_000
+    ))
+    XCTAssertEqual(Set(snapshot.keys), [
+      "operation", "succeeded", "totalMs", "stagesMs",
+    ])
+    XCTAssertEqual(snapshot["operation"] as? String, "split")
+    XCTAssertEqual(snapshot["succeeded"] as? Bool, true)
+    XCTAssertEqual(snapshot["totalMs"] as? Int64, 500)
+    let stages = try XCTUnwrap(snapshot["stagesMs"] as? [String: Int64])
+    XCTAssertEqual(stages, [
+      "writerFinish": 417,
+      "nextWriterSetup": 23,
+      "nextWatermarkPrepare": 11,
+    ])
+    XCTAssertFalse(snapshot.keys.contains("path"))
+    XCTAssertFalse(snapshot.keys.contains("trackingNumber"))
+    XCTAssertNil(timing.finish(succeeded: false, endedAtNs: 2_000_000_000))
+  }
+
+  func testFirstWrittenFrameTimingCancelsOnceWhenReleasedBeforeFrame() {
+    let probe = FirstWrittenFrameFinishProbe()
+    weak var releasedTiming: IosCameraFirstWrittenFrameTiming?
+    autoreleasepool {
+      var timing: IosCameraFirstWrittenFrameTiming? =
+        IosCameraFirstWrittenFrameTiming(onFinished: { @Sendable written in
+          probe.record(written)
+        })
+      timing?.begin(operation: "start", startedAtNs: 1_000_000_000)
+      releasedTiming = timing
+      timing = nil
+    }
+
+    XCTAssertNil(releasedTiming)
+    XCTAssertEqual(probe.values, [false])
+  }
+
+  func testFirstWrittenFrameTimingCancelsIdempotentlyOnDisposeBeforeFrame() {
+    let probe = FirstWrittenFrameFinishProbe()
+    let timing = IosCameraFirstWrittenFrameTiming(
+      onFinished: { @Sendable written in probe.record(written) }
+    )
+    timing.begin(operation: "start", startedAtNs: 1_000_000_000)
+
+    XCTAssertTrue(timing.cancelIfNeeded())
+    XCTAssertFalse(timing.cancelIfNeeded())
+    XCTAssertNil(timing.snapshot())
+    XCTAssertEqual(probe.values, [false])
+  }
+
+  func testFirstWrittenFrameWaitsUntilVideoAppendActuallySucceeds() throws {
+    let probe = FirstWrittenFrameFinishProbe()
+    let timing = IosCameraFirstWrittenFrameTiming(
+      onFinished: { @Sendable written in probe.record(written) }
+    )
+    timing.begin(operation: "split", startedAtNs: 1_000_000_000)
+    var appendAttempts = 0
+
+    XCTAssertFalse(IosCameraVideoAppendPolicy.appendWhenReady(
+      isReady: false,
+      append: {
+        appendAttempts += 1
+        return true
+      },
+      onWritten: {
+        _ = timing.recordWrittenFrameIfNeeded(endedAtNs: 1_100_000_000)
+      }
+    ))
+    XCTAssertEqual(appendAttempts, 0)
+    XCTAssertNil(timing.snapshot())
+    XCTAssertFalse(IosCameraVideoAppendPolicy.appendWhenReady(
+      isReady: true,
+      append: {
+        appendAttempts += 1
+        return false
+      },
+      onWritten: {
+        _ = timing.recordWrittenFrameIfNeeded(endedAtNs: 1_200_000_000)
+      }
+    ))
+    XCTAssertNil(timing.snapshot())
+    XCTAssertTrue(IosCameraVideoAppendPolicy.appendWhenReady(
+      isReady: true,
+      append: {
+        appendAttempts += 1
+        return true
+      },
+      onWritten: {
+        _ = timing.recordWrittenFrameIfNeeded(endedAtNs: 1_500_000_000)
+      }
+    ))
+    _ = timing.recordWrittenFrameIfNeeded(endedAtNs: 1_900_000_000)
+
+    XCTAssertEqual(appendAttempts, 2)
+    XCTAssertEqual(probe.values, [true])
+    let snapshot = try XCTUnwrap(timing.snapshot())
+    XCTAssertEqual(Set(snapshot.keys), [
+      "operation", "writerReadyToFirstWrittenFrameMs",
+    ])
+    XCTAssertEqual(snapshot["operation"] as? String, "split")
+    XCTAssertEqual(
+      snapshot["writerReadyToFirstWrittenFrameMs"] as? Int64,
+      500
+    )
+  }
+
+  func testFirstWrittenFrameSnapshotSupportsConcurrentFinishAndReads() throws {
+    let probe = FirstWrittenFrameFinishProbe()
+    let timing = IosCameraFirstWrittenFrameTiming(
+      onFinished: { @Sendable written in probe.record(written) }
+    )
+    timing.begin(operation: "start", startedAtNs: 1_000_000_000)
+
+    DispatchQueue.concurrentPerform(iterations: 200) { index in
+      if index.isMultiple(of: 7) {
+        _ = timing.recordWrittenFrameIfNeeded(endedAtNs: 1_300_000_000)
+      } else {
+        _ = timing.snapshot()
+      }
+    }
+
+    XCTAssertEqual(probe.values, [true])
+    let snapshot = try XCTUnwrap(timing.snapshot())
+    XCTAssertEqual(snapshot["operation"] as? String, "start")
+    XCTAssertEqual(
+      snapshot["writerReadyToFirstWrittenFrameMs"] as? Int64,
+      300
+    )
+    XCTAssertFalse(timing.cancelIfNeeded())
   }
 
   func testBackupReceiptVerifierAcceptsValidReceipt() {
