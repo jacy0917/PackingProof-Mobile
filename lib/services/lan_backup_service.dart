@@ -1933,6 +1933,8 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
       }
     }
     _logBackupJobFailureEdge(summary.problemJob);
+    final bool hasActiveUpload =
+        summary.activeJob?.state == LanBackupJobState.uploading;
     final LanBackupSnapshot next = LanBackupSnapshot(
       deviceId: value.deviceId,
       deviceName: value.deviceName,
@@ -1945,9 +1947,12 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         previous: _snapshot.connectionStatus,
         endpoint: endpoint,
         dominantFailureKind: summary.dominantFailureKind,
+        hasActiveUpload: hasActiveUpload,
       ),
-      message:
-          summary.dominantFailureKind == LanBackupFailureKind.credentialInvalid
+      message: hasActiveUpload
+          ? null
+          : summary.dominantFailureKind ==
+                LanBackupFailureKind.credentialInvalid
           ? '设备连接已失效，请重新申请并在电脑上允许连接'
           : summary.dominantFailureKind == LanBackupFailureKind.notBackupHost
           ? '连接的电脑当前不是录像备份主机，请切换电脑用途或重新搜索'
@@ -2101,8 +2106,10 @@ LanConnectionStatus nativeBackupConnectionStatus({
   required LanConnectionStatus previous,
   required LanBackupEndpoint? endpoint,
   required LanBackupFailureKind? dominantFailureKind,
+  bool hasActiveUpload = false,
 }) {
   if (endpoint == null) return LanConnectionStatus.disconnected;
+  if (hasActiveUpload) return LanConnectionStatus.connected;
   if (dominantFailureKind == LanBackupFailureKind.credentialInvalid) {
     return LanConnectionStatus.rePair;
   }

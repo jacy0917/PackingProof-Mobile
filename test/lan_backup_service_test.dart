@@ -280,6 +280,15 @@ void main() {
       ),
       LanConnectionStatus.notBackupHost,
     );
+    expect(
+      nativeBackupConnectionStatus(
+        previous: LanConnectionStatus.rePair,
+        endpoint: endpoint,
+        dominantFailureKind: invalidKey.failureKind,
+        hasActiveUpload: true,
+      ),
+      LanConnectionStatus.connected,
+    );
   });
 
   test('每种结构化备份失败只映射一个恢复操作', () {
