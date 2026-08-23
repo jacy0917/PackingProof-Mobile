@@ -2,8 +2,10 @@ package app.packingproof.mobile
 
 import android.content.ContentValues
 import android.content.Context
+import android.database.sqlite.SQLiteException
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -114,6 +116,65 @@ class OrderInfoStoreTest {
     }
 
     @Test
+    fun equalPushTimesUseTrackingNumberAsStableCleanupTieBreaker() {
+        store = newStore(maxRecords = 2, cleanupBatchSize = 3)
+
+        store.upsert(
+            listOf(
+                record("SAME-TIME-C", pushTimeMillis = NOW),
+                record("SAME-TIME-A", pushTimeMillis = NOW),
+                record("SAME-TIME-B", pushTimeMillis = NOW),
+            ),
+        )
+
+        assertNull(store.lookup("SAME-TIME-A"))
+        assertNotNull(store.lookup("SAME-TIME-B"))
+        assertNotNull(store.lookup("SAME-TIME-C"))
+        assertEquals(2L, persistedCount())
+        assertEquals(2L, rowCount())
+    }
+
+    @Test
+    fun failedStateUpdateRollsBackInsertCleanupAndCountTogether() {
+        store = newStore(maxRecords = 1, cleanupBatchSize = 2)
+        store.upsert(listOf(record("ORIGINAL", pushTimeMillis = NOW - 1)))
+        store.writableDatabase.execSQL(
+            """
+            CREATE TRIGGER fail_order_info_state_update
+            BEFORE UPDATE ON order_info_state
+            BEGIN
+                SELECT RAISE(ABORT, 'forced state failure');
+            END
+            """.trimIndent(),
+        )
+
+        assertThrows(SQLiteException::class.java) {
+            store.upsert(listOf(record("REPLACEMENT", pushTimeMillis = NOW)))
+        }
+
+        assertNotNull(store.lookup("ORIGINAL"))
+        assertNull(store.lookup("REPLACEMENT"))
+        assertEquals(1L, persistedCount())
+        assertEquals(1L, rowCount())
+    }
+
+    @Test
+    fun reopeningCurrentSchemaKeepsPersistedCountWithoutRecountingRows() {
+        store = newStore()
+        store.upsert(listOf(record("PERSISTED", pushTimeMillis = NOW)))
+        store.writableDatabase.execSQL(
+            "UPDATE order_info_state SET record_count = 7 WHERE singleton = 1",
+        )
+        store.close()
+
+        store = newStore()
+
+        assertNotNull(store.lookup("PERSISTED"))
+        assertEquals(7L, persistedCount())
+        assertEquals(1L, rowCount())
+    }
+
+    @Test
     fun oversizedBatchIsRejectedBeforeOpeningAWriteTransaction() {
         store = newStore()
 
@@ -150,10 +211,17 @@ class OrderInfoStoreTest {
             database.endTransaction()
         }
 
-        store.upsert(listOf(record("NEWEST-AT-LIMIT", pushTimeMillis = NOW)))
+        repeat(200) { index ->
+            store.upsert(
+                listOf(record("NEWEST-$index", pushTimeMillis = NOW + index)),
+            )
+        }
 
         assertNull(store.lookup("SEEDED-00000"))
-        assertNotNull(store.lookup("NEWEST-AT-LIMIT"))
+        assertNull(store.lookup("SEEDED-00199"))
+        assertNotNull(store.lookup("SEEDED-00200"))
+        assertNotNull(store.lookup("NEWEST-0"))
+        assertNotNull(store.lookup("NEWEST-199"))
         assertEquals(50_000L, persistedCount())
         assertEquals(50_000L, rowCount())
     }
@@ -176,6 +244,7 @@ class OrderInfoStoreTest {
         }
 
         assertTrue(details.joinToString("\n"), details.any { it.contains("idx_order_info_cleanup") })
+        assertFalse(details.joinToString("\n"), details.any { it.contains("TEMP B-TREE") })
     }
 
     private fun newStore(
