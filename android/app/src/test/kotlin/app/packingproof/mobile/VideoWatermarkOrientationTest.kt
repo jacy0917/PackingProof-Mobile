@@ -170,7 +170,7 @@ class VideoWatermarkOrientationTest {
 
         assertTrue(twoLines.height > oneLine.height)
         assertTrue(twoLines.width >= oneLine.width)
-        val textSize = (1080 * 0.032f).coerceIn(35f, 61f)
+        val textSize = watermarkTextSize(1080, "landscapeLeft")
         val expectedLineHeight = textSize * 1.25f
         assertTrue(
             kotlin.math.abs((twoLines.height - oneLine.height) - expectedLineHeight) < 1.1f,
