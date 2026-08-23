@@ -338,7 +338,7 @@ class LanBackupHostDiscoveryService extends ChangeNotifier
       );
       if (existingIndex >= 0) {
         final LanBackupDiscoveredHost existing = hosts[existingIndex];
-        if (!existing.compatible || host.compatible) {
+        if (!existing.reachable || !existing.compatible || host.compatible) {
           hosts[existingIndex] = host;
         }
       } else {

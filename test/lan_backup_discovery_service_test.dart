@@ -245,6 +245,89 @@ void main() {
     expect(cache.saved.single.address, '192.168.1.30:5280');
   });
 
+  test('当前在线不兼容结果覆盖旧的兼容缓存', () async {
+    final _MemoryBackupHostCache cache =
+        _MemoryBackupHostCache(<LanBackupDiscoveredHost>[
+          const LanBackupDiscoveredHost(
+            nodeId: 'host-1',
+            name: '仓库电脑',
+            address: '192.168.1.20:5280',
+            compatible: true,
+            reachable: false,
+          ),
+        ]);
+    final LanBackupHostDiscoveryService service = LanBackupHostDiscoveryService(
+      cache: cache,
+      candidateProvider: () async => <Uri>[
+        Uri.parse('http://192.168.1.30:5280'),
+      ],
+      probe: (Uri uri) async => const LanBackupDiscoveredHost(
+        nodeId: 'host-1',
+        name: '仓库电脑',
+        address: '192.168.1.30:5280',
+        compatible: false,
+        compatibilityMessage: '手机 App 版本过低，请先更新手机 App',
+      ),
+    );
+    addTearDown(service.dispose);
+
+    await service.search();
+
+    final LanBackupDiscoveredHost host = service.snapshot.hosts.single;
+    expect(host.reachable, isTrue);
+    expect(host.compatible, isFalse);
+    expect(host.compatibilityMessage, contains('手机 App 版本过低'));
+    expect(service.snapshot.message, contains('手机 App 版本过低'));
+    expect(cache.saved.single.compatible, isFalse);
+  });
+
+  test('同一轮多个在线结果仍优先保留兼容结果', () async {
+    final Completer<void> allowIncompatibleProbe = Completer<void>();
+    final Completer<void> compatiblePublished = Completer<void>();
+    final LanBackupHostDiscoveryService service = LanBackupHostDiscoveryService(
+      candidateProvider: () async => <Uri>[
+        Uri.parse('http://192.168.1.30:5280'),
+        Uri.parse('http://192.168.1.31:5280'),
+      ],
+      probe: (Uri uri) async {
+        if (uri.host == '192.168.1.31') {
+          await allowIncompatibleProbe.future;
+          return const LanBackupDiscoveredHost(
+            nodeId: 'host-1',
+            name: '仓库电脑',
+            address: '192.168.1.31:5280',
+            compatible: false,
+            compatibilityMessage: '手机 App 版本过低，请先更新手机 App',
+          );
+        }
+        return const LanBackupDiscoveredHost(
+          nodeId: 'host-1',
+          name: '仓库电脑',
+          address: '192.168.1.30:5280',
+        );
+      },
+    );
+    addTearDown(service.dispose);
+    service.addListener(() {
+      if (!compatiblePublished.isCompleted &&
+          service.snapshot.hosts.any(
+            (LanBackupDiscoveredHost host) => host.compatible,
+          )) {
+        compatiblePublished.complete();
+      }
+    });
+
+    final Future<void> search = service.search();
+    await compatiblePublished.future;
+    allowIncompatibleProbe.complete();
+    await search;
+
+    expect(service.snapshot.hosts, hasLength(1));
+    expect(service.snapshot.hosts.single.reachable, isTrue);
+    expect(service.snapshot.hosts.single.compatible, isTrue);
+    expect(service.snapshot.hosts.single.address, '192.168.1.30:5280');
+  });
+
   test('文件缓存可跨服务实例恢复主机且不会把缓存当作在线', () async {
     final Directory root = Directory.systemTemp.createTempSync(
       'packing-proof-host-cache-',
