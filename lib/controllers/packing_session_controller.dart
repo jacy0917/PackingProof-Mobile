@@ -1478,7 +1478,7 @@ class PackingSessionController extends ChangeNotifier
 
   @override
   Future<void> _reloadRecentSessions() async {
-    _sessions = (await _repository.querySessions(page: 1, pageSize: 50)).data;
+    _sessions = await _repository.loadRecentSessionMetadata();
     await _refreshLocalStatistics();
   }
 

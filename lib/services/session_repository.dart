@@ -506,12 +506,23 @@ class SessionRepository {
       'backup_registration_cursor';
   static const String backupCleanupCursorKey = 'backup_cleanup_cursor';
 
-  Future<List<RecordingSession>> _loadRecentSessionsUnlocked() async =>
-      _recordingDatabase.loadRecentActiveSessions();
+  Future<List<RecordingSession>> _loadRecentSessionsUnlocked({
+    int limit = 50,
+  }) => _recordingDatabase.loadRecentActiveSessions(limit: limit);
+
+  /// 读取首页所需的最近录像元数据，不进行逐文件路径解析或修复。
+  ///
+  /// 摄像头启动只需要最近单号状态；播放、备份和历史页展示仍通过
+  /// 各自的强校验入口解析实际路径。
+  Future<List<RecordingSession>> loadRecentSessionMetadata({
+    int limit = 50,
+  }) async {
+    await initialize();
+    return _loadRecentSessionsUnlocked(limit: limit);
+  }
 
   Future<List<RecordingSession>> loadRecentSessions() async {
-    await initialize();
-    return _resolveAndRepair(await _loadRecentSessionsUnlocked());
+    return _resolveAndRepair(await loadRecentSessionMetadata());
   }
 
   Future<List<RecordingSession>> findActiveSessionsByIds(

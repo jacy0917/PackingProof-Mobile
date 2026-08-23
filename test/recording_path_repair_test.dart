@@ -39,6 +39,15 @@ void main() {
       ),
     );
 
+    final List<RecordingSession> startupMetadata = await repository
+        .loadRecentSessionMetadata();
+    expect(startupMetadata, hasLength(1));
+    expect(
+      startupMetadata.single.filePath,
+      '/data/data/pkg/app_flutter/recordings/2026-08-06/abc.mp4',
+      reason: '摄像头启动不得逐文件探测或提前修复路径',
+    );
+
     final LocalRecordingPage result = await repository.querySessions(
       page: 1,
       pageSize: 10,
