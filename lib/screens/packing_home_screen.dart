@@ -979,7 +979,7 @@ class _CameraArea extends StatelessWidget {
         fit: StackFit.expand,
         children: <Widget>[
           Positioned.fill(child: preview),
-          if (!view.nativeLiveWatermark || !view._isRecording)
+          if (!view.nativeLiveWatermark)
             Positioned.fill(child: _CameraWatermarkPlacement(view: view)),
           Positioned(
             left: 24,

@@ -1537,12 +1537,9 @@ final class IosCameraHostApi:
       }
       var shouldAppendVideo = true
       var transientWatermarkFailure = false
-      let watermarkRequired = IosLiveWatermarkHostPolicy.canMaintainPreview(
-        writerActive: writer != nil,
-        preservingSplit: preservesWatermarkDuringSplit
-      )
-        && !currentTrackingNumber.isEmpty
-        && !currentWatermarkFailed
+      // 支持实时水印时，预览和成片始终复用同一份已烧录像素；Flutter
+      // 不再在空闲/停止状态切换到另一套水印布局。
+      let watermarkRequired = !currentWatermarkFailed
       if watermarkRequired {
         do {
           try liveWatermarkRenderer.apply(
@@ -2170,10 +2167,6 @@ final class IosCameraHostApi:
 
   private func prepareInitialWatermarkPlanIfNeeded(from pixelBuffer: CVPixelBuffer) {
     guard !watermarkPreparationPending,
-          IosLiveWatermarkHostPolicy.canMaintainPreview(
-            writerActive: writer != nil,
-            preservingSplit: preservesWatermarkDuringSplit
-          ),
           !currentWatermarkFailed else {
       return
     }
@@ -2188,11 +2181,7 @@ final class IosCameraHostApi:
     ) { [weak self] result in
       guard let self else { return }
       self.sessionQueue.async {
-        guard IosLiveWatermarkHostPolicy.canMaintainPreview(
-                writerActive: self.writer != nil,
-                preservingSplit: self.preservesWatermarkDuringSplit
-              ),
-              self.currentSegmentSerial == segmentSerial else {
+        guard self.currentSegmentSerial == segmentSerial else {
           return
         }
         self.watermarkPreparationPending = false

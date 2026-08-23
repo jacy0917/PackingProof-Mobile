@@ -1388,6 +1388,9 @@ class ContinuousSegmentCamera(
                 compositor.release()
                 return
             }
+            // 预览与编码共用同一个 GL 水印渲染器。空闲时只显示时间，
+            // 开始录像后在同一图层加入面单号，避免 Flutter/原生两套水印跳变。
+            compositor.setWatermark("")
             compositor.setEncoderEnabled(recordingRequested || recordingActive)
             Log.i(
                 CAMERA_LOG_TAG,
@@ -2320,7 +2323,7 @@ class ContinuousSegmentCamera(
             val watermarkDisposition = liveWatermarkDispositionWire()
             encodedWatermarkFrameTracker.reset()
             cameraGlCompositor?.setEncoderEnabled(false)
-            cameraGlCompositor?.clearWatermark()
+            cameraGlCompositor?.setWatermark("")
             activeWatermarkTrackingNumber = ""
             recordingVideoEncoder.setSuspended(true)
             stopResult = null
@@ -2341,7 +2344,7 @@ class ContinuousSegmentCamera(
             stopResult = null
             pendingNextTrackingNumber = null
             cameraGlCompositor?.setEncoderEnabled(false)
-            cameraGlCompositor?.clearWatermark()
+            cameraGlCompositor?.setWatermark("")
             activeWatermarkTrackingNumber = ""
             replyError(result, "muxer_stop", "录像文件保存失败")
             notifyNativeError("录像文件保存失败", error)

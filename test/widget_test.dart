@@ -627,14 +627,43 @@ void main() {
     expect(controlPanel.bottom, lessThanOrEqualTo(640 - 36));
   });
 
-  testWidgets('iOS 实时水印录像只显示原生纹理中的水印', (WidgetTester tester) async {
+  testWidgets('实时水印预览和录像始终只显示原生纹理中的水印', (WidgetTester tester) async {
+    Future<void> pumpPhase(PackingSessionPhase phase) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PackingHomeView(
+            phase: phase,
+            elapsed: const Duration(seconds: 8),
+            currentCode: phase == PackingSessionPhase.recording
+                ? 'TRACK-001'
+                : '',
+            nativeLiveWatermark: true,
+            previewOverride: const ColoredBox(color: Colors.black),
+            onPrimaryPressed: () {},
+            onRetryPressed: () {},
+          ),
+        ),
+      );
+    }
+
+    await pumpPhase(PackingSessionPhase.ready);
+    expect(find.byKey(const Key('camera-watermark-preview')), findsNothing);
+
+    await pumpPhase(PackingSessionPhase.recording);
+    expect(find.byKey(const Key('camera-watermark-preview')), findsNothing);
+    expect(find.byKey(const Key('recording-duration-pill')), findsOneWidget);
+    expect(find.text('结束工作'), findsOneWidget);
+
+    await pumpPhase(PackingSessionPhase.ready);
+    expect(find.byKey(const Key('camera-watermark-preview')), findsNothing);
+  });
+
+  testWidgets('非实时水印平台仍显示 Flutter 预览水印', (WidgetTester tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: PackingHomeView(
-          phase: PackingSessionPhase.recording,
+          phase: PackingSessionPhase.ready,
           elapsed: const Duration(seconds: 8),
-          currentCode: 'TRACK-001',
-          nativeLiveWatermark: true,
           previewOverride: const ColoredBox(color: Colors.black),
           onPrimaryPressed: () {},
           onRetryPressed: () {},
@@ -642,9 +671,7 @@ void main() {
       ),
     );
 
-    expect(find.byKey(const Key('camera-watermark-preview')), findsNothing);
-    expect(find.byKey(const Key('recording-duration-pill')), findsOneWidget);
-    expect(find.text('结束工作'), findsOneWidget);
+    expect(find.byKey(const Key('camera-watermark-preview')), findsOneWidget);
   });
 
   testWidgets('水印时钟只重建水印而不重建相机预览', (WidgetTester tester) async {
