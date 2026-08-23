@@ -534,10 +534,10 @@ void main() {
     final RecordingDatabase created = RecordingDatabase(path: databasePath);
     await created.initialize();
     await created.close();
-    final File source = File('${root.path}/alias/video.mp4');
+    final File source = File(p.join(root.path, 'alias', 'video.mp4'));
     await source.create(recursive: true);
     await source.writeAsBytes(<int>[8, 6, 7, 5]);
-    final String aliasPath = '${root.path}/alias/./video.mp4';
+    final String aliasPath = p.join(root.path, 'alias', '.', 'video.mp4');
     expect(p.normalize(aliasPath), source.path);
     final DateTime startedAt = DateTime.utc(2026, 8, 23, 9);
     final Database seed = await databaseFactory.openDatabase(
@@ -697,8 +697,8 @@ void main() {
     final RecordingDatabase created = RecordingDatabase(path: databasePath);
     await created.initialize();
     await created.close();
-    final File source = File('${root.path}/concurrent-source.mp4');
-    final File moved = File('${root.path}/concurrent-moved.mp4');
+    final File source = File(p.join(root.path, 'concurrent-source.mp4'));
+    final File moved = File(p.join(root.path, 'concurrent-moved.mp4'));
     await source.writeAsBytes(<int>[3, 1, 4, 1]);
     await moved.writeAsBytes(<int>[5, 9, 2, 6]);
     final DateTime startedAt = DateTime.utc(2026, 8, 23, 11, 30);
