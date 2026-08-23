@@ -29,6 +29,11 @@ val releaseSigningConfigured = listOf(
     releaseStorePassword,
     releaseKeyPassword,
 ).all { it.isNotEmpty() }
+val flutterTarget = providers.gradleProperty("target").orNull.orEmpty().replace('\\', '/')
+val integrationTestTarget =
+    flutterTarget.startsWith("integration_test/") || flutterTarget.contains("/integration_test/")
+val integrationTestPackageEnabled = integrationTestTarget ||
+    System.getenv("PACKING_PROOF_INTEGRATION_TEST_PACKAGE") == "1"
 
 if (releaseSigningRequired && !releaseSigningConfigured) {
     throw GradleException("正式 Release 构建缺少 PackingProof 签名配置")
@@ -45,8 +50,14 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "app.packingproof.mobile"
+        // Flutter integration tests uninstall their app by default. The guarded
+        // launcher enables an isolated package so device tests can never own the
+        // production package or its private data.
+        applicationId = if (integrationTestPackageEnabled) {
+            "app.packingproof.mobile.integration_test"
+        } else {
+            "app.packingproof.mobile"
+        }
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 24

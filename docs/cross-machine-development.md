@@ -52,4 +52,18 @@ flutter build apk --debug
 adb install -r <apk>
 ```
 
+## Android 真机集成测试
+
+禁止直接执行 `flutter test integration_test/... -d <device-id>`。Flutter 默认会在集成测试结束时卸载被测应用；Flutter issue [#166709](https://github.com/flutter/flutter/issues/166709) 和已合并的 PR [#182714](https://github.com/flutter/flutter/pull/182714) 明确确认了该行为，并在 Flutter 3.44 增加了 `--no-uninstall` 开关。
+
+Android 构建还会识别 Flutter 的 `integration_test` target 并强制切换为隔离包，作为误用原始命令时的数据安全兜底。仓库的安全入口会同时启用隔离包名 `app.packingproof.mobile.integration_test` 和 `--no-uninstall`，不会安装、覆盖或卸载正式包 `app.packingproof.mobile`：
+
+```powershell
+dart run tool/run_android_integration_test.dart `
+  --device <device-id> `
+  --target integration_test/continuous_segment_camera_test.dart
+```
+
+必须明确指定单个设备和单个 `integration_test/` 测试文件；缺少参数、目录外目标或额外 Flutter 参数都会默认安全失败。不得直接设置 `PACKING_PROOF_INTEGRATION_TEST_PACKAGE` 绕过该入口，也不得把 `--no-uninstall` 单独当成允许在正式包数据上运行集成测试的依据。
+
 正式签名的本地 Release 测试包和正式发布流程见 [android-release.md](android-release.md)。iOS 构建与依赖规则见 [ios-development.md](ios-development.md)。
