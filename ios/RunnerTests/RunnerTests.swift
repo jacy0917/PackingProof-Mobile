@@ -4217,6 +4217,7 @@ class RunnerTests: XCTestCase {
   }
 
   private func removeRetentionCleanupFixture(_ fixture: RetentionCleanupFixture) {
+    fixture.api.drainSummaryQueueForTesting()
     fixture.defaults.removePersistentDomain(forName: fixture.suiteName)
     try? FileManager.default.removeItem(at: fixture.root)
   }

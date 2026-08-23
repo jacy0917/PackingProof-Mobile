@@ -1934,6 +1934,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
   func waitForUploadDispatcherForTesting() async {
     let task = withUploadsLock { uploadDispatcherTask }
     await task?.value
+    await drainSummaryQueue()
   }
 
   private func upload(
@@ -2718,15 +2719,26 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private func drainSummaryQueue() async {
     await withCheckedContinuation { continuation in
       summaryQueue.async {
-        let hadPendingProgress = self.summaryProgressWorkItem != nil
-        self.summaryProgressWorkItem?.cancel()
-        self.summaryProgressWorkItem = nil
-        if hadPendingProgress {
-          self.lastSummaryEventRequestedAt = Date()
-          self.sendSummaryIfPossible()
-        }
+        self.flushPendingSummaryOnQueue()
         continuation.resume()
       }
+    }
+  }
+
+  func drainSummaryQueueForTesting() {
+    summaryQueue.sync { flushPendingSummaryOnQueue() }
+    // A synchronous fake event callback queues its completion bookkeeping
+    // behind the current block, so use a second barrier before fixture teardown.
+    summaryQueue.sync { }
+  }
+
+  private func flushPendingSummaryOnQueue() {
+    let hadPendingProgress = summaryProgressWorkItem != nil
+    summaryProgressWorkItem?.cancel()
+    summaryProgressWorkItem = nil
+    if hadPendingProgress {
+      lastSummaryEventRequestedAt = Date()
+      sendSummaryIfPossible()
     }
   }
 
