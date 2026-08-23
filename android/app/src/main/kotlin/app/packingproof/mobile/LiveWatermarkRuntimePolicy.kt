@@ -316,9 +316,9 @@ internal object CameraGlOutputGeometryPolicy {
     fun create(inputWidth: Int, inputHeight: Int, sensorOrientation: Int): CameraGlOutputGeometry {
         require(inputWidth > 0 && inputHeight > 0)
         val quarterTurns = when (((sensorOrientation % 360) + 360) % 360) {
-            90 -> 1
+            90 -> 3
             180 -> 2
-            270 -> 3
+            270 -> 1
             else -> 0
         }
         val swapsDimensions = quarterTurns % 2 != 0
