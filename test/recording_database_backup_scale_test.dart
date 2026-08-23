@@ -39,7 +39,7 @@ void main() {
     expect(source, contains('(updated_at < ? OR id <= ?)'));
   });
 
-  test('v2 数据库升级到 v4 时创建迁移、备份与水印 claim 结构', () async {
+  test('v2 数据库升级到 v5 时创建迁移、统计、备份与水印结构', () async {
     final File source = File('${root.path}/legacy.mp4');
     await source.writeAsBytes(<int>[1, 2, 3]);
     await _createV2Database(databasePath, sourcePath: source.path);
@@ -53,18 +53,27 @@ void main() {
       options: OpenDatabaseOptions(singleInstance: false),
     );
     addTearDown(raw.close);
-    expect(await raw.getVersion(), 4);
+    expect(await raw.getVersion(), 5);
     final List<Map<String, Object?>> schema = await raw.rawQuery(
       "SELECT type, name, sql FROM sqlite_master "
       "WHERE name IN ('recording_metadata', 'recording_file_owners', "
-      "'idx_recording_backup_cursor', 'idx_recording_pending_watermark') "
+      "'recording_statistics', 'idx_recording_backup_cursor', "
+      "'idx_recording_pending_watermark', 'idx_recording_statistics_today', "
+      "'trg_recording_statistics_insert', "
+      "'trg_recording_statistics_delete', "
+      "'trg_recording_statistics_update') "
       'ORDER BY name',
     );
     expect(schema.map((Map<String, Object?> row) => row['name']), <Object?>[
       'idx_recording_backup_cursor',
       'idx_recording_pending_watermark',
+      'idx_recording_statistics_today',
       'recording_file_owners',
       'recording_metadata',
+      'recording_statistics',
+      'trg_recording_statistics_delete',
+      'trg_recording_statistics_insert',
+      'trg_recording_statistics_update',
     ]);
     expect(
       schema.first['sql'].toString(),
@@ -88,6 +97,10 @@ void main() {
     expect(preserved.displayCode, 'LEGACY-TRACKING');
     expect(preserved.watermarkStatus, WatermarkProcessingStatus.completed);
     expect(await source.readAsBytes(), <int>[1, 2, 3]);
+    final LocalRecordingStatistics statistics = await upgraded
+        .loadLocalRecordingStatistics();
+    expect(statistics.total, 1);
+    expect(statistics.totalBytes, 3);
   });
 
   test(

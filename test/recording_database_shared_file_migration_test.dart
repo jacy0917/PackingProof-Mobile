@@ -230,6 +230,10 @@ void main() {
           .toSet(),
       hasLength(2),
     );
+    final production.LocalRecordingStatistics statistics = await database
+        .loadLocalRecordingStatistics();
+    expect(statistics.total, 2);
+    expect(statistics.totalBytes, source.lengthSync());
   });
 
   test('复制钩子挂起时暂停有界返回且不再写入下一分块', () async {

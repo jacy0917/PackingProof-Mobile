@@ -111,6 +111,7 @@ class RecordingDatabase {
     this.afterDatabaseOpenForTesting,
     this.watermarkOwnerIdForTesting,
     this.beforeInterruptedWatermarkRecoveryForTesting,
+    this.localStatisticsNowForTesting,
   });
 
   final String path;
@@ -135,6 +136,8 @@ class RecordingDatabase {
   @visibleForTesting
   final Future<void> Function(Database database)?
   beforeInterruptedWatermarkRecoveryForTesting;
+  @visibleForTesting
+  final DateTime Function()? localStatisticsNowForTesting;
   Database? _database;
   Future<Database>? _databaseOpenInFlight;
   Future<void>? _initializationInFlight;
@@ -146,7 +149,7 @@ class RecordingDatabase {
   bool _closing = false;
   bool _watermarkRecoveryCompleted = false;
 
-  static const int _schemaVersion = 4;
+  static const int _schemaVersion = 5;
   static final String _watermarkProcessOwnerId =
       '${DateTime.now().microsecondsSinceEpoch}-${Object().hashCode}';
   static const String _sharedFileMigrationKey =
@@ -164,6 +167,15 @@ class RecordingDatabase {
   static const String _backupCursorIndex = 'idx_recording_backup_cursor';
   static const String _pendingWatermarkIndex =
       'idx_recording_pending_watermark';
+  static const String _recordingStatisticsTable = 'recording_statistics';
+  static const String _recordingStatisticsTodayIndex =
+      'idx_recording_statistics_today';
+  static const String _recordingStatisticsInsertTrigger =
+      'trg_recording_statistics_insert';
+  static const String _recordingStatisticsDeleteTrigger =
+      'trg_recording_statistics_delete';
+  static const String _recordingStatisticsUpdateTrigger =
+      'trg_recording_statistics_update';
 
   static const List<String> _sessionPayloadColumns = <String>[
     'payload_json',
@@ -278,6 +290,10 @@ class RecordingDatabase {
       );
       await _createBackupCursorIndex(db);
       await _createPendingWatermarkIndex(db);
+      await _rebuildRecordingStatistics(
+        db,
+        todayStart: _todayStartMilliseconds(DateTime.now()),
+      );
     },
     onUpgrade: (Database db, int oldVersion, int newVersion) async {
       if (oldVersion < 2) {
@@ -323,6 +339,12 @@ class RecordingDatabase {
         await _createBackupCursorIndex(db);
         await _createPendingWatermarkIndex(db);
       }
+      if (oldVersion < 5) {
+        await _rebuildRecordingStatistics(
+          db,
+          todayStart: _todayStartMilliseconds(DateTime.now()),
+        );
+      }
     },
   );
 
@@ -349,6 +371,7 @@ class RecordingDatabase {
     await _createActiveTimeIndex(db);
     await _createBackupCursorIndex(db);
     await _createPendingWatermarkIndex(db);
+    await _repairRecordingStatisticsIfNeeded(db);
     if (!_watermarkRecoveryCompleted) {
       await beforeInterruptedWatermarkRecoveryForTesting?.call(db);
       await _recoverInterruptedWatermarkClaims(db);
@@ -384,6 +407,149 @@ class RecordingDatabase {
         'CREATE INDEX IF NOT EXISTS $_pendingWatermarkIndex '
         'ON recording_sessions(watermark_status, is_deleted, started_at, id)',
       );
+
+  static int _todayStartMilliseconds(DateTime now) =>
+      DateTime(now.year, now.month, now.day).millisecondsSinceEpoch;
+
+  Future<void> _repairRecordingStatisticsIfNeeded(Database db) async {
+    const Set<String> requiredObjects = <String>{
+      _recordingStatisticsTable,
+      _recordingStatisticsTodayIndex,
+      _recordingStatisticsInsertTrigger,
+      _recordingStatisticsDeleteTrigger,
+      _recordingStatisticsUpdateTrigger,
+    };
+    final List<Map<String, Object?>> objects = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE name IN (?, ?, ?, ?, ?)",
+      requiredObjects.toList(growable: false),
+    );
+    final Set<String> existing = objects
+        .map((Map<String, Object?> row) => row['name']! as String)
+        .toSet();
+    var hasSummaryRow = false;
+    if (existing.contains(_recordingStatisticsTable)) {
+      hasSummaryRow =
+          Sqflite.firstIntValue(
+            await db.rawQuery(
+              'SELECT COUNT(*) FROM $_recordingStatisticsTable WHERE id = 1',
+            ),
+          ) ==
+          1;
+    }
+    if (existing.containsAll(requiredObjects) && hasSummaryRow) return;
+    await db.transaction((Transaction txn) async {
+      await _rebuildRecordingStatistics(
+        txn,
+        todayStart: _todayStartMilliseconds(
+          localStatisticsNowForTesting?.call() ?? DateTime.now(),
+        ),
+      );
+    });
+  }
+
+  static Future<void> _rebuildRecordingStatistics(
+    DatabaseExecutor db, {
+    required int todayStart,
+  }) async {
+    await db.execute(
+      'DROP TRIGGER IF EXISTS $_recordingStatisticsInsertTrigger',
+    );
+    await db.execute(
+      'DROP TRIGGER IF EXISTS $_recordingStatisticsDeleteTrigger',
+    );
+    await db.execute(
+      'DROP TRIGGER IF EXISTS $_recordingStatisticsUpdateTrigger',
+    );
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $_recordingStatisticsTable (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        total_count INTEGER NOT NULL,
+        today_count INTEGER NOT NULL,
+        total_bytes INTEGER NOT NULL,
+        today_start_ms INTEGER NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS $_recordingStatisticsTodayIndex '
+      'ON recording_sessions(started_at) '
+      'WHERE is_deleted = 0 AND missing_at IS NULL',
+    );
+    await db.delete(_recordingStatisticsTable);
+    await db.rawInsert(
+      '''
+      INSERT INTO $_recordingStatisticsTable (
+        id, total_count, today_count, total_bytes, today_start_ms
+      )
+      SELECT
+        1,
+        COUNT(*),
+        COALESCE(SUM(CASE WHEN started_at >= ? THEN 1 ELSE 0 END), 0),
+        COALESCE(SUM(file_size_bytes), 0),
+        ?
+      FROM recording_sessions
+      WHERE is_deleted = 0 AND missing_at IS NULL
+    ''',
+      <Object?>[todayStart, todayStart],
+    );
+    await db.execute('''
+      CREATE TRIGGER $_recordingStatisticsInsertTrigger
+      AFTER INSERT ON recording_sessions
+      BEGIN
+        UPDATE $_recordingStatisticsTable SET
+          total_count = total_count +
+            CASE WHEN NEW.is_deleted = 0 AND NEW.missing_at IS NULL
+              THEN 1 ELSE 0 END,
+          today_count = today_count +
+            CASE WHEN NEW.is_deleted = 0 AND NEW.missing_at IS NULL
+              AND NEW.started_at >= today_start_ms THEN 1 ELSE 0 END,
+          total_bytes = total_bytes +
+            CASE WHEN NEW.is_deleted = 0 AND NEW.missing_at IS NULL
+              THEN NEW.file_size_bytes ELSE 0 END
+        WHERE id = 1;
+      END
+    ''');
+    await db.execute('''
+      CREATE TRIGGER $_recordingStatisticsDeleteTrigger
+      AFTER DELETE ON recording_sessions
+      BEGIN
+        UPDATE $_recordingStatisticsTable SET
+          total_count = total_count -
+            CASE WHEN OLD.is_deleted = 0 AND OLD.missing_at IS NULL
+              THEN 1 ELSE 0 END,
+          today_count = today_count -
+            CASE WHEN OLD.is_deleted = 0 AND OLD.missing_at IS NULL
+              AND OLD.started_at >= today_start_ms THEN 1 ELSE 0 END,
+          total_bytes = total_bytes -
+            CASE WHEN OLD.is_deleted = 0 AND OLD.missing_at IS NULL
+              THEN OLD.file_size_bytes ELSE 0 END
+        WHERE id = 1;
+      END
+    ''');
+    await db.execute('''
+      CREATE TRIGGER $_recordingStatisticsUpdateTrigger
+      AFTER UPDATE OF is_deleted, missing_at, file_size_bytes, started_at
+      ON recording_sessions
+      BEGIN
+        UPDATE $_recordingStatisticsTable SET
+          total_count = total_count
+            - CASE WHEN OLD.is_deleted = 0 AND OLD.missing_at IS NULL
+                THEN 1 ELSE 0 END
+            + CASE WHEN NEW.is_deleted = 0 AND NEW.missing_at IS NULL
+                THEN 1 ELSE 0 END,
+          today_count = today_count
+            - CASE WHEN OLD.is_deleted = 0 AND OLD.missing_at IS NULL
+                AND OLD.started_at >= today_start_ms THEN 1 ELSE 0 END
+            + CASE WHEN NEW.is_deleted = 0 AND NEW.missing_at IS NULL
+                AND NEW.started_at >= today_start_ms THEN 1 ELSE 0 END,
+          total_bytes = total_bytes
+            - CASE WHEN OLD.is_deleted = 0 AND OLD.missing_at IS NULL
+                THEN OLD.file_size_bytes ELSE 0 END
+            + CASE WHEN NEW.is_deleted = 0 AND NEW.missing_at IS NULL
+                THEN NEW.file_size_bytes ELSE 0 END
+        WHERE id = 1;
+      END
+    ''');
+  }
 
   String get _watermarkOwnerId =>
       watermarkOwnerIdForTesting ?? _watermarkProcessOwnerId;
@@ -822,31 +988,79 @@ class RecordingDatabase {
 
   Future<LocalRecordingStatistics> loadLocalRecordingStatistics() async {
     final Database db = await _db;
-    final DateTime now = DateTime.now();
-    final int todayStart = DateTime(
-      now.year,
-      now.month,
-      now.day,
-    ).millisecondsSinceEpoch;
+    final int todayStart = _todayStartMilliseconds(
+      localStatisticsNowForTesting?.call() ?? DateTime.now(),
+    );
+    return db.transaction((Transaction txn) async {
+      List<Map<String, Object?>> rows = await txn.query(
+        _recordingStatisticsTable,
+        where: 'id = 1',
+        limit: 1,
+      );
+      if (rows.isEmpty) return const LocalRecordingStatistics();
+      if ((rows.single['today_start_ms'] as num).toInt() != todayStart) {
+        await txn.rawUpdate(
+          '''
+          UPDATE $_recordingStatisticsTable SET
+            today_count = (
+              SELECT COUNT(*) FROM recording_sessions
+              INDEXED BY $_recordingStatisticsTodayIndex
+              WHERE is_deleted = 0 AND missing_at IS NULL
+                AND started_at >= ?
+            ),
+            today_start_ms = ?
+          WHERE id = 1
+        ''',
+          <Object?>[todayStart, todayStart],
+        );
+        rows = await txn.query(
+          _recordingStatisticsTable,
+          where: 'id = 1',
+          limit: 1,
+        );
+      }
+      return LocalRecordingStatistics(
+        total: (rows.single['total_count'] as num).toInt(),
+        today: (rows.single['today_count'] as num).toInt(),
+        totalBytes: (rows.single['total_bytes'] as num).toInt(),
+      );
+    });
+  }
+
+  @visibleForTesting
+  Future<List<String>> explainLocalStatisticsQueryForTesting() async {
+    final Database db = await _db;
     final List<Map<String, Object?>> rows = await db.rawQuery(
-      '''
-      SELECT
-        COUNT(*) AS total,
-        SUM(CASE WHEN started_at >= ? THEN 1 ELSE 0 END) AS today,
-        SUM(file_size_bytes) AS total_bytes
-      FROM recording_sessions
-      WHERE is_deleted = 0 AND missing_at IS NULL
-      ''',
+      'EXPLAIN QUERY PLAN SELECT total_count, today_count, total_bytes '
+      'FROM $_recordingStatisticsTable WHERE id = 1',
+    );
+    return rows
+        .map((Map<String, Object?> row) => row['detail']?.toString() ?? '')
+        .toList(growable: false);
+  }
+
+  @visibleForTesting
+  Future<List<String>> explainTodayStatisticsRebuildForTesting(
+    int todayStart,
+  ) async {
+    final Database db = await _db;
+    final List<Map<String, Object?>> rows = await db.rawQuery(
+      'EXPLAIN QUERY PLAN SELECT COUNT(*) FROM recording_sessions '
+      'INDEXED BY $_recordingStatisticsTodayIndex '
+      'WHERE is_deleted = 0 AND missing_at IS NULL AND started_at >= ?',
       <Object?>[todayStart],
     );
-    if (rows.isEmpty) {
-      return const LocalRecordingStatistics();
-    }
-    return LocalRecordingStatistics(
-      total: (rows.first['total'] as num?)?.toInt() ?? 0,
-      today: (rows.first['today'] as num?)?.toInt() ?? 0,
-      totalBytes: (rows.first['total_bytes'] as num?)?.toInt() ?? 0,
-    );
+    return rows
+        .map((Map<String, Object?> row) => row['detail']?.toString() ?? '')
+        .toList(growable: false);
+  }
+
+  @visibleForTesting
+  Future<void> runTransactionForTesting(
+    Future<void> Function(Transaction transaction) action,
+  ) async {
+    final Database db = await _db;
+    await db.transaction(action);
   }
 
   Future<String?> readMetadataValue(String key) async {
@@ -954,10 +1168,16 @@ class RecordingDatabase {
           'normalized_path': _normalizedFilePath(session.filePath),
           'retained_session_id': session.id,
         }, conflictAlgorithm: ConflictAlgorithm.abort);
+        batch.update(
+          'recording_sessions',
+          rows[index],
+          where: 'id = ?',
+          whereArgs: <Object?>[session.id],
+        );
         batch.insert(
           'recording_sessions',
           rows[index],
-          conflictAlgorithm: ConflictAlgorithm.replace,
+          conflictAlgorithm: ConflictAlgorithm.ignore,
         );
       }
       await batch.commit(noResult: true);
