@@ -56,12 +56,6 @@ class ContinuousCameraInitialization {
         : Size(previewWidth.toDouble(), previewHeight.toDouble());
   }
 
-  int get previewQuarterTurns => switch (sensorOrientation) {
-    90 => 1,
-    270 => 3,
-    _ => 0,
-  };
-
   factory ContinuousCameraInitialization.fromMap(Map<Object?, Object?> map) {
     return ContinuousCameraInitialization(
       textureId: (map['textureId']! as num).toInt(),

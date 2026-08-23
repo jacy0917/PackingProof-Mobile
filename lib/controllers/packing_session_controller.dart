@@ -283,8 +283,6 @@ class PackingSessionController extends ChangeNotifier
   CameraController? get cameraController => _cameraController;
   int? get nativeTextureId => _nativeInitialization?.textureId;
   Size? get nativePreviewSize => _nativeInitialization?.portraitPreviewSize;
-  int get nativePreviewQuarterTurns =>
-      _nativeInitialization?.previewQuarterTurns ?? 0;
   PackingSessionPhase get phase => _phase;
   List<RecordingSession> get sessions => _sessionSnapshot;
   LocalRecordingStatistics get localRecordingStatistics =>
