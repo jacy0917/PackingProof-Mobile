@@ -1710,6 +1710,7 @@ class PackingSessionController extends ChangeNotifier
     _pairingFeedbackTimer?.cancel();
     _storageMonitorTimer?.cancel();
     _diagnosticsTimer?.cancel();
+    _pendingDiagnosticsTrigger = null;
     if (_backupListenerAttached) {
       _lanBackupService.removeListener(_handleBackupChanged);
       _backupListenerAttached = false;

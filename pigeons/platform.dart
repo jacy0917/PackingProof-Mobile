@@ -300,6 +300,7 @@ abstract class CameraHostApi {
   @async
   CameraRecordingStopDto stopWork();
   @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   Map<String?, Object?>? getDiagnostics();
   @async
   void setPairingScanEnabled(bool enabled);

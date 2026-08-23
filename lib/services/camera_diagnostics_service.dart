@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -129,7 +130,7 @@ class CameraDiagnosticsService {
       lines.add(
         jsonEncode(<String, Object?>{
           'ts': DateTime.now().toIso8601String(),
-          ...entry,
+          ..._sanitizeMap(entry),
         }),
       );
       final List<String> bounded = lines.length > maximumEntries
@@ -139,6 +140,47 @@ class CameraDiagnosticsService {
     } on Object {
       // 诊断失败不得影响相机与录像工作流。
     }
+  }
+
+  static Map<String, Object?> _sanitizeMap(Map<String, Object?> values) =>
+      values.map(
+        (String key, Object? value) =>
+            MapEntry<String, Object?>(key, _sanitizeValue(key, value)),
+      );
+
+  static Object? _sanitizeValue(String key, Object? value) {
+    final String normalizedKey = key.toLowerCase();
+    if (value is String &&
+        (normalizedKey.contains('tracking') ||
+            normalizedKey.contains('barcode'))) {
+      return _redactedValue(value);
+    }
+    if (value is String &&
+        (normalizedKey == 'message' ||
+            normalizedKey.endsWith('error') ||
+            normalizedKey.endsWith('detail'))) {
+      return _redactedValue(value);
+    }
+    if (value is Map) {
+      return value.map(
+        (Object? nestedKey, Object? nestedValue) => MapEntry<String, Object?>(
+          nestedKey.toString(),
+          _sanitizeValue(nestedKey.toString(), nestedValue),
+        ),
+      );
+    }
+    if (value is List) {
+      return value
+          .map((Object? item) => _sanitizeValue(key, item))
+          .toList(growable: false);
+    }
+    return value;
+  }
+
+  static String _redactedValue(String value) {
+    if (value.isEmpty) return value;
+    final String digest = sha256.convert(utf8.encode(value)).toString();
+    return 'redacted:${digest.substring(0, 12)}';
   }
 
   Future<File> _logFile() async {

@@ -2205,6 +2205,7 @@ interface CameraHostApi {
     @JvmOverloads
     fun setUp(binaryMessenger: BinaryMessenger, api: CameraHostApi?, messageChannelSuffix: String = "") {
       val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
+      val taskQueue = binaryMessenger.makeBackgroundTaskQueue()
       run {
         val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.initialize$separatedMessageChannelSuffix", codec)
         if (api != null) {
@@ -2307,7 +2308,7 @@ interface CameraHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.getDiagnostics$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.getDiagnostics$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { _, reply ->
             api.getDiagnostics{ result: Result<Map<String?, Any?>?> ->

@@ -2146,6 +2146,11 @@ class CameraHostApiSetup {
   /// Sets up an instance of `CameraHostApi` to handle messages through the `binaryMessenger`.
   static func setUp(binaryMessenger: FlutterBinaryMessenger, api: CameraHostApi?, messageChannelSuffix: String = "") {
     let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
+    #if os(iOS)
+      let taskQueue = binaryMessenger.makeBackgroundTaskQueue?()
+    #else
+      let taskQueue: FlutterTaskQueue? = nil
+    #endif
     let initializeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.initialize\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
       initializeChannel.setMessageHandler { message, reply in
@@ -2232,7 +2237,9 @@ class CameraHostApiSetup {
     } else {
       stopWorkChannel.setMessageHandler(nil)
     }
-    let getDiagnosticsChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.getDiagnostics\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    let getDiagnosticsChannel = taskQueue == nil
+      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.getDiagnostics\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.getDiagnostics\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
     if let api = api {
       getDiagnosticsChannel.setMessageHandler { _, reply in
         api.getDiagnostics { result in

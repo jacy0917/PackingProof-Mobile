@@ -115,7 +115,7 @@ void main() {
     final Map<String, Object?> entry =
         jsonDecode((await file.readAsLines()).single) as Map<String, Object?>;
     expect(entry['kind'], 'native_error');
-    expect(entry['message'], 'camera error');
+    expect(entry['message'], startsWith('redacted:'));
   });
 
   test('记录初始化失败事件', () async {
@@ -136,7 +136,36 @@ void main() {
         jsonDecode((await file.readAsLines()).single) as Map<String, Object?>;
     expect(entry['kind'], 'init_failed');
     expect(entry['code'], 'session_config');
-    expect(entry['message'], contains('摄像头'));
+    expect(entry['message'], startsWith('redacted:'));
+  });
+
+  test('日志隐藏完整条码和原始错误文本', () async {
+    service = CameraDiagnosticsService(
+      rootProvider: () async => temp,
+      snapshotLoader: () async => null,
+    );
+    await service.recordSnapshot(
+      trigger: 'failure',
+      snapshot: CameraDiagnosticsSnapshot(
+        device: const <String, Object?>{},
+        camera: const <String, Object?>{
+          'trackingNumber': 'SECRET-BARCODE-123',
+          'currentWatermarkError':
+              'failed at /private/orders/SECRET-BARCODE-123.mp4',
+          'initFailureDetail': <String, Object?>{
+            'barcode': 'NESTED-SECRET-456',
+          },
+        },
+      ),
+    );
+
+    final String content = await File(
+      '${temp.path}/diagnostics/camera.jsonl',
+    ).readAsString();
+    expect(content, isNot(contains('SECRET-BARCODE-123')));
+    expect(content, isNot(contains('NESTED-SECRET-456')));
+    expect(content, isNot(contains('/private/orders')));
+    expect(content, contains('redacted:'));
   });
 
   test('导出合并头部、运行日志、相机日志与路径诊断', () async {

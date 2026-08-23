@@ -29,6 +29,8 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
   List<NativeCameraLens> _backCameraLenses = const <NativeCameraLens>[];
   Timer? _cameraNoticeTimer;
   Timer? _diagnosticsTimer;
+  bool _diagnosticsCaptureRunning = false;
+  String? _pendingDiagnosticsTrigger;
   bool _nativeRecordingFallback = false;
   @override
   CameraCapabilityMode _capabilityMode = CameraCapabilityMode.unverified;
@@ -684,19 +686,34 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
 
   Future<void> _captureCameraDiagnosticsSnapshot(String trigger) async {
     if (!_supportsNativeCamera || _disposed || _nativeCamera == null) return;
+    _pendingDiagnosticsTrigger = trigger;
+    if (_diagnosticsCaptureRunning) return;
+    _diagnosticsCaptureRunning = true;
     try {
-      final CameraDiagnosticsSnapshot? snapshot = await _nativeCamera!
-          .getDiagnostics();
-      if (snapshot == null) return;
-      await _cameraDiagnostics.recordSnapshot(
-        trigger: trigger,
-        snapshot: snapshot,
-      );
-    } on Object {
-      // broad-catch: Heartbeat diagnostics are observational only; recording
-      // must continue and the periodic timer will retry on its next interval.
+      while (!_disposed && _pendingDiagnosticsTrigger != null) {
+        final String currentTrigger = _pendingDiagnosticsTrigger!;
+        _pendingDiagnosticsTrigger = null;
+        try {
+          final CameraDiagnosticsSnapshot? snapshot = await _nativeCamera!
+              .getDiagnostics();
+          if (_disposed || snapshot == null) continue;
+          await _cameraDiagnostics.recordSnapshot(
+            trigger: currentTrigger,
+            snapshot: snapshot,
+          );
+        } on Object {
+          // broad-catch: Diagnostics are observational only; recording must
+          // continue and a newer pending trigger may still be sampled.
+        }
+      }
+    } finally {
+      _diagnosticsCaptureRunning = false;
     }
   }
+
+  @visibleForTesting
+  Future<void> captureCameraDiagnosticsForTesting(String trigger) =>
+      _captureCameraDiagnosticsSnapshot(trigger);
 
   Future<void> _refreshBackCameraLenses() async {
     final ContinuousCameraService? nativeCamera = _nativeCamera;

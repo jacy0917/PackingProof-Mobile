@@ -33,6 +33,8 @@ class _FakeCameraPlatform implements CameraPlatform {
   Completer<NativeRecordingStop>? pendingStop;
   String lastMode = 'unverified';
   String? lastPath;
+  int diagnosticsCalls = 0;
+  Completer<void>? diagnosticsBlocker;
 
   @override
   void Function(List<NativeBarcodeCandidate> candidates)? onBarcodeBatch;
@@ -114,6 +116,10 @@ class _FakeCameraPlatform implements CameraPlatform {
 
   @override
   Future<CameraDiagnosticsSnapshot?> getDiagnostics() async {
+    diagnosticsCalls++;
+    final Completer<void>? blocker = diagnosticsBlocker;
+    diagnosticsBlocker = null;
+    await blocker?.future;
     return CameraDiagnosticsSnapshot(
       device: const <String, Object?>{},
       camera: const <String, Object?>{
@@ -463,6 +469,44 @@ void main() {
     await second.initialize();
     expect(second.capabilityMode, CameraCapabilityMode.alternating);
     expect(second.capabilityProbedAtMs, firstProbedAtMs);
+  });
+
+  test('诊断采样禁止重入且只补跑最新触发', () async {
+    await controller.initialize();
+    camera.diagnosticsCalls = 0;
+    final Completer<void> blocker = Completer<void>();
+    camera.diagnosticsBlocker = blocker;
+
+    final Future<void> first = controller.captureCameraDiagnosticsForTesting(
+      'first',
+    );
+    await Future<void>.delayed(Duration.zero);
+    await controller.captureCameraDiagnosticsForTesting('stale');
+    await controller.captureCameraDiagnosticsForTesting('latest');
+
+    expect(camera.diagnosticsCalls, 1);
+    blocker.complete();
+    await first;
+    expect(camera.diagnosticsCalls, 2);
+  });
+
+  test('关闭期间不补跑等待中的诊断采样', () async {
+    await controller.initialize();
+    camera.diagnosticsCalls = 0;
+    final Completer<void> blocker = Completer<void>();
+    camera.diagnosticsBlocker = blocker;
+
+    final Future<void> first = controller.captureCameraDiagnosticsForTesting(
+      'first',
+    );
+    await Future<void>.delayed(Duration.zero);
+    await controller.captureCameraDiagnosticsForTesting('pending');
+    final Future<void> shutdown = controller.shutdown();
+    blocker.complete();
+
+    await first;
+    await shutdown;
+    expect(camera.diagnosticsCalls, 1);
   });
 
   test('开始工作后忽略二维码并从同帧选择 Code128', () async {
