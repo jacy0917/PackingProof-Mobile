@@ -176,6 +176,31 @@ class VideoWatermarkOrientationTest {
     }
 
     @Test
+    fun `preallocated bitmap contains real timestamp and numeric tracking text`() {
+        val renderer = ReusableWatermarkBitmap(
+            videoHeight = 1080,
+            maximumLines = listOf(
+                "8888/88/88 88:88:88",
+                "SF0770000008249",
+            ),
+        )
+
+        val bitmap = renderer.redraw(
+            listOf("2026/08/23 07:31:56", "SF0770000008249"),
+        )
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+
+        assertTrue(
+            "reused watermark must contain visible pixels",
+            pixels.any { Color.alpha(it) > 0 },
+        )
+        assertTrue("reused watermark must contain white fill", pixels.any { it == Color.WHITE })
+        assertTrue("reused watermark must contain black outline", pixels.any { it == Color.BLACK })
+        renderer.release()
+    }
+
+    @Test
     fun `accepts only exports that processed overlay frames and wrote output`() {
         assertTrue(
             isSuccessfulWatermarkExport(

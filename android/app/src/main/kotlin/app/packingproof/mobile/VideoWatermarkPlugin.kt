@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.net.Uri
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -31,6 +32,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.ceil
 
 internal data class WatermarkOverlayPlacement(
     val overlayAnchorX: Float,
@@ -119,10 +121,10 @@ internal fun renderWatermarkTextBitmap(
     val fontMetricsHeight = paint.fontMetrics.bottom - paint.fontMetrics.top
     val lineHeight = textSize * 1.25f
     val contentWidth = lines.maxOf { paint.measureText(it) }
-    val width = (contentWidth + padding * 2).toInt().coerceAtLeast(1)
-    val height = (
+    val width = ceil(contentWidth + padding * 2).toDouble().toInt().coerceAtLeast(1)
+    val height = ceil(
         fontMetricsHeight + lineHeight * (lines.size - 1) + padding * 2
-    ).toInt().coerceAtLeast(1)
+    ).toDouble().toInt().coerceAtLeast(1)
     val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     bitmap.density = Bitmap.DENSITY_NONE
     val canvas = Canvas(bitmap)
@@ -415,6 +417,11 @@ class VideoWatermarkPlugin(
         error: Throwable,
         failureStage: String,
     ) {
+        Log.e(
+            "PackingProof.Watermark",
+            "Watermark export failed stage=$failureStage",
+            error,
+        )
         pendingOutput?.delete()
         pendingOutput = null
         val result = pendingResult
