@@ -235,6 +235,7 @@ internal class CameraGlCompositor(
                     key to renderWatermarkTextBitmap(
                         outputHeight,
                         watermarkTextLines(formatter.format(Date(second * 1_000L)), normalized),
+                        recordingOrientation,
                     )
                 }
                 val accepted = handler.post transitionPost@ {
@@ -519,6 +520,7 @@ internal class CameraGlCompositor(
                             formatter.format(Date(bitmapKey.epochSecond * 1_000L)),
                             trackingNumber,
                         ),
+                        recordingOrientation,
                     )
                 }
                 val accepted = handler.post rasterPost@ {
@@ -555,19 +557,28 @@ internal class CameraGlCompositor(
                 epochSecond = Math.floorDiv(frameTimeMs, 1_000L),
                 trackingNumber = watermarkTrackingNumber,
             )
-            if (activeWatermarkKey != key) {
-                val bitmap = pendingWatermarks.remove(key) ?: return false
+            val selection = LiveWatermarkFrameSelectionPolicy.select(
+                target = key,
+                active = activeWatermarkKey,
+                available = pendingWatermarks.keys,
+            )
+            selection.keyToActivate?.let { selectedKey ->
+                val bitmap = pendingWatermarks.remove(selectedKey) ?: return false
                 uploadWatermark(bitmap)
                 bitmap.recycle()
-                activeWatermarkKey = key
+                activeWatermarkKey = selectedKey
                 pendingWatermarks.keys
                     .filter {
-                        it.trackingNumber == key.trackingNumber &&
+                        it.trackingNumber == selectedKey.trackingNumber &&
                             it.epochSecond < key.epochSecond
                     }
                     .forEach { staleKey -> pendingWatermarks.remove(staleKey)?.recycle() }
             }
-            if (watermarkTexture == 0 || activeWatermarkWidth <= 0 || activeWatermarkHeight <= 0) {
+            if (!selection.canRender ||
+                watermarkTexture == 0 ||
+                activeWatermarkWidth <= 0 ||
+                activeWatermarkHeight <= 0
+            ) {
                 return false
             }
             val quad = LiveWatermarkQuadPolicy.create(

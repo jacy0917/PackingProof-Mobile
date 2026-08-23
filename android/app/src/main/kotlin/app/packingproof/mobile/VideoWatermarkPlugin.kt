@@ -106,10 +106,11 @@ internal fun watermarkOverlaySettings(
 internal fun renderWatermarkTextBitmap(
     videoHeight: Int,
     lines: List<String>,
+    recordingOrientation: String,
 ): Bitmap {
     require(videoHeight > 0)
     require(lines.isNotEmpty())
-    val textSize = (videoHeight * 0.032f).coerceIn(35f, 61f)
+    val textSize = watermarkTextSize(videoHeight, recordingOrientation)
     val strokeWidth = (textSize / 10f).coerceAtLeast(3f)
     val padding = strokeWidth + 3f
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -146,12 +147,17 @@ internal fun renderWatermarkTextBitmap(
 internal class ReusableWatermarkBitmap(
     private val videoHeight: Int,
     maximumLines: List<String>,
+    private val recordingOrientation: String,
 ) {
     init {
         require(maximumLines.isNotEmpty())
     }
 
-    private var bitmap: Bitmap = renderWatermarkTextBitmap(videoHeight, maximumLines)
+    private var bitmap = renderWatermarkTextBitmap(
+        videoHeight,
+        maximumLines,
+        recordingOrientation,
+    )
 
     init {
         // The first render only establishes stable bounds. All subsequent timestamps are
@@ -161,7 +167,7 @@ internal class ReusableWatermarkBitmap(
 
     fun redraw(lines: List<String>): Bitmap {
         require(lines.isNotEmpty())
-        val textSize = (videoHeight * 0.032f).coerceIn(35f, 61f)
+        val textSize = watermarkTextSize(videoHeight, recordingOrientation)
         val strokeWidth = (textSize / 10f).coerceAtLeast(3f)
         val padding = strokeWidth + 3f
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -204,6 +210,12 @@ internal class ReusableWatermarkBitmap(
     fun release() {
         if (!bitmap.isRecycled) bitmap.recycle()
     }
+}
+
+internal fun watermarkTextSize(videoHeight: Int, recordingOrientation: String): Float {
+    require(videoHeight > 0)
+    val maximumTextSize = if (recordingOrientation == "portrait") 44f else 61f
+    return (videoHeight * 0.032f).coerceIn(35f, maximumTextSize)
 }
 
 internal fun isSuccessfulWatermarkExport(
@@ -380,7 +392,11 @@ class VideoWatermarkPlugin(
                 super.configure(videoSize)
                 clearCache()
                 val maximumLines = watermarkLines("8888/88/88 88:88:88")
-                reusableBitmap = ReusableWatermarkBitmap(videoSize.height, maximumLines)
+                reusableBitmap = ReusableWatermarkBitmap(
+                    videoSize.height,
+                    maximumLines,
+                    recordingOrientation,
+                )
                 reusableBitmap?.redraw(
                     watermarkLines(formatter.format(Date(startedAtMs))),
                 )

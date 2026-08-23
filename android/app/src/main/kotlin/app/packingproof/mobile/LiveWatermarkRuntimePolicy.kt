@@ -16,6 +16,43 @@ internal data class LiveWatermarkCacheDecision(
     val changed: Boolean,
 )
 
+internal data class LiveWatermarkFrameSelection(
+    val keyToActivate: LiveWatermarkFrameKey?,
+    val canRender: Boolean,
+)
+
+/**
+ * Keeps a complete texture visible while the exact-second replacement is still being rasterized.
+ * A texture from another tracking number is never reused across a segment boundary.
+ */
+internal object LiveWatermarkFrameSelectionPolicy {
+    fun select(
+        target: LiveWatermarkFrameKey,
+        active: LiveWatermarkFrameKey?,
+        available: Collection<LiveWatermarkFrameKey>,
+    ): LiveWatermarkFrameSelection {
+        if (target in available) {
+            return LiveWatermarkFrameSelection(keyToActivate = target, canRender = true)
+        }
+        if (active?.trackingNumber == target.trackingNumber) {
+            return LiveWatermarkFrameSelection(keyToActivate = null, canRender = true)
+        }
+        val prepared = available
+            .asSequence()
+            .filter { it.trackingNumber == target.trackingNumber }
+            .sortedWith(
+                compareByDescending<LiveWatermarkFrameKey> {
+                    it.epochSecond <= target.epochSecond
+                }.thenBy { kotlin.math.abs(it.epochSecond - target.epochSecond) },
+            )
+            .firstOrNull()
+        return LiveWatermarkFrameSelection(
+            keyToActivate = prepared,
+            canRender = prepared != null,
+        )
+    }
+}
+
 /** Decides when the current/next-second watermark textures need regeneration. */
 internal class LiveWatermarkTextureCachePolicy {
     private var lastCurrent: LiveWatermarkFrameKey? = null
@@ -149,7 +186,8 @@ internal data class LiveWatermarkQuad(
 
 /** Maps a top-centered final-video watermark back into the encoder's raw frame coordinates. */
 internal object LiveWatermarkQuadPolicy {
-    private const val TOP_FRACTION = 0.04f
+    private const val PORTRAIT_TOP_FRACTION = 0.10f
+    private const val LANDSCAPE_TOP_FRACTION = 0.04f
 
     fun create(
         videoWidth: Int,
@@ -167,7 +205,12 @@ internal object LiveWatermarkQuadPolicy {
         val width = bitmapWidth.coerceAtMost(outputWidth).toFloat()
         val height = bitmapHeight.coerceAtMost(outputHeight).toFloat()
         val left = ((outputWidth - width) / 2f).coerceAtLeast(0f)
-        val top = (outputHeight * TOP_FRACTION).coerceIn(0f, outputHeight - height)
+        val topFraction = if (recordingOrientation == "portrait") {
+            PORTRAIT_TOP_FRACTION
+        } else {
+            LANDSCAPE_TOP_FRACTION
+        }
+        val top = (outputHeight * topFraction).coerceIn(0f, outputHeight - height)
 
         fun inverse(x: Float, y: Float): CameraGlPoint = when (recordingOrientation) {
             "landscapeLeft" -> CameraGlPoint(y, videoHeight - x)

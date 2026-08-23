@@ -111,10 +111,18 @@ class VideoWatermarkOrientationTest {
     }
 
     @Test
+    fun `caps portrait text at 44 while keeping 1080p landscape text at 35`() {
+        assertEquals(44f, watermarkTextSize(1920, "portrait"), 0.001f)
+        assertEquals(35f, watermarkTextSize(1080, "landscapeLeft"), 0.001f)
+        assertEquals(35f, watermarkTextSize(1080, "landscapeRight"), 0.001f)
+    }
+
+    @Test
     fun `renders transparent outlined text without clipping bitmap edges`() {
         val bitmap = renderWatermarkTextBitmap(
             videoHeight = 1920,
             lines = listOf("2026/08/21 12:34:56", "TRACK123456789"),
+            recordingOrientation = "portrait",
         )
 
         assertEquals(Bitmap.Config.ARGB_8888, bitmap.config)
@@ -153,8 +161,12 @@ class VideoWatermarkOrientationTest {
     @Test
     fun `allocates additional bitmap height for a second watermark line`() {
         val timestamp = "2026/08/21 12:34:56"
-        val oneLine = renderWatermarkTextBitmap(1080, listOf(timestamp))
-        val twoLines = renderWatermarkTextBitmap(1080, listOf(timestamp, "TRACK123456789"))
+        val oneLine = renderWatermarkTextBitmap(1080, listOf(timestamp), "landscapeLeft")
+        val twoLines = renderWatermarkTextBitmap(
+            1080,
+            listOf(timestamp, "TRACK123456789"),
+            "landscapeLeft",
+        )
 
         assertTrue(twoLines.height > oneLine.height)
         assertTrue(twoLines.width >= oneLine.width)
@@ -173,6 +185,7 @@ class VideoWatermarkOrientationTest {
                 "8888/88/88 88:88:88",
                 "TRACK123456789",
             ),
+            recordingOrientation = "portrait",
         )
 
         val first = renderer.redraw(
@@ -208,6 +221,7 @@ class VideoWatermarkOrientationTest {
                 "8888/88/88 88:88:88",
                 "SF0770000008249",
             ),
+            recordingOrientation = "landscapeRight",
         )
 
         val bitmap = renderer.redraw(

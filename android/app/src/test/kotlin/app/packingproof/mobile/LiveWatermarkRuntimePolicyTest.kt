@@ -43,6 +43,60 @@ class LiveWatermarkRuntimePolicyTest {
     }
 
     @Test
+    fun `keeps the last complete same-tracking texture while exact second is pending`() {
+        val active = LiveWatermarkFrameKey(10L, "SF123")
+        val selection = LiveWatermarkFrameSelectionPolicy.select(
+            target = LiveWatermarkFrameKey(11L, "SF123"),
+            active = active,
+            available = emptyList(),
+        )
+
+        assertTrue(selection.canRender)
+        assertEquals(null, selection.keyToActivate)
+    }
+
+    @Test
+    fun `activates nearest complete transition texture when prepared second has elapsed`() {
+        val prepared = listOf(
+            LiveWatermarkFrameKey(20L, "SF456"),
+            LiveWatermarkFrameKey(21L, "SF456"),
+        )
+        val selection = LiveWatermarkFrameSelectionPolicy.select(
+            target = LiveWatermarkFrameKey(22L, "SF456"),
+            active = null,
+            available = prepared,
+        )
+
+        assertTrue(selection.canRender)
+        assertEquals(prepared.last(), selection.keyToActivate)
+    }
+
+    @Test
+    fun `never reuses a complete texture from the previous tracking number`() {
+        val selection = LiveWatermarkFrameSelectionPolicy.select(
+            target = LiveWatermarkFrameKey(11L, "SF456"),
+            active = LiveWatermarkFrameKey(10L, "SF123"),
+            available = listOf(LiveWatermarkFrameKey(11L, "SF123")),
+        )
+
+        assertFalse(selection.canRender)
+        assertEquals(null, selection.keyToActivate)
+    }
+
+    @Test
+    fun `exact complete texture replaces the retained texture atomically`() {
+        val target = LiveWatermarkFrameKey(11L, "SF123")
+        val selection = LiveWatermarkFrameSelectionPolicy.select(
+            target = target,
+            active = LiveWatermarkFrameKey(10L, "SF123"),
+            available = listOf(target),
+        )
+
+        assertTrue(selection.canRender)
+        assertEquals(target, selection.keyToActivate)
+    }
+
+    @Test
     fun `watermark failure is sticky but recording remains publishable as partial`() {
         val state = LiveWatermarkSegmentState()
         state.markWatermarkRendered()
@@ -137,9 +191,9 @@ class LiveWatermarkRuntimePolicyTest {
     fun `watermark quad is top centered in portrait final coordinates`() {
         val quad = LiveWatermarkQuadPolicy.create(1080, 1920, 300, 100, "portrait")
 
-        assertPoint(390f, 76.8f, quad.topLeft)
-        assertPoint(690f, 76.8f, quad.topRight)
-        assertPoint(390f, 176.8f, quad.bottomLeft)
+        assertPoint(390f, 192f, quad.topLeft)
+        assertPoint(690f, 192f, quad.topRight)
+        assertPoint(390f, 292f, quad.bottomLeft)
     }
 
     @Test
