@@ -1344,8 +1344,8 @@ void main() {
     final Map<String, Object?> enrollmentRequest = Map<String, Object?>.from(
       jsonDecode(utf8.decode(httpClient.postBodies.single)) as Map,
     );
-    expect(enrollmentRequest['clientVersion'], '0.5.23');
-    expect(enrollmentRequest['clientBuildNumber'], 11036);
+    expect(enrollmentRequest['clientVersion'], '0.5.24');
+    expect(enrollmentRequest['clientBuildNumber'], 11037);
     expect(enrollmentRequest['backupProtocol'], 'mobile-backup-v2');
     expect(enrollmentRequest['enrollmentVersion'], 2);
     expect(enrollmentRequest['authVersion'], 3);
@@ -1841,8 +1841,8 @@ LanBackupService _testBackupService(_TrackingBackupPlatform platform) {
     packageInfoLoader: () async => PackageInfo(
       appName: 'PackingProof',
       packageName: 'app.packingproof.mobile',
-      version: '0.5.23',
-      buildNumber: '11036',
+      version: '0.5.24',
+      buildNumber: '11037',
     ),
   );
 }
