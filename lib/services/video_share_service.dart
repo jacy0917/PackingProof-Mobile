@@ -229,6 +229,11 @@ class _LegacyVideoExportPlatform implements MediaProcessingPlatform {
   }
 
   @override
+  Future<void> cancelWatermark() {
+    throw UnsupportedError('导出通道不支持水印');
+  }
+
+  @override
   Future<String> exportRange({
     required String inputPath,
     required String outputPath,

@@ -27,6 +27,9 @@ class PigeonMediaProcessingPlatform implements MediaProcessingPlatform {
   );
 
   @override
+  Future<void> cancelWatermark() => _api.cancelWatermark();
+
+  @override
   Future<String> exportRange({
     required String inputPath,
     required String outputPath,

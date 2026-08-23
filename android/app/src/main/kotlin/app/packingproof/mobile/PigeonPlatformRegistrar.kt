@@ -166,6 +166,11 @@ private class PigeonMediaProcessingHostApi(
         ) { it as String }
     }
 
+    override fun cancelWatermark(callback: (Result<Unit>) -> Unit) {
+        watermarkPlugin.cancelWatermark()
+        callback(Result.success(Unit))
+    }
+
     override fun exportRange(
         request: ExportRequest,
         callback: (Result<String>) -> Unit,

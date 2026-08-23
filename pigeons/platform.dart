@@ -168,6 +168,8 @@ abstract class MediaProcessingHostApi {
   @async
   String applyWatermark(WatermarkRequest request);
   @async
+  void cancelWatermark();
+  @async
   String exportRange(ExportRequest request);
   @async
   int exportProgress();

@@ -281,6 +281,13 @@ private final class IosMediaProcessingHostApi: MediaProcessingHostApi {
     }
   }
 
+  func cancelWatermark(
+    completion: @escaping (Result<Void, Error>) -> Void
+  ) {
+    core.cancelWatermark()
+    completion(.success(()))
+  }
+
   func exportRange(
     request: ExportRequest,
     completion: @escaping (Result<String, Error>) -> Void

@@ -7,6 +7,74 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  func testWatermarkCancellationBeforeSessionCreationCompletesOnceAndDeletesOutput() throws {
+    let queue = DispatchQueue(label: "watermark-cancel-before-session")
+    queue.suspend()
+    defer { queue.resume() }
+    let core = IosMediaProcessingCore(processingQueue: queue)
+    let output = FileManager.default.temporaryDirectory
+      .appendingPathComponent("watermark-cancel-\(UUID().uuidString).mp4")
+    try Data([1, 2, 3]).write(to: output)
+    defer { try? FileManager.default.removeItem(at: output) }
+    let cancelled = expectation(description: "watermark cancellation returned")
+    cancelled.assertForOverFulfill = true
+    let workerDrained = expectation(description: "cancelled worker drained")
+    var completionCount = 0
+    var cancellationCode: String?
+
+    core.applyWatermark(
+      request: IosWatermarkExportRequest(
+        inputPath: "/missing/input.mp4",
+        outputPath: output.path,
+        startedAtMs: 0,
+        trackingNumber: ""
+      )
+    ) { result in
+      completionCount += 1
+      if case .failure(let error) = result {
+        cancellationCode = (error as? IosMediaProcessingCoreError)?.code
+      }
+      cancelled.fulfill()
+    }
+
+    core.cancelWatermark()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+    queue.resume()
+    queue.async { workerDrained.fulfill() }
+    wait(for: [cancelled, workerDrained], timeout: 1)
+    queue.suspend()
+
+    XCTAssertEqual(completionCount, 1)
+    XCTAssertEqual(cancellationCode, "watermark_cancelled")
+  }
+
+  func testWatermarkCancellationArrivingBeforeApplyCancelsNextExportOnly() {
+    let core = IosMediaProcessingCore()
+    let firstCancelled = expectation(description: "early cancellation consumed")
+
+    core.cancelWatermark()
+    core.applyWatermark(
+      request: IosWatermarkExportRequest(
+        inputPath: "/missing/input.mp4",
+        outputPath: "/missing/output.mp4",
+        startedAtMs: 0,
+        trackingNumber: ""
+      )
+    ) { result in
+      if case .failure(let error) = result {
+        XCTAssertEqual(
+          (error as? IosMediaProcessingCoreError)?.code,
+          "watermark_cancelled"
+        )
+      } else {
+        XCTFail("预先到达的取消必须拒绝下一次水印导出")
+      }
+      firstCancelled.fulfill()
+    }
+
+    wait(for: [firstCancelled], timeout: 1)
+  }
+
   func testIosCameraCapabilityPolicyAcceptsOnlyFixedPipelineInitialization() {
     XCTAssertNoThrow(
       try IosCameraCapabilityPolicy.validateInitializationMode("unverified")

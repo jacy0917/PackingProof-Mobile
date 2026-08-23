@@ -1337,6 +1337,7 @@ private open class PlatformApiPigeonCodec : StandardMessageCodec() {
 interface MediaProcessingHostApi {
   fun generateThumbnail(request: ThumbnailRequest, callback: (Result<String?>) -> Unit)
   fun applyWatermark(request: WatermarkRequest, callback: (Result<String>) -> Unit)
+  fun cancelWatermark(callback: (Result<Unit>) -> Unit)
   fun exportRange(request: ExportRequest, callback: (Result<String>) -> Unit)
   fun exportProgress(callback: (Result<Long>) -> Unit)
 
@@ -1382,6 +1383,23 @@ interface MediaProcessingHostApi {
               } else {
                 val data = result.getOrNull()
                 reply.reply(PlatformApiPigeonUtils.wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.MediaProcessingHostApi.cancelWatermark$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            api.cancelWatermark{ result: Result<Unit> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(PlatformApiPigeonUtils.wrapError(error))
+              } else {
+                reply.reply(PlatformApiPigeonUtils.wrapResult(null))
               }
             }
           }

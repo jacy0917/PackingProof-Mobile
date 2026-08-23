@@ -27,8 +27,15 @@ abstract interface class OrientedVideoWatermarkSink {
   });
 }
 
+abstract interface class CancellableVideoWatermarkSink {
+  Future<void> cancel();
+}
+
 class VideoWatermarkService
-    implements VideoWatermarkSink, OrientedVideoWatermarkSink {
+    implements
+        VideoWatermarkSink,
+        OrientedVideoWatermarkSink,
+        CancellableVideoWatermarkSink {
   VideoWatermarkService({
     MethodChannel? channel,
     bool? isAndroid,
@@ -46,6 +53,13 @@ class VideoWatermarkService
   final bool _isAndroid;
   final bool _isIOS;
   Future<void> _tail = Future<void>.value();
+  int _cancellationGeneration = 0;
+
+  @override
+  Future<void> cancel() async {
+    _cancellationGeneration++;
+    await _platform.cancelWatermark();
+  }
 
   @override
   Future<String> apply({
@@ -56,17 +70,33 @@ class VideoWatermarkService
     RecordingOrientation recordingOrientation = RecordingOrientation.portrait,
   }) {
     final Completer<String> result = Completer<String>();
+    final int generation = _cancellationGeneration;
     _tail = _tail.catchError((Object _) {}).then((_) async {
       try {
-        result.complete(
-          await _applyNow(
-            inputPath: inputPath,
-            startedAt: startedAt,
-            trackingNumber: trackingNumber,
-            videoCodec: videoCodec,
-            recordingOrientation: recordingOrientation,
-          ),
+        if (generation != _cancellationGeneration) {
+          throw PlatformException(
+            code: 'watermark_cancelled',
+            message: '水印导出已取消',
+          );
+        }
+        final String outputPath = await _applyNow(
+          inputPath: inputPath,
+          startedAt: startedAt,
+          trackingNumber: trackingNumber,
+          videoCodec: videoCodec,
+          recordingOrientation: recordingOrientation,
         );
+        if (generation != _cancellationGeneration) {
+          await _deleteCancelledOutput(
+            inputPath: inputPath,
+            outputPath: outputPath,
+          );
+          throw PlatformException(
+            code: 'watermark_cancelled',
+            message: '水印导出已取消',
+          );
+        }
+        result.complete(outputPath);
       } on Object catch (error, stackTrace) {
         result.completeError(error, stackTrace);
       }
@@ -117,6 +147,19 @@ class VideoWatermarkService
     }
     return result;
   }
+
+  Future<void> _deleteCancelledOutput({
+    required String inputPath,
+    required String outputPath,
+  }) async {
+    if (outputPath.isEmpty || outputPath == inputPath) return;
+    try {
+      final File output = File(outputPath);
+      if (await output.exists()) await output.delete();
+    } on FileSystemException {
+      // 原生层取消也会清理临时文件；这里只是迟到成功回调的补偿。
+    }
+  }
 }
 
 class _LegacyVideoWatermarkPlatform implements MediaProcessingPlatform {
@@ -143,6 +186,9 @@ class _LegacyVideoWatermarkPlatform implements MediaProcessingPlatform {
     });
     return result ?? '';
   }
+
+  @override
+  Future<void> cancelWatermark() => channel.invokeMethod<void>('cancel');
 
   @override
   Future<String> exportRange({

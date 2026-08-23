@@ -1304,6 +1304,7 @@ class PlatformApiPigeonCodec: FlutterStandardMessageCodec, @unchecked Sendable {
 protocol MediaProcessingHostApi {
   func generateThumbnail(request: ThumbnailRequest, completion: @escaping (Result<String?, Error>) -> Void)
   func applyWatermark(request: WatermarkRequest, completion: @escaping (Result<String, Error>) -> Void)
+  func cancelWatermark(completion: @escaping (Result<Void, Error>) -> Void)
   func exportRange(request: ExportRequest, completion: @escaping (Result<String, Error>) -> Void)
   func exportProgress(completion: @escaping (Result<Int64, Error>) -> Void)
 }
@@ -1347,6 +1348,21 @@ class MediaProcessingHostApiSetup {
       }
     } else {
       applyWatermarkChannel.setMessageHandler(nil)
+    }
+    let cancelWatermarkChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.MediaProcessingHostApi.cancelWatermark\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      cancelWatermarkChannel.setMessageHandler { _, reply in
+        api.cancelWatermark { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      cancelWatermarkChannel.setMessageHandler(nil)
     }
     let exportRangeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.MediaProcessingHostApi.exportRange\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {

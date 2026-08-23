@@ -34,6 +34,8 @@ abstract interface class MediaProcessingPlatform {
     String recordingOrientation = 'portrait',
   });
 
+  Future<void> cancelWatermark();
+
   Future<String> exportRange({
     required String inputPath,
     required String outputPath,

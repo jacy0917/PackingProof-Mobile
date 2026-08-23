@@ -21,6 +21,14 @@ class UnsupportedMediaProcessingPlatform implements MediaProcessingPlatform {
   }
 
   @override
+  Future<void> cancelWatermark() {
+    throw const CapabilityUnavailableException(
+      PlatformCapability.videoWatermark,
+      reason: '当前平台暂不支持录像水印',
+    );
+  }
+
+  @override
   Future<String> exportRange({
     required String inputPath,
     required String outputPath,

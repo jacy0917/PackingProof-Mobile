@@ -19,6 +19,31 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class VideoWatermarkOrientationTest {
     @Test
+    fun `cancellation before native export creation cancels exactly the next start`() {
+        val state = WatermarkCancellationState()
+
+        assertEquals(null, state.cancel())
+        val cancelled = state.begin()
+        assertTrue(cancelled.cancelled)
+        assertFalse(state.isActive(cancelled.generation))
+
+        val next = state.begin()
+        assertFalse(next.cancelled)
+        assertTrue(state.isActive(next.generation))
+        assertTrue(state.complete(next.generation))
+    }
+
+    @Test
+    fun `cancelling active export rejects its late completion`() {
+        val state = WatermarkCancellationState()
+        val start = state.begin()
+
+        assertEquals(start.generation, state.cancel())
+        assertFalse(state.complete(start.generation))
+        assertFalse(state.isActive(start.generation))
+    }
+
+    @Test
     fun `places every final orientation at horizontal center and ten percent from top`() {
         val overlayWidth = 400
         val overlayHeight = 100

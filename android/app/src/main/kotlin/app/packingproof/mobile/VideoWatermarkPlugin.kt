@@ -222,20 +222,76 @@ internal fun isSuccessfulWatermarkExport(
         outputBytes > 0
 
 @OptIn(UnstableApi::class)
+internal class WatermarkCancellationState {
+    data class Start(val generation: Long, val cancelled: Boolean)
+
+    private var nextGeneration = 0L
+    private var activeGeneration: Long? = null
+    private var cancelNextStart = false
+
+    @Synchronized
+    fun begin(): Start {
+        val generation = ++nextGeneration
+        if (cancelNextStart) {
+            cancelNextStart = false
+            return Start(generation, cancelled = true)
+        }
+        check(activeGeneration == null) { "Watermark export is already active" }
+        activeGeneration = generation
+        return Start(generation, cancelled = false)
+    }
+
+    @Synchronized
+    fun cancel(): Long? {
+        val generation = activeGeneration
+        if (generation == null) {
+            cancelNextStart = true
+        } else {
+            activeGeneration = null
+        }
+        return generation
+    }
+
+    @Synchronized
+    fun complete(generation: Long): Boolean {
+        if (activeGeneration != generation) return false
+        activeGeneration = null
+        return true
+    }
+
+    @Synchronized
+    fun isActive(generation: Long): Boolean = activeGeneration == generation
+
+    @Synchronized
+    fun hasActiveExport(): Boolean = activeGeneration != null
+}
+
+@OptIn(UnstableApi::class)
 class VideoWatermarkPlugin(
     context: Context,
     messenger: BinaryMessenger,
 ) {
     private val channel = MethodChannel(messenger, "app.packingproof.mobile/video_watermark")
     private val applicationContext = context.applicationContext
-    private var transformer: Transformer? = null
-    private var pendingResult: MethodChannel.Result? = null
-    private var pendingOutput: File? = null
+    private data class ActiveExport(
+        val generation: Long,
+        val result: MethodChannel.Result,
+        val output: File,
+        var transformer: Transformer? = null,
+    )
+
+    private val operationLock = Any()
+    private val cancellationState = WatermarkCancellationState()
+    private var activeExport: ActiveExport? = null
 
     init {
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "apply" -> apply(call.arguments as? Map<*, *>, result)
+                "cancel" -> {
+                    cancelWatermark()
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -248,12 +304,16 @@ class VideoWatermarkPlugin(
     ) {
         when (method) {
             "apply" -> apply(arguments, result)
+            "cancel" -> {
+                cancelWatermark()
+                result.success(null)
+            }
             else -> result.notImplemented()
         }
     }
 
     private fun apply(arguments: Map<*, *>?, result: MethodChannel.Result) {
-        if (pendingResult != null) {
+        if (cancellationState.hasActiveExport()) {
             result.error("watermark_busy", "正在保存上一段录像", null)
             return
         }
@@ -279,6 +339,32 @@ class VideoWatermarkPlugin(
         val output = File(outputPath)
         output.parentFile?.mkdirs()
         output.delete()
+
+        val start = cancellationState.begin()
+        if (start.cancelled) {
+            output.delete()
+            result.error("watermark_cancelled", "录像水印生成已取消", null)
+            return
+        }
+        val operation = ActiveExport(start.generation, result, output)
+        synchronized(operationLock) {
+            activeExport = operation
+        }
+        if (!cancellationState.isActive(operation.generation)) {
+            val ownsResult = synchronized(operationLock) {
+                if (activeExport !== operation) {
+                    false
+                } else {
+                    activeExport = null
+                    true
+                }
+            }
+            deleteOutputUnlessReused(operation)
+            if (ownsResult) {
+                result.error("watermark_cancelled", "录像水印生成已取消", null)
+            }
+            return
+        }
 
         val overlay = object : BitmapOverlay() {
             private val formatter = SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.ROOT)
@@ -349,8 +435,6 @@ class VideoWatermarkPlugin(
             Effects(emptyList(), listOf(OverlayEffect(listOf(overlay)))),
         ).build()
 
-        pendingResult = result
-        pendingOutput = output
         val decoderFactory = DefaultDecoderFactory.Builder(applicationContext)
             .setEnableDecoderFallback(true)
             .build()
@@ -360,7 +444,7 @@ class VideoWatermarkPlugin(
             Clock.DEFAULT,
             null,
         )
-        transformer = Transformer.Builder(applicationContext)
+        val builtTransformer = Transformer.Builder(applicationContext)
             .setAssetLoaderFactory(assetLoaderFactory)
             .setVideoMimeType(videoMime)
             .addListener(
@@ -381,9 +465,10 @@ class VideoWatermarkPlugin(
                                 outputBytes = outputBytes,
                             )
                         ) {
-                            finishSuccess(outputPath)
+                            finishSuccess(operation, outputPath)
                         } else {
                             finishError(
+                                operation,
                                 IllegalStateException("Watermark export contract was not satisfied"),
                                 failureStage = "export_contract",
                             )
@@ -394,26 +479,37 @@ class VideoWatermarkPlugin(
                         composition: Composition,
                         exportResult: ExportResult,
                         exportException: ExportException,
-                    ) = finishError(exportException, failureStage = "transformer")
+                    ) = finishError(operation, exportException, failureStage = "transformer")
                 },
             )
             .build()
         try {
-            transformer?.start(editedMediaItem, outputPath)
+            synchronized(operationLock) {
+                if (!cancellationState.isActive(operation.generation) ||
+                    activeExport !== operation
+                ) {
+                    builtTransformer.cancel()
+                    output.delete()
+                    return
+                }
+                operation.transformer = builtTransformer
+                builtTransformer.start(editedMediaItem, outputPath)
+            }
         } catch (error: Exception) {
-            finishError(error, failureStage = "start")
+            finishError(operation, error, failureStage = "start")
         }
     }
 
-    private fun finishSuccess(outputPath: String) {
-        val result = pendingResult
-        pendingResult = null
-        pendingOutput = null
-        transformer = null
-        result?.success(outputPath)
+    private fun finishSuccess(operation: ActiveExport, outputPath: String) {
+        if (!finish(operation)) {
+            deleteOutputUnlessReused(operation)
+            return
+        }
+        operation.result.success(outputPath)
     }
 
     private fun finishError(
+        operation: ActiveExport,
         error: Throwable,
         failureStage: String,
     ) {
@@ -422,11 +518,11 @@ class VideoWatermarkPlugin(
             "Watermark export failed stage=$failureStage",
             error,
         )
-        pendingOutput?.delete()
-        pendingOutput = null
-        val result = pendingResult
-        pendingResult = null
-        transformer = null
+        if (!finish(operation)) {
+            deleteOutputUnlessReused(operation)
+            return
+        }
+        operation.output.delete()
         val details = mutableMapOf<String, Any>(
             "failureStage" to failureStage,
             "errorType" to error.javaClass.simpleName,
@@ -434,16 +530,39 @@ class VideoWatermarkPlugin(
         if (error is ExportException) {
             details["exportErrorCode"] = error.errorCode
         }
-        result?.error("watermark_failed", "录像水印生成失败", details)
+        operation.result.error("watermark_failed", "录像水印生成失败", details)
+    }
+
+    private fun finish(operation: ActiveExport): Boolean {
+        if (!cancellationState.complete(operation.generation)) return false
+        synchronized(operationLock) {
+            if (activeExport !== operation) return false
+            activeExport = null
+        }
+        return true
+    }
+
+    private fun deleteOutputUnlessReused(operation: ActiveExport) {
+        synchronized(operationLock) {
+            val reused = activeExport?.output?.absolutePath == operation.output.absolutePath
+            if (!reused) operation.output.delete()
+        }
+    }
+
+    fun cancelWatermark() {
+        val generation = cancellationState.cancel() ?: return
+        val operation = synchronized(operationLock) {
+            activeExport?.takeIf { it.generation == generation }?.also {
+                activeExport = null
+            }
+        } ?: return
+        operation.transformer?.cancel()
+        deleteOutputUnlessReused(operation)
+        operation.result.error("watermark_cancelled", "录像水印生成已取消", null)
     }
 
     fun dispose() {
-        transformer?.cancel()
-        transformer = null
-        pendingOutput?.delete()
-        pendingOutput = null
-        pendingResult?.error("watermark_cancelled", "录像水印生成已取消", null)
-        pendingResult = null
+        cancelWatermark()
         channel.setMethodCallHandler(null)
     }
 }
