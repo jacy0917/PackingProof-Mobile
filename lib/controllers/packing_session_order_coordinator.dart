@@ -110,9 +110,15 @@ mixin _PackingSessionOrderCoordinator on _PackingSessionBarcodeCoordinator {
   Future<bool> _hasRecentTrackingNumber(String trackingNumber) async {
     try {
       return await _repository.hasRecentTrackingNumber(trackingNumber);
-    } on Object {
+    } on Object catch (error) {
       // broad-catch: Duplicate-order lookup is advisory; repository failures
       // must not prevent the already scanned order from starting recording.
+      unawaited(
+        _runtimeLog.log(
+          kind: 'barcode_duplicate_lookup_failed',
+          extra: <String, Object?>{'error': '$error'},
+        ),
+      );
       return false;
     }
   }

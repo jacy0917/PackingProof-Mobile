@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:packing_proof_mobile/controllers/packing_session_controller.dart';
 import 'package:packing_proof_mobile/models/order_info.dart';
+import 'package:packing_proof_mobile/models/recording_session.dart';
 import 'package:packing_proof_mobile/models/recording_video_codec.dart';
 import 'package:packing_proof_mobile/models/speech_prompt.dart';
 import 'package:packing_proof_mobile/platform/contracts/camera_platform.dart';
@@ -14,6 +15,7 @@ import 'package:packing_proof_mobile/platform/generated/platform_api.g.dart';
 import 'package:packing_proof_mobile/platform/platform_capabilities.dart';
 import 'package:packing_proof_mobile/services/camera_capability_policy.dart';
 import 'package:packing_proof_mobile/services/continuous_camera_service.dart';
+import 'package:packing_proof_mobile/services/diagnostics_log_service.dart';
 import 'package:packing_proof_mobile/services/lan_backup_service.dart';
 import 'package:packing_proof_mobile/services/max_volume_service.dart';
 import 'package:packing_proof_mobile/services/order_info_receiver_service.dart';
@@ -215,6 +217,20 @@ class _TrackingSessionRepository extends SessionRepository {
   _TrackingSessionRepository({required super.rootDirectory});
 
   bool migrationPaused = true;
+  final Map<String, Completer<bool>> pendingDuplicateLookups =
+      <String, Completer<bool>>{};
+  final Map<String, Object> duplicateLookupErrors = <String, Object>{};
+  final List<String> duplicateLookupCalls = <String>[];
+
+  @override
+  Future<bool> hasRecentTrackingNumber(String trackingNumber) async {
+    duplicateLookupCalls.add(trackingNumber);
+    final Object? error = duplicateLookupErrors[trackingNumber];
+    if (error != null) throw error;
+    final Completer<bool>? pending = pendingDuplicateLookups[trackingNumber];
+    if (pending != null) return pending.future;
+    return false;
+  }
 
   @override
   Future<void> pauseSharedFileMigration() async {
@@ -226,6 +242,24 @@ class _TrackingSessionRepository extends SessionRepository {
   Future<void> resumeSharedFileMigration() async {
     migrationPaused = false;
     await super.resumeSharedFileMigration();
+  }
+}
+
+class _TrackingDiagnosticsLogService extends DiagnosticsLogService {
+  _TrackingDiagnosticsLogService({required Directory root})
+    : super(
+        rootProvider: () async => root,
+        runtimeMetadataLoader: () async => const <String, Object?>{},
+      );
+
+  final List<String> kinds = <String>[];
+
+  @override
+  Future<void> log({
+    required String kind,
+    Map<String, Object?> extra = const <String, Object?>{},
+  }) async {
+    kinds.add(kind);
   }
 }
 
@@ -338,13 +372,17 @@ class _FakeBackupPlatform implements BackupNativePlatform {
 
 class _FakeSpeechSink implements SpeechPromptSink {
   bool _enabled = true;
+  final List<SpeechPrompt> prompts = <SpeechPrompt>[];
 
   @override
   bool get enabled => _enabled;
   @override
   Future<void> setEnabled(bool value) async => _enabled = value;
   @override
-  void enqueue(SpeechPrompt prompt, {String? incidentKey}) {}
+  void enqueue(SpeechPrompt prompt, {String? incidentKey}) {
+    prompts.add(prompt);
+  }
+
   @override
   Future<void> preview() async {}
   @override
@@ -373,6 +411,12 @@ class _FakeMaxVolumeSink implements MaxVolumeSink {
 }
 
 class _FakeOrderReceiverSink implements OrderInfoReceiverSink {
+  final Map<String, Completer<OrderInfo?>> pendingLookups =
+      <String, Completer<OrderInfo?>>{};
+  final Map<String, OrderInfo?> lookupResults = <String, OrderInfo?>{};
+  final Map<String, Object> lookupErrors = <String, Object>{};
+  final List<String> lookupCalls = <String>[];
+
   @override
   void addListener(VoidCallback listener) {}
   @override
@@ -386,7 +430,15 @@ class _FakeOrderReceiverSink implements OrderInfoReceiverSink {
   @override
   Future<void> retry() async {}
   @override
-  Future<OrderInfo?> lookup(String trackingNumber) async => null;
+  Future<OrderInfo?> lookup(String trackingNumber) async {
+    lookupCalls.add(trackingNumber);
+    final Object? error = lookupErrors[trackingNumber];
+    if (error != null) throw error;
+    final Completer<OrderInfo?>? pending = pendingLookups[trackingNumber];
+    if (pending != null) return pending.future;
+    return lookupResults[trackingNumber];
+  }
+
   @override
   Future<void> setBackgroundKeepAlive(bool enabled) async {}
   @override
@@ -415,6 +467,9 @@ void main() {
   late _FakeCameraPlatform camera;
   late _FakeBackupPlatform backupPlatform;
   late _TrackingSessionRepository repository;
+  late _FakeOrderReceiverSink orderReceiver;
+  late _FakeSpeechSink speech;
+  late _TrackingDiagnosticsLogService runtimeLog;
   late PackingSessionController controller;
 
   setUp(() async {
@@ -424,13 +479,17 @@ void main() {
     backupPlatform = _FakeBackupPlatform();
     repository = _TrackingSessionRepository(rootDirectory: root);
     camera.sharedFileMigrationPaused = () => repository.migrationPaused;
+    orderReceiver = _FakeOrderReceiverSink();
+    speech = _FakeSpeechSink();
+    runtimeLog = _TrackingDiagnosticsLogService(root: root);
     controller = PackingSessionController(
       repository: repository,
-      speechService: _FakeSpeechSink(),
+      speechService: speech,
       maxVolumeService: _FakeMaxVolumeSink(),
       lanBackupService: LanBackupService(platform: backupPlatform),
-      orderInfoReceiver: _FakeOrderReceiverSink(),
+      orderInfoReceiver: orderReceiver,
       videoWatermarkService: _FakeWatermarkSink(),
+      runtimeLog: runtimeLog,
       capabilities: const PlatformCapabilities(<PlatformCapability>{
         PlatformCapability.continuousCameraRecording,
         PlatformCapability.cameraCapabilityNegotiation,
@@ -616,6 +675,219 @@ void main() {
       expect(backupPlatform.storageCheckCalls, checksBeforeSplit);
     } finally {
       backupPlatform.pendingStorageCheck = null;
+      await _stopWorkIfNeeded(tester, controller);
+      await tester.pump(const Duration(seconds: 4));
+    }
+  });
+
+  testWidgets('原生切段不等待重复单号和订单查询', (WidgetTester tester) async {
+    camera.fullSupported = true;
+    const String firstCode = 'YT123456789031';
+    const String nextCode = 'YT123456789032';
+    final Completer<bool> duplicateLookup = Completer<bool>();
+    final Completer<OrderInfo?> orderLookup = Completer<OrderInfo?>();
+    try {
+      await tester.runAsync(() async {
+        await controller.initialize();
+        await controller.retryCapabilityProbe();
+        await controller.startWork();
+      });
+      await _confirmBarcode(tester, controller, firstCode);
+      await _waitUntil(
+        tester,
+        () => controller.currentCode == firstCode,
+        reason: 'first barcode should start the native recording',
+      );
+      final int recordingStartedBeforeSplit = speech.prompts
+          .where(
+            (SpeechPrompt prompt) => prompt == SpeechPrompt.recordingStarted,
+          )
+          .length;
+      repository.pendingDuplicateLookups[nextCode] = duplicateLookup;
+      orderReceiver.pendingLookups[nextCode] = orderLookup;
+
+      await _confirmBarcode(tester, controller, nextCode);
+      await _waitUntil(
+        tester,
+        () =>
+            camera.splitCalls == 1 &&
+            controller.currentCode == nextCode &&
+            controller.sessions.isNotEmpty,
+        reason:
+            'native split, marker feedback and old segment persistence must finish while both lookups are pending',
+      );
+
+      expect(repository.duplicateLookupCalls, contains(nextCode));
+      expect(orderReceiver.lookupCalls, contains(nextCode));
+      expect(duplicateLookup.isCompleted, isFalse);
+      expect(orderLookup.isCompleted, isFalse);
+      expect(controller.currentCode, nextCode);
+      expect(
+        speech.prompts
+            .where(
+              (SpeechPrompt prompt) => prompt == SpeechPrompt.recordingStarted,
+            )
+            .length,
+        recordingStartedBeforeSplit + 1,
+      );
+
+      duplicateLookup.complete(false);
+      orderLookup.complete(null);
+      await tester.pump();
+    } finally {
+      if (!duplicateLookup.isCompleted) duplicateLookup.complete(false);
+      if (!orderLookup.isCompleted) orderLookup.complete(null);
+      await _stopWorkIfNeeded(tester, controller);
+      await tester.pump(const Duration(seconds: 4));
+    }
+  });
+
+  testWidgets('原生切段辅助查询异常独立降级并记录', (WidgetTester tester) async {
+    camera.fullSupported = true;
+    const String firstCode = 'YT123456789041';
+    const String nextCode = 'YT123456789042';
+    try {
+      await tester.runAsync(() async {
+        await controller.initialize();
+        await controller.retryCapabilityProbe();
+        await controller.startWork();
+      });
+      await _confirmBarcode(tester, controller, firstCode);
+      await _waitUntil(
+        tester,
+        () => controller.currentCode == firstCode,
+        reason: 'first barcode should start the native recording',
+      );
+      repository.duplicateLookupErrors[nextCode] = StateError(
+        'duplicate lookup failed',
+      );
+      orderReceiver.lookupErrors[nextCode] = StateError('order lookup failed');
+
+      await _confirmBarcode(tester, controller, nextCode);
+      await _waitUntil(
+        tester,
+        () => controller.sessions.isNotEmpty,
+        reason: 'successful native split must survive auxiliary lookup errors',
+      );
+      expect(repository.duplicateLookupCalls, contains(nextCode));
+      expect(orderReceiver.lookupCalls, contains(nextCode));
+      await tester.pump();
+      expect(runtimeLog.kinds, contains('barcode_duplicate_lookup_failed'));
+      expect(runtimeLog.kinds, contains('barcode_order_lookup_failed'));
+
+      expect(camera.splitCalls, 1);
+      expect(controller.currentCode, nextCode);
+      expect(controller.errorMessage, isNull);
+      expect(speech.prompts, isNot(contains(SpeechPrompt.segmentSaveFailed)));
+    } finally {
+      await _stopWorkIfNeeded(tester, controller);
+      await tester.pump(const Duration(seconds: 4));
+    }
+  });
+
+  testWidgets('原生切段用旧订单快照保存旧片段并绑定新订单', (WidgetTester tester) async {
+    camera.fullSupported = true;
+    const String firstCode = 'YT123456789051';
+    const String nextCode = 'YT123456789052';
+    const OrderInfo oldOrder = OrderInfo(
+      trackingNumber: firstCode,
+      orderId: 'ORDER-OLD',
+    );
+    const OrderInfo newOrder = OrderInfo(
+      trackingNumber: nextCode,
+      orderId: 'ORDER-NEW',
+    );
+    final Completer<OrderInfo?> orderLookup = Completer<OrderInfo?>();
+    orderReceiver.lookupResults[firstCode] = oldOrder;
+    try {
+      await tester.runAsync(() async {
+        await controller.initialize();
+        await controller.retryCapabilityProbe();
+        await controller.startWork();
+      });
+      await _confirmBarcode(tester, controller, firstCode);
+      await _waitUntil(
+        tester,
+        () => controller.activeOrderInfo?.orderId == oldOrder.orderId,
+        reason: 'first segment should bind its order before the split',
+      );
+      orderReceiver.pendingLookups[nextCode] = orderLookup;
+
+      await _confirmBarcode(tester, controller, nextCode);
+      await _waitUntil(
+        tester,
+        () => camera.splitCalls == 1 && controller.sessions.isNotEmpty,
+        reason:
+            'native split and old segment persistence should finish before the next order lookup',
+      );
+      expect(controller.activeOrderInfo, isNull);
+
+      orderLookup.complete(newOrder);
+      await _waitUntil(
+        tester,
+        () =>
+            controller.activeOrderInfo?.orderId == newOrder.orderId &&
+            controller.sessions.isNotEmpty,
+        reason: 'new order should bind after the old segment is persisted',
+      );
+      final RecordingSession completed = controller.sessions.singleWhere(
+        (RecordingSession session) =>
+            session.markers.isNotEmpty &&
+            session.markers.first.code == firstCode,
+      );
+
+      expect(completed.orderInfo?.orderId, oldOrder.orderId);
+      expect(controller.activeOrderInfo?.orderId, newOrder.orderId);
+    } finally {
+      if (!orderLookup.isCompleted) orderLookup.complete(newOrder);
+      await _stopWorkIfNeeded(tester, controller);
+      await tester.pump(const Duration(seconds: 4));
+    }
+  });
+
+  testWidgets('结束工作后迟到订单结果不覆盖当前活动订单', (WidgetTester tester) async {
+    camera.fullSupported = true;
+    const String firstCode = 'YT123456789061';
+    const String nextCode = 'YT123456789062';
+    final Completer<OrderInfo?> orderLookup = Completer<OrderInfo?>();
+    try {
+      await tester.runAsync(() async {
+        await controller.initialize();
+        await controller.retryCapabilityProbe();
+        await controller.startWork();
+      });
+      await _confirmBarcode(tester, controller, firstCode);
+      await _waitUntil(
+        tester,
+        () => controller.currentCode == firstCode,
+        reason: 'first barcode should start the native recording',
+      );
+      orderReceiver.pendingLookups[nextCode] = orderLookup;
+
+      await _confirmBarcode(tester, controller, nextCode);
+      await _waitUntil(
+        tester,
+        () =>
+            camera.splitCalls == 1 &&
+            controller.currentCode == nextCode &&
+            controller.sessions.isNotEmpty,
+        reason:
+            'next writer and old segment persistence should finish before the order lookup',
+      );
+
+      controller.resetRecordingTimelineForTesting();
+      expect(controller.currentCode, isEmpty);
+      expect(controller.activeOrderInfo, isNull);
+
+      orderLookup.complete(
+        const OrderInfo(trackingNumber: nextCode, orderId: 'LATE-ORDER'),
+      );
+      await tester.pump();
+
+      expect(controller.currentCode, isEmpty);
+      expect(controller.activeOrderInfo, isNull);
+    } finally {
+      if (!orderLookup.isCompleted) orderLookup.complete(null);
       await _stopWorkIfNeeded(tester, controller);
       await tester.pump(const Duration(seconds: 4));
     }

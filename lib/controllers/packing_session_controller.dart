@@ -1248,6 +1248,14 @@ class PackingSessionController extends ChangeNotifier
     _handleNativeRecordingFallback(info, persist: persist);
   }
 
+  @visibleForTesting
+  void resetRecordingTimelineForTesting() {
+    _elapsedTimer?.cancel();
+    _elapsedTimer = null;
+    _timeline.reset();
+    _setActiveOrderInfo(null, announce: false);
+  }
+
   @override
   Future<RecordingSession?> _saveCurrentVideoAndWait() async {
     if (!isWorking || !isRecording || !_timeline.isActive) {
@@ -1283,7 +1291,6 @@ class PackingSessionController extends ChangeNotifier
   @override
   Future<BarcodeMarker?> _splitNativeRecording(
     String code, {
-    required OrderInfo? nextOrderInfo,
     required void Function(BarcodeMarker marker) onSegmentStarted,
   }) async {
     final ContinuousCameraService? camera = _nativeCamera;
@@ -1309,9 +1316,13 @@ class PackingSessionController extends ChangeNotifier
     if (transition == null) {
       throw StateError('录像时间线无法开始下一段');
     }
-    _setActiveOrderInfo(nextOrderInfo, announce: false);
-    _resetSegmentElapsed();
-    onSegmentStarted(transition.marker);
+    _activeSegmentId = nextId;
+    _segmentIndex = nextIndex;
+    if (_isCurrentSegmentCode(code)) {
+      _setActiveOrderInfo(null, announce: false);
+      _resetSegmentElapsed();
+      onSegmentStarted(transition.marker);
+    }
     final String savedPath = await _repository.finalizeVideo(
       sourcePath: split.completedPath,
       sessionId: completedId,
@@ -1338,8 +1349,6 @@ class PackingSessionController extends ChangeNotifier
         _enqueueBackupIfNeeded(savedPath, <RecordingSession>[completed]),
       );
     }
-    _activeSegmentId = nextId;
-    _segmentIndex = nextIndex;
     return transition.marker;
   }
 

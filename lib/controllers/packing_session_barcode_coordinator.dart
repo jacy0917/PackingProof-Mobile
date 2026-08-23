@@ -37,7 +37,6 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
   void _showMarkerFeedback(BarcodeMarker marker);
   Future<BarcodeMarker?> _splitNativeRecording(
     String code, {
-    required OrderInfo? nextOrderInfo,
     required void Function(BarcodeMarker marker) onSegmentStarted,
   });
   Future<BarcodeMarker?> _splitCameraRecording(
@@ -495,10 +494,6 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
       case BarcodeWorkAction.startNextVideo:
         _handlingBarcode = true;
         try {
-          final bool duplicate = await _hasRecentTrackingNumber(code);
-          final OrderInfo? nextOrderInfo = await _orderInfoReceiver.lookup(
-            code,
-          );
           bool announced = false;
           void announceSegmentStarted(BarcodeMarker marker) {
             announced = true;
@@ -507,22 +502,37 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
             _showMarkerFeedback(marker);
           }
 
-          final BarcodeMarker? marker = _supportsNativeCamera
-              ? await _splitNativeRecording(
-                  code,
-                  nextOrderInfo: nextOrderInfo,
-                  onSegmentStarted: announceSegmentStarted,
-                )
-              : await _splitCameraRecording(
-                  code,
-                  nextOrderInfo: nextOrderInfo,
-                  onSegmentStarted: announceSegmentStarted,
-                );
-          if (marker != null && !announced) {
-            _setActiveOrderInfo(nextOrderInfo, announce: false);
-            announceSegmentStarted(marker);
+          late final bool duplicate;
+          late final OrderInfo? nextOrderInfo;
+          final BarcodeMarker? marker;
+          if (_supportsNativeCamera) {
+            final Future<bool> duplicateLookup = _hasRecentTrackingNumber(code);
+            final Future<OrderInfo?> orderLookup = _lookupOrderInfoForSplit(
+              code,
+            );
+            marker = await _splitNativeRecording(
+              code,
+              onSegmentStarted: announceSegmentStarted,
+            );
+            duplicate = await duplicateLookup;
+            nextOrderInfo = await orderLookup;
+          } else {
+            duplicate = await _hasRecentTrackingNumber(code);
+            nextOrderInfo = await _orderInfoReceiver.lookup(code);
+            marker = await _splitCameraRecording(
+              code,
+              nextOrderInfo: nextOrderInfo,
+              onSegmentStarted: announceSegmentStarted,
+            );
           }
-          if (marker != null) {
+          final bool isCurrentSegment = _isCurrentSegmentCode(code);
+          if (marker != null && isCurrentSegment) {
+            if (_supportsNativeCamera) {
+              _setActiveOrderInfo(nextOrderInfo, announce: false);
+            } else if (!announced) {
+              _setActiveOrderInfo(nextOrderInfo, announce: false);
+              announceSegmentStarted(marker);
+            }
             if (duplicate) _showDuplicateOrderWarning(code);
             _announceOrderInfo(nextOrderInfo);
           }
@@ -543,6 +553,23 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
         return;
     }
   }
+
+  Future<OrderInfo?> _lookupOrderInfoForSplit(String code) async {
+    try {
+      return await _orderInfoReceiver.lookup(code);
+    } on Object catch (error) {
+      unawaited(
+        _runtimeLog.log(
+          kind: 'barcode_order_lookup_failed',
+          extra: <String, Object?>{'error': '$error'},
+        ),
+      );
+      return null;
+    }
+  }
+
+  bool _isCurrentSegmentCode(String code) =>
+      _timeline.currentCode.trim().toUpperCase() == code.trim().toUpperCase();
 
   /// 手机版指令码执行：切发货/切退货/停止录制。
   /// 刻意不支持 START（扫码即自动开始）与 CLEAR（无输入框可清）。
