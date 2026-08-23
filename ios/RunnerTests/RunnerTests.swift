@@ -323,7 +323,7 @@ class RunnerTests: XCTestCase {
         databaseURL: fixture.databaseURL, defaults: fixture.defaults
       )
       try store.upsert(job)
-      XCTAssertEqual(try store.allJobs().count, 1)
+      XCTAssertEqual(try store.summaryValues()["totalCount"] as? Int64, 1)
       XCTAssertTrue(try store.updateJob(id: "job-1") { current in
         current["state"] = "paused"
         current["uploadedBytes"] = 512
@@ -334,15 +334,20 @@ class RunnerTests: XCTestCase {
     let reopened = try IosBackupJobStore(
       databaseURL: fixture.databaseURL, defaults: fixture.defaults
     )
-    let restored = try XCTUnwrap(reopened.allJobs().first)
+    let restored = try XCTUnwrap(reopened.readJob(id: "job-1"))
     XCTAssertEqual(restored["state"] as? String, "paused")
     XCTAssertEqual((restored["uploadedBytes"] as? NSNumber)?.int64Value, 512)
     XCTAssertEqual((restored["sessions"] as? [Any])?.count, 1)
+    let pausedSummary = try reopened.summaryValues()
+    XCTAssertEqual(pausedSummary["totalCount"] as? Int64, 1)
+    XCTAssertEqual(pausedSummary["pausedCount"] as? Int64, 1)
+    XCTAssertEqual(pausedSummary["unfinishedUploadedBytes"] as? Int64, 512)
     try reopened.deleteJob(id: "job-1")
-    XCTAssertTrue(try reopened.allJobs().isEmpty)
+    XCTAssertNil(try reopened.readJob(id: "job-1"))
+    XCTAssertEqual(try reopened.summaryValues()["totalCount"] as? Int64, 0)
   }
 
-  func testBackupSnapshotQuerySkipsMalformedSessions() throws {
+  func testBackupSummaryQuerySkipsMalformedSessions() throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
     let store = try IosBackupJobStore(
@@ -355,12 +360,42 @@ class RunnerTests: XCTestCase {
       databaseURL: fixture.databaseURL
     )
 
-    XCTAssertThrowsError(try store.allJobs())
-    let snapshotJob = try XCTUnwrap(store.snapshotJobs().first)
-    XCTAssertEqual(snapshotJob["id"] as? String, id)
-    XCTAssertEqual(snapshotJob["generation"] as? String, "generation-\(id)")
-    XCTAssertEqual(snapshotJob["filePath"] as? String, "/recordings/\(id).mp4")
-    XCTAssertNil(snapshotJob["sessions"])
+    XCTAssertThrowsError(try store.readJob(id: id))
+    let summary = try store.summaryValues()
+    let activeJob = try XCTUnwrap(summary["activeJob"] as? [String: Any])
+    XCTAssertEqual(activeJob["id"] as? String, id)
+    XCTAssertEqual(activeJob["filePath"] as? String, "/recordings/\(id).mp4")
+    XCTAssertNil(activeJob["sessions"])
+  }
+
+  func testBackupSummaryCountersRecoverFromInterruptedSeedWithoutRewritingJobs() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    do {
+      _ = try IosBackupJobStore(
+        databaseURL: fixture.databaseURL, defaults: fixture.defaults
+      )
+    }
+    try executeBackupStoreSql(
+      """
+      INSERT INTO backup_jobs(
+        id, generation, file_path, state, total_bytes, sessions, revision
+      ) VALUES('seed-recovery', 'generation-seed', '/recordings/seed.mp4',
+               'pending', 123, '[]', 1);
+      UPDATE backup_meta SET int_value = 999 WHERE key = 'summary_total_count';
+      DELETE FROM backup_meta WHERE key = 'summary_counters_initialized';
+      """,
+      databaseURL: fixture.databaseURL
+    )
+
+    let reopened = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let summary = try reopened.summaryValues()
+    XCTAssertEqual(summary["totalCount"] as? Int64, 1)
+    XCTAssertEqual(summary["pendingCount"] as? Int64, 1)
+    XCTAssertEqual(summary["unfinishedTotalBytes"] as? Int64, 123)
+    XCTAssertEqual(try reopened.readJob(id: "seed-recovery")?["state"] as? String, "pending")
   }
 
   func testBackupJobStoreAtomicallyRejectsStaleGenerationUpdate() throws {
@@ -397,10 +432,188 @@ class RunnerTests: XCTestCase {
     )
 
     XCTAssertFalse(staleMutationRan)
-    let current = try XCTUnwrap(store.allJobs().first)
+    let current = try XCTUnwrap(store.readJob(id: "generation-guard"))
     XCTAssertEqual(current["generation"] as? String, "replacement-generation")
     XCTAssertEqual(current["state"] as? String, "pending")
     XCTAssertEqual((current["uploadedBytes"] as? NSNumber)?.int64Value, 512)
+  }
+
+  func testBackupJobRevisionsAreMonotonicAndStaleUpdateDoesNotAdvance() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let id = "revision-guard"
+    try store.upsert(makeBackupJob(id: id))
+    let first = try XCTUnwrap(store.readJob(id: id)?["revision"] as? Int64)
+    XCTAssertTrue(try store.updateJob(id: id) { $0["uploadedBytes"] = 10 })
+    let second = try XCTUnwrap(store.readJob(id: id)?["revision"] as? Int64)
+    XCTAssertGreaterThan(second, first)
+
+    XCTAssertFalse(
+      try store.updateJob(id: id, expectedGeneration: "stale") {
+        $0["state"] = "completed"
+      }
+    )
+    XCTAssertEqual(store.readJob(id: id)?["revision"] as? Int64, second)
+    XCTAssertEqual(try store.summaryValues()["revision"] as? Int64, second)
+  }
+
+  func testBackupSummaryUsesSharedDominantFailurePriority() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    var credential = makeBackupJob(id: "failure-credential")
+    credential["state"] = "failed"
+    credential["failureKind"] = "credential_invalid"
+    try store.upsert(credential)
+    var offline = makeBackupJob(id: "failure-offline")
+    offline["state"] = "failed"
+    offline["failureKind"] = "offline_or_timeout"
+    try store.upsert(offline)
+
+    let summary = try store.summaryValues()
+    XCTAssertEqual(summary["dominantFailureKind"] as? String, "credential_invalid")
+    XCTAssertEqual(
+      (summary["problemJob"] as? [String: Any])?["id"] as? String,
+      "failure-credential"
+    )
+  }
+
+  func testBackupCleanupEventIsCreatedAndAcknowledgedTransactionally() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let id = "cleanup-event"
+    try store.upsert(makeBackupJob(id: id))
+    XCTAssertTrue(try store.updateJob(id: id) { job in
+      job["localDeletedAt"] = "2026-08-23T01:02:03Z"
+      job["cleanupReason"] = "已备份录像保留策略清理"
+    })
+
+    let page = try store.cleanupEvents(afterRevision: 0, limit: 1)
+    let event = try XCTUnwrap(page.events.first)
+    XCTAssertEqual(event["jobId"] as? String, id)
+    XCTAssertEqual(event["filePath"] as? String, "/recordings/\(id).mp4")
+    XCTAssertEqual(event["reason"] as? String, "已备份录像保留策略清理")
+    let revision = try XCTUnwrap(event["revision"] as? Int64)
+    XCTAssertEqual(page.latest, revision)
+
+    try store.acknowledgeCleanupEvents(throughRevision: revision)
+    XCTAssertTrue(try store.cleanupEvents(afterRevision: 0, limit: 10).events.isEmpty)
+  }
+
+  func testBackupJobsForPathsReturnsOnlyRequestedJobs() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    try store.upsert(makeBackupJob(id: "path-a"))
+    try store.upsert(makeBackupJob(id: "path-b"))
+
+    let result = try store.jobsForPaths([
+      "/recordings/path-b.mp4", "/recordings/missing.mp4",
+    ])
+    XCTAssertEqual(result.jobs.count, 1)
+    XCTAssertEqual(result.jobs.first?["id"] as? String, "path-b")
+    XCTAssertGreaterThan(result.revision, 0)
+  }
+
+  func testClaimNextUploadJobUsesSqliteQueueAndSkipsPausedJobs() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    var paused = makeBackupJob(id: "paused")
+    paused["state"] = "paused"
+    try store.upsert(paused)
+    try store.upsert(makeBackupJob(id: "pending"))
+
+    let claimed = try XCTUnwrap(store.claimNextUploadJob())
+    XCTAssertEqual(claimed["id"] as? String, "pending")
+    XCTAssertEqual(claimed["state"] as? String, "uploading")
+    XCTAssertEqual(store.readJob(id: "pending")?["state"] as? String, "uploading")
+
+    _ = try store.updateJob(id: "pending") { $0["state"] = "completed" }
+    XCTAssertNil(try store.claimNextUploadJob())
+    XCTAssertEqual(store.readJob(id: "paused")?["state"] as? String, "paused")
+  }
+
+  func testTenThousandCleanupCandidatesAreReadInPagesOfAtMostOneHundred() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    try executeBackupStoreSql(
+      """
+      WITH RECURSIVE counter(value) AS (
+        SELECT 0
+        UNION ALL
+        SELECT value + 1 FROM counter WHERE value < 9999
+      )
+      INSERT INTO backup_jobs(
+        id, generation, file_path, state, uploaded_bytes, total_bytes,
+        last_modified, file_created_at, backup_completed_at, waiting_cleanup,
+        content_sha256, verification_version, last_attested_at, sessions, revision
+      )
+      SELECT
+        printf('scale-%05d', value),
+        printf('generation-%05d', value),
+        printf('/recordings/scale-%05d.mp4', value),
+        CASE value % 4
+          WHEN 0 THEN 'pending'
+          WHEN 1 THEN 'paused'
+          WHEN 2 THEN 'uploading'
+          ELSE 'completed'
+        END,
+        0, 1, value, '2026-08-23T00:00:00Z',
+        CASE WHEN value % 4 = 3 THEN '2026-08-23T00:01:00Z' ELSE NULL END,
+        0,
+        CASE WHEN value % 4 = 3 THEN printf('%064d', value) ELSE NULL END,
+        CASE WHEN value % 4 = 3 THEN \(BackupRequestAuthentication.VERSION) ELSE 0 END,
+        CASE WHEN value % 4 = 3 THEN '2026-08-23T00:02:00Z' ELSE NULL END,
+        '[]', value
+      FROM counter;
+      """,
+      databaseURL: fixture.databaseURL
+    )
+
+    var afterId: String?
+    var cleanupCount = 0
+    var page: [[String: Any]]
+    repeat {
+      page = try store.cleanupCandidateJobsPage(afterId: afterId)
+      XCTAssertLessThanOrEqual(page.count, 100)
+      cleanupCount += page.count
+      afterId = page.last?["id"] as? String
+    } while page.count == 100
+    XCTAssertEqual(cleanupCount, 5_000)
+
+    var createdAt: String?
+    afterId = nil
+    var storageCount = 0
+    var storagePage: (jobs: [[String: Any]], nextCreatedAtKey: String?, nextId: String?)
+    repeat {
+      storagePage = try store.storageRecoveryJobsPage(
+        afterCreatedAtKey: createdAt,
+        afterId: afterId,
+        minimumVerificationVersion: BackupRequestAuthentication.VERSION
+      )
+      XCTAssertLessThanOrEqual(storagePage.jobs.count, 100)
+      storageCount += storagePage.jobs.count
+      createdAt = storagePage.nextCreatedAtKey
+      afterId = storagePage.nextId
+    } while storagePage.jobs.count == 100
+    XCTAssertEqual(storageCount, 2_500)
   }
 
   func testBackupJobStoreRejectsUnopenableAndCorruptDatabases() throws {
@@ -434,7 +647,7 @@ class RunnerTests: XCTestCase {
     let store = try IosBackupJobStore(
       databaseURL: fixture.databaseURL, defaults: fixture.defaults
     )
-    XCTAssertEqual(try store.allJobs().first?["id"] as? String, "legacy-1")
+    XCTAssertEqual(try store.readJob(id: "legacy-1")?["id"] as? String, "legacy-1")
     XCTAssertNil(fixture.defaults.object(forKey: "ios_backup_jobs"))
   }
 
@@ -459,7 +672,7 @@ class RunnerTests: XCTestCase {
     let reopened = try IosBackupJobStore(
       databaseURL: fixture.databaseURL, defaults: fixture.defaults
     )
-    XCTAssertTrue(try reopened.allJobs().isEmpty)
+    XCTAssertEqual(try reopened.summaryValues()["totalCount"] as? Int64, 0)
   }
 
   func testBackupCredentialStoreMigratesAndScrubsLegacyCopies() throws {
@@ -593,7 +806,7 @@ class RunnerTests: XCTestCase {
     try await fixture.api.performCleanup()
 
     XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
-    let updated = try XCTUnwrap(fixture.store.allJobs().first)
+    let updated = try XCTUnwrap(fixture.store.readJob(id: "legacy-pseudo-verified"))
     XCTAssertEqual(updated["waitingCleanup"] as? Bool, true)
     XCTAssertNil(updated["localDeletedAt"])
     XCTAssertEqual(
@@ -616,7 +829,7 @@ class RunnerTests: XCTestCase {
     try await fixture.api.performCleanup()
 
     XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
-    let updated = try XCTUnwrap(fixture.store.allJobs().first)
+    let updated = try XCTUnwrap(fixture.store.readJob(id: "remote-unreachable"))
     XCTAssertEqual(updated["waitingCleanup"] as? Bool, true)
     XCTAssertNil(updated["localDeletedAt"])
     XCTAssertEqual(
@@ -640,7 +853,9 @@ class RunnerTests: XCTestCase {
 
     XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
     XCTAssertEqual(result["deletedCount"] as? Int, 0)
-    XCTAssertNil(try fixture.store.allJobs().first?["localDeletedAt"])
+    XCTAssertNil(
+      try fixture.store.readJob(id: "storage-reclaim-missing-sha")?["localDeletedAt"]
+    )
   }
 
   func testStorageReclaimDoesNotEmitSnapshotWhenJobsStayUnchanged() async throws {
@@ -692,7 +907,7 @@ class RunnerTests: XCTestCase {
 
     XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
     XCTAssertEqual(result["deletedCount"] as? Int, 0)
-    let updated = try XCTUnwrap(fixture.store.allJobs().first)
+    let updated = try XCTUnwrap(fixture.store.readJob(id: "storage-reclaim-sha-mismatch"))
     XCTAssertNil(updated["localDeletedAt"])
     XCTAssertEqual(
       updated["errorMessage"] as? String,
@@ -715,7 +930,9 @@ class RunnerTests: XCTestCase {
 
     XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
     XCTAssertEqual(result["deletedCount"] as? Int, 0)
-    XCTAssertNil(try fixture.store.allJobs().first?["localDeletedAt"])
+    XCTAssertNil(
+      try fixture.store.readJob(id: "storage-reclaim-mixed-sessions")?["localDeletedAt"]
+    )
   }
 
   func testStorageReclaimKeepsFileWhenRemoteEvidenceIsInvalid() async throws {
@@ -733,7 +950,7 @@ class RunnerTests: XCTestCase {
 
     XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
     XCTAssertEqual(result["deletedCount"] as? Int, 0)
-    let updated = try XCTUnwrap(fixture.store.allJobs().first)
+    let updated = try XCTUnwrap(fixture.store.readJob(id: "storage-reclaim-invalid-evidence"))
     XCTAssertNil(updated["localDeletedAt"])
     XCTAssertEqual(
       updated["errorMessage"] as? String,
@@ -754,9 +971,169 @@ class RunnerTests: XCTestCase {
 
     XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.file.path))
     XCTAssertEqual(result["deletedCount"] as? Int, 1)
-    let updated = try XCTUnwrap(fixture.store.allJobs().first)
+    let updated = try XCTUnwrap(fixture.store.readJob(id: "storage-reclaim-confirmed"))
     XCTAssertNotNil(updated["localDeletedAt"])
     XCTAssertEqual(updated["verificationReceipt"] as? String, "fresh-signed-receipt")
+  }
+
+  func testStorageReclaimReconcilesDeletionCommittedBeforeJobTransaction()
+    async throws
+  {
+    let fixture = try makeRetentionCleanupFixture(
+      id: "storage-reclaim-interrupted-after-delete",
+      availableStorageBytesOverride: { 0 }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    try fixture.store.upsert(makeVerifiedStorageReclaimJob(fixture.job))
+    try FileManager.default.removeItem(at: fixture.file)
+
+    let result = try await awaitStorageReclaim(fixture.api)
+
+    XCTAssertEqual(result["deletedCount"] as? Int, 0)
+    XCTAssertEqual(result["freedBytes"] as? Int64, 0)
+    let updated = try XCTUnwrap(
+      fixture.store.readJob(id: "storage-reclaim-interrupted-after-delete")
+    )
+    XCTAssertNotNil(updated["localDeletedAt"])
+    XCTAssertEqual(updated["cleanupReason"] as? String, "存储空间不足提前清理")
+    let events = try fixture.store.cleanupEvents(afterRevision: 0, limit: 10).events
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events.first?["jobId"] as? String, updated["id"] as? String)
+  }
+
+  func testMaintenanceCoordinatorSerializesOneThousandMixedOperations()
+    async throws
+  {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    let tracker = AsyncMaintenanceTracker()
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      storageReclaimOperationOverride: {
+        let invocation = await tracker.begin()
+        await Task.yield()
+        await tracker.finish()
+        return ["invocation": invocation]
+      },
+      cleanupOperationOverride: {
+        _ = await tracker.begin()
+        await Task.yield()
+        await tracker.finish()
+      }
+    )
+
+    let completed = await withTaskGroup(of: Bool.self, returning: Int.self) { group in
+      for index in 0..<1_000 {
+        group.addTask {
+          do {
+            if index.isMultiple(of: 2) {
+              let result: [String?: Any?] = try await withCheckedThrowingContinuation {
+                continuation in
+                api.reclaimStorageIfNeeded { continuation.resume(with: $0) }
+              }
+              return result["invocation"] is Int
+            }
+            try await api.performCleanup()
+            return true
+          } catch {
+            return false
+          }
+        }
+      }
+      var count = 0
+      for await succeeded in group where succeeded { count += 1 }
+      return count
+    }
+    let counts = await tracker.counts()
+
+    XCTAssertEqual(completed, 1_000)
+    XCTAssertEqual(counts.started, 1_000)
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertEqual(counts.maximumActive, 1)
+  }
+
+  func testMaintenanceCoordinatorPropagatesReclaimAndCleanupErrors()
+    async throws
+  {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      storageReclaimOperationOverride: {
+        throw MaintenanceTestError.expected
+      },
+      cleanupOperationOverride: {
+        throw MaintenanceTestError.expected
+      }
+    )
+
+    do {
+      _ = try await awaitStorageReclaim(api)
+      XCTFail("空间回收错误不得伪装成功")
+    } catch {
+      XCTAssertTrue(error is MaintenanceTestError)
+    }
+    do {
+      try await api.performCleanup()
+      XCTFail("保留策略清理错误不得伪装成功")
+    } catch {
+      XCTAssertTrue(error is MaintenanceTestError)
+    }
+  }
+
+  func testCancelledMaintenanceWaiterReleasesQueueForFollowingOperation()
+    async throws
+  {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    let tracker = AsyncMaintenanceTracker()
+    let hold = AsyncTestGate()
+    let firstStarted = expectation(description: "首个维护任务占用协调器")
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      cleanupOperationOverride: {
+        let invocation = await tracker.begin()
+        if invocation == 1 {
+          firstStarted.fulfill()
+          await hold.wait()
+        }
+        await tracker.finish()
+      }
+    )
+
+    let first = Task { try await api.performCleanup() }
+    await fulfillment(of: [firstStarted], timeout: 2)
+    let cancelled = Task { try await api.performCleanup() }
+    cancelled.cancel()
+    await hold.open()
+    try await first.value
+    do {
+      try await cancelled.value
+      XCTFail("取消的等待任务不应执行维护操作")
+    } catch {
+      XCTAssertTrue(error is CancellationError)
+    }
+
+    try await api.performCleanup()
+    let counts = await tracker.counts()
+    XCTAssertEqual(counts.started, 2)
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertEqual(counts.maximumActive, 1)
   }
 
   func testCancelAndRequeueRejectOldUploadStateWrites() async throws {
@@ -770,7 +1147,7 @@ class RunnerTests: XCTestCase {
     try await awaitVoidResult { completion in
       fixture.api.cancelJob(jobId: "generation-lifecycle", completion: completion)
     }
-    let cancelled = try XCTUnwrap(fixture.store.allJobs().first)
+    let cancelled = try XCTUnwrap(fixture.store.readJob(id: "generation-lifecycle"))
     let cancelledGeneration = try XCTUnwrap(cancelled["generation"] as? String)
     XCTAssertNotEqual(cancelledGeneration, initialGeneration)
     XCTAssertEqual(cancelled["state"] as? String, "paused")
@@ -782,7 +1159,7 @@ class RunnerTests: XCTestCase {
         current["state"] = "completed"
       }
     )
-    let afterStaleCompletion = try fixture.store.allJobs().first
+    let afterStaleCompletion = try fixture.store.readJob(id: "generation-lifecycle")
     XCTAssertEqual(
       afterStaleCompletion?["state"] as? String,
       "paused"
@@ -791,7 +1168,7 @@ class RunnerTests: XCTestCase {
     try await awaitVoidResult { completion in
       fixture.api.requeueJob(jobId: "generation-lifecycle", completion: completion)
     }
-    let requeued = try XCTUnwrap(fixture.store.allJobs().first)
+    let requeued = try XCTUnwrap(fixture.store.readJob(id: "generation-lifecycle"))
     let requeuedGeneration = try XCTUnwrap(requeued["generation"] as? String)
     XCTAssertNotEqual(requeuedGeneration, cancelledGeneration)
     XCTAssertEqual(requeued["state"] as? String, "pending")
@@ -804,7 +1181,7 @@ class RunnerTests: XCTestCase {
         current["errorMessage"] = "旧任务失败"
       }
     )
-    let current = try XCTUnwrap(fixture.store.allJobs().first)
+    let current = try XCTUnwrap(fixture.store.readJob(id: "generation-lifecycle"))
     XCTAssertEqual(current["generation"] as? String, requeuedGeneration)
     XCTAssertEqual(current["state"] as? String, "pending")
     XCTAssertNil(current["errorMessage"])
@@ -825,7 +1202,7 @@ class RunnerTests: XCTestCase {
       fixture.api.enqueueJob(request: request, completion: completion)
     }
 
-    let current = try XCTUnwrap(fixture.store.allJobs().first)
+    let current = try XCTUnwrap(fixture.store.readJob(id: "generation-enqueue"))
     XCTAssertNotEqual(
       current["generation"] as? String,
       "caller-provided-generation"
@@ -834,9 +1211,8 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(current["state"] as? String, "pending")
   }
 
-  func testRetentionRegistrationDoesNotStartUploadOrEmitPerJobSnapshot() async throws {
-    let emitted = expectation(description: "批量登记期间不逐条推送快照")
-    emitted.isInverted = true
+  func testRetentionRegistrationDoesNotStartUploadAndEmitsSummary() async throws {
+    let emitted = expectation(description: "登记后推送固定摘要")
     let fixture = try makeRetentionCleanupFixture(
       id: "retention-registration",
       onSnapshot: { _ in emitted.fulfill() }
@@ -855,8 +1231,8 @@ class RunnerTests: XCTestCase {
     }
 
     await fulfillment(of: [emitted], timeout: 0.5)
-    let current = try XCTUnwrap(fixture.store.allJobs().first)
-    XCTAssertEqual(current["state"] as? String, "paused")
+    let current = try XCTUnwrap(fixture.store.readJob(id: "retention-registration"))
+    XCTAssertEqual(current["state"] as? String, "pending")
   }
 
   func testBackupSourceFailuresPersistStorageUnavailableState() throws {
@@ -882,9 +1258,7 @@ class RunnerTests: XCTestCase {
         ),
         .persisted
       )
-      let current = try XCTUnwrap(
-        store.allJobs().first { $0["id"] as? String == id }
-      )
+      let current = try XCTUnwrap(store.readJob(id: id))
       XCTAssertEqual(current["state"] as? String, "paused")
       XCTAssertEqual(current["failureKind"] as? String, "storage_unavailable")
       XCTAssertEqual(current["errorMessage"] as? String, message)
@@ -976,15 +1350,14 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(reportedJobId, id)
     XCTAssertEqual(reportedGeneration, "generation-\(id)")
     XCTAssertTrue(reportedError is IosBackupStoreError)
-    XCTAssertEqual(try store.allJobs().first?["state"] as? String, "pending")
+    XCTAssertEqual(try store.readJob(id: id)?["state"] as? String, "pending")
 
-    let snapshot = try await awaitSnapshotResult(api)
-    let jobs = try XCTUnwrap(snapshot["jobs"] as? [[String: Any]])
-    let visible = try XCTUnwrap(jobs.first { $0["id"] as? String == id })
-    XCTAssertEqual(visible["state"] as? String, "paused")
-    XCTAssertEqual(visible["failureKind"] as? String, "storage_unavailable")
+    let summary = try await awaitSummaryResult(api)
+    let visible = try XCTUnwrap(summary.problemJob)
+    XCTAssertEqual(visible.state, "paused")
+    XCTAssertEqual(visible.failureKind, "storage_unavailable")
     XCTAssertTrue(
-      (visible["errorMessage"] as? String)?.contains("任务状态写入失败") ?? false
+      visible.errorMessage?.contains("任务状态写入失败") ?? false
     )
   }
 
@@ -1010,7 +1383,7 @@ class RunnerTests: XCTestCase {
       recordingsRoot: FileManager.default.temporaryDirectory
     )
 
-    _ = try await awaitSnapshotResult(api)
+    _ = try await awaitSummaryResult(api)
     XCTAssertEqual(keychain.readCount, 0)
   }
 
@@ -1024,7 +1397,7 @@ class RunnerTests: XCTestCase {
     let api = makeBackupApi(defaults: fixture.defaults, store: store)
     let completed = expectation(description: "后台生成备份快照")
 
-    api.snapshot { result in
+    api.summary { result in
       if case .failure(let error) = result {
         XCTFail("生成备份快照失败：\(error)")
       }
@@ -1045,10 +1418,9 @@ class RunnerTests: XCTestCase {
     let id = "background-snapshot-event"
     try store.upsert(makeBackupJob(id: id))
     let emitted = expectation(description: "后台推送备份快照")
-    let eventApi = FakeBackupNativeEventApi { snapshot in
+    let eventApi = FakeBackupNativeEventApi { summary in
       XCTAssertFalse(Thread.isMainThread)
-      let jobs = try? XCTUnwrap(snapshot["jobs"] as? [[String: Any]])
-      XCTAssertEqual(jobs?.first?["id"] as? String, id)
+      XCTAssertEqual(summary.problemJob?.id, id)
       emitted.fulfill()
     }
     let api = IosBackupHostApi(
@@ -1075,6 +1447,46 @@ class RunnerTests: XCTestCase {
     wait(for: [emitted], timeout: 10)
   }
 
+  func testTenThousandProgressEventsAreCoalescedLatestWins() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    let emitted = expectation(description: "合并后的进度摘要")
+    let countLock = NSLock()
+    var count = 0
+    let eventApi = FakeBackupNativeEventApi { _ in
+      countLock.lock()
+      count += 1
+      let first = count == 1
+      countLock.unlock()
+      if first { emitted.fulfill() }
+    }
+    let api = IosBackupHostApi(
+      eventApi: eventApi,
+      defaults: fixture.defaults,
+      credentialStore: IosBackupCredentialStore(
+        defaults: fixture.defaults,
+        keychain: FakeIosKeychainClient(),
+        service: "RunnerTests.progress-summary.\(UUID().uuidString)",
+        account: "access-key"
+      ),
+      jobStore: .success(store),
+      recordingsRoot: FileManager.default.temporaryDirectory
+    )
+
+    for _ in 0..<10_000 { api.emitProgressSummaryForTesting() }
+    wait(for: [emitted], timeout: 2)
+    Thread.sleep(forTimeInterval: 1.2)
+
+    countLock.lock()
+    let delivered = count
+    countLock.unlock()
+    XCTAssertLessThanOrEqual(delivered, 2)
+  }
+
   func testOldWorkerFailureCannotOverrideReplacementGeneration() async throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
@@ -1096,17 +1508,16 @@ class RunnerTests: XCTestCase {
       ),
       .staleGeneration
     )
-    let stored = try XCTUnwrap(store.allJobs().first)
+    let stored = try XCTUnwrap(store.readJob(id: id))
     XCTAssertEqual(stored["generation"] as? String, "replacement-generation")
     XCTAssertEqual(stored["state"] as? String, "pending")
     XCTAssertNil(stored["errorMessage"])
 
-    let snapshot = try await awaitSnapshotResult(api)
-    let jobs = try XCTUnwrap(snapshot["jobs"] as? [[String: Any]])
-    let visible = try XCTUnwrap(jobs.first)
-    XCTAssertEqual(visible["id"] as? String, id)
-    XCTAssertEqual(visible["state"] as? String, "pending")
-    XCTAssertNil(visible["errorMessage"])
+    let summary = try await awaitSummaryResult(api)
+    let visible = try XCTUnwrap(summary.activeJob)
+    XCTAssertEqual(visible.id, id)
+    XCTAssertEqual(visible.state, "pending")
+    XCTAssertNil(visible.errorMessage)
   }
 
   func testFinishedUploadIdentityCannotRemoveReplacement() {
@@ -1128,6 +1539,253 @@ class RunnerTests: XCTestCase {
         finished: replacement
       )
     )
+  }
+
+  func testTenThousandQueuedUploadsAndWakeupsKeepTasksBounded() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    try executeBackupStoreSql(
+      """
+      WITH RECURSIVE counter(value) AS (
+        SELECT 0
+        UNION ALL
+        SELECT value + 1 FROM counter WHERE value < 9999
+      )
+      INSERT INTO backup_jobs(
+        id, generation, file_path, state, sessions, revision
+      )
+      SELECT
+        printf('bounded-%05d', value),
+        printf('generation-%05d', value),
+        printf('/recordings/bounded-%05d.mp4', value),
+        'pending', '[]', value
+      FROM counter;
+      """,
+      databaseURL: fixture.databaseURL
+    )
+    let started = expectation(description: "唯一上传 worker 已启动")
+    let gate = AsyncTestGate()
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      uploadOperationOverride: { _, _ in
+        started.fulfill()
+        await gate.wait()
+      }
+    )
+
+    for _ in 0..<10_000 { api.requestUploadDispatchForTesting() }
+    await fulfillment(of: [started], timeout: 5)
+    let running = api.uploadTaskCountsForTesting()
+    XCTAssertEqual(running.dispatcher, 1)
+    XCTAssertEqual(running.active, 1)
+
+    await gate.open()
+    await api.waitForUploadDispatcherForTesting()
+    let finished = api.uploadTaskCountsForTesting()
+    XCTAssertEqual(finished.dispatcher, 0)
+    XCTAssertEqual(finished.active, 0)
+  }
+
+  func testUploadDispatcherRecoversInterruptedAndContinuesClaiming() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    var interrupted = makeBackupJob(id: "interrupted")
+    interrupted["state"] = "uploading"
+    try store.upsert(interrupted)
+    try store.upsert(makeBackupJob(id: "pending-after-restart"))
+    let completed = expectation(description: "恢复并继续领取后续任务")
+    completed.expectedFulfillmentCount = 2
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      uploadOperationOverride: { job, identity in
+        _ = try? store.updateJob(
+          id: job["id"] as? String ?? "",
+          expectedGeneration: identity.generation
+        ) { $0["state"] = "completed" }
+        completed.fulfill()
+      }
+    )
+
+    _ = try await awaitInitializeResult(api)
+    await fulfillment(of: [completed], timeout: 5)
+    await api.waitForUploadDispatcherForTesting()
+
+    XCTAssertEqual(try store.summaryValues()["completedCount"] as? Int64, 2)
+    XCTAssertEqual(api.uploadTaskCountsForTesting().active, 0)
+  }
+
+  func testUploadDispatcherCancelsAndRunsReplacementGeneration() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    let id = "dispatcher-replacement"
+    let original = makeBackupJob(id: id)
+    try store.upsert(original)
+    let originalStarted = expectation(description: "旧代次已启动")
+    let replacementCompleted = expectation(description: "新代次已完成")
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      uploadOperationOverride: { job, identity in
+        if identity.generation == original["generation"] as? String {
+          originalStarted.fulfill()
+          while !Task.isCancelled { await Task.yield() }
+          return
+        }
+        _ = try? store.updateJob(
+          id: job["id"] as? String ?? "",
+          expectedGeneration: identity.generation
+        ) { $0["state"] = "completed" }
+        replacementCompleted.fulfill()
+      }
+    )
+
+    api.requestUploadDispatchForTesting()
+    await fulfillment(of: [originalStarted], timeout: 5)
+    try await awaitVoidResult { api.requeueJob(jobId: id, completion: $0) }
+    await fulfillment(of: [replacementCompleted], timeout: 5)
+    await api.waitForUploadDispatcherForTesting()
+
+    let stored = try XCTUnwrap(store.readJob(id: id))
+    XCTAssertNotEqual(stored["generation"] as? String, original["generation"] as? String)
+    XCTAssertEqual(stored["state"] as? String, "completed")
+    XCTAssertEqual(api.uploadTaskCountsForTesting().active, 0)
+  }
+
+  func testUploadDispatcherCancelLeavesJobPausedAndStopsWorker() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    let id = "dispatcher-cancel"
+    try store.upsert(makeBackupJob(id: id))
+    let started = expectation(description: "待取消上传已启动")
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      uploadOperationOverride: { _, _ in
+        started.fulfill()
+        while !Task.isCancelled { await Task.yield() }
+      }
+    )
+
+    api.requestUploadDispatchForTesting()
+    await fulfillment(of: [started], timeout: 5)
+    try await awaitVoidResult { api.cancelJob(jobId: id, completion: $0) }
+    await api.waitForUploadDispatcherForTesting()
+
+    XCTAssertEqual(store.readJob(id: id)?["state"] as? String, "paused")
+    XCTAssertEqual(api.uploadTaskCountsForTesting().active, 0)
+  }
+
+  func testLanBackupHostResolverKeepsLargeProbeSetAtFourConcurrentTasks()
+    async
+  {
+    let candidates = (0..<1_000).map { "http://candidate-\($0):5280" }
+    let tracker = AsyncProbeTracker()
+    let resolver = IosLanBackupHostResolver(
+      candidateProvider: { candidates },
+      probeOperation: { baseUrl, _ in
+        guard baseUrl != "http://current:5280" else { return nil }
+        await tracker.begin()
+        try? await Task.sleep(nanoseconds: 100_000)
+        await tracker.finish()
+        return nil
+      }
+    )
+
+    let result = await resolver.resolve(
+      currentBaseUrl: "http://current:5280",
+      expectedNodeId: "expected-node"
+    )
+    let counts = await tracker.counts()
+
+    XCTAssertNil(result)
+    XCTAssertEqual(counts.started, candidates.count)
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertLessThanOrEqual(counts.maximumActive, 4)
+  }
+
+  func testLanBackupHostResolverCancelsRemainingProbesAfterMatch() async {
+    let candidates = ["slow-0", "match", "slow-1", "slow-2"]
+      + (3..<1_000).map { "slow-\($0)" }
+    let tracker = AsyncProbeTracker()
+    let resolver = IosLanBackupHostResolver(
+      candidateProvider: { candidates },
+      probeOperation: { baseUrl, _ in
+        guard baseUrl != "current" else { return nil }
+        await tracker.begin()
+        if baseUrl == "match" {
+          await tracker.waitUntilStarted(4)
+          await tracker.finish()
+          return baseUrl
+        }
+        do {
+          try await Task.sleep(nanoseconds: 5_000_000_000)
+          await tracker.finish()
+          return nil
+        } catch {
+          await tracker.cancelAndFinish()
+          return nil
+        }
+      }
+    )
+
+    let result = await resolver.resolve(
+      currentBaseUrl: "current",
+      expectedNodeId: "expected-node"
+    )
+    let counts = await tracker.counts()
+
+    XCTAssertEqual(result, "match")
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertGreaterThan(counts.cancelled, 0)
+    XCTAssertLessThanOrEqual(counts.started, 4)
+    XCTAssertLessThanOrEqual(counts.maximumActive, 4)
+  }
+
+  func testLanBackupHostResolverCompletesAllCandidatesWhenNothingMatches()
+    async
+  {
+    let candidates = (0..<257).map { "candidate-\($0)" }
+    let tracker = AsyncProbeTracker()
+    let resolver = IosLanBackupHostResolver(
+      candidateProvider: { candidates },
+      probeOperation: { baseUrl, _ in
+        guard baseUrl != "current" else { return nil }
+        await tracker.begin()
+        await Task.yield()
+        await tracker.finish()
+        return nil
+      }
+    )
+
+    let result = await resolver.resolve(
+      currentBaseUrl: "current",
+      expectedNodeId: "expected-node"
+    )
+    let counts = await tracker.counts()
+
+    XCTAssertNil(result)
+    XCTAssertEqual(counts.started, candidates.count)
+    XCTAssertEqual(counts.active, 0)
+    XCTAssertEqual(counts.cancelled, 0)
+    XCTAssertLessThanOrEqual(counts.maximumActive, 4)
   }
 
   func testSystemIosKeychainClientRoundTrip() throws {
@@ -1253,7 +1911,12 @@ class RunnerTests: XCTestCase {
     store: IosBackupJobStore,
     uploadFailureUpdateOverride: ((String, String) throws -> Bool)? = nil,
     uploadPersistenceFailureReporter:
-      ((String, String, Error) -> Void)? = nil
+      ((String, String, Error) -> Void)? = nil,
+    uploadOperationOverride:
+      (([String: Any], IosBackupUploadIdentity) async -> Void)? = nil,
+    storageReclaimOperationOverride:
+      (() async throws -> [String?: Any?])? = nil,
+    cleanupOperationOverride: (() async throws -> Void)? = nil
   ) -> IosBackupHostApi {
     IosBackupHostApi(
       eventApi: FakeBackupNativeEventApi(),
@@ -1267,7 +1930,10 @@ class RunnerTests: XCTestCase {
       jobStore: .success(store),
       recordingsRoot: FileManager.default.temporaryDirectory,
       uploadFailureUpdateOverride: uploadFailureUpdateOverride,
-      uploadPersistenceFailureReporter: uploadPersistenceFailureReporter
+      uploadPersistenceFailureReporter: uploadPersistenceFailureReporter,
+      uploadOperationOverride: uploadOperationOverride,
+      storageReclaimOperationOverride: storageReclaimOperationOverride,
+      cleanupOperationOverride: cleanupOperationOverride
     )
   }
 
@@ -1281,7 +1947,7 @@ class RunnerTests: XCTestCase {
     availableStorageBytesOverride: (() -> Int64)? = nil,
     storageAttestationOverride:
       (([String: Any], String, Int64) async -> String?)? = nil,
-    onSnapshot: (([String?: Any?]) -> Void)? = nil
+    onSnapshot: ((BackupSummaryDto) -> Void)? = nil
   ) throws -> RetentionCleanupFixture {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent(
@@ -1353,12 +2019,22 @@ class RunnerTests: XCTestCase {
     }
   }
 
-  private func awaitSnapshotResult(
+  private func awaitSummaryResult(
     _ api: IosBackupHostApi
-  ) async throws -> [String?: Any?] {
+  ) async throws -> BackupSummaryDto {
     try await withCheckedThrowingContinuation { continuation in
-      api.snapshot { result in
-        continuation.resume(with: result.map { $0 ?? [:] })
+      api.summary { result in
+        continuation.resume(with: result)
+      }
+    }
+  }
+
+  private func awaitInitializeResult(
+    _ api: IosBackupHostApi
+  ) async throws -> BackupSummaryDto {
+    try await withCheckedThrowingContinuation { continuation in
+      api.initialize(request: [:]) { result in
+        continuation.resume(with: result)
       }
     }
   }
@@ -1389,17 +2065,17 @@ class RunnerTests: XCTestCase {
 }
 
 private final class FakeBackupNativeEventApi: BackupNativeEventApiProtocol {
-  private let onSnapshot: (([String?: Any?]) -> Void)?
+  private let onSnapshot: ((BackupSummaryDto) -> Void)?
 
-  init(onSnapshot: (([String?: Any?]) -> Void)? = nil) {
+  init(onSnapshot: ((BackupSummaryDto) -> Void)? = nil) {
     self.onSnapshot = onSnapshot
   }
 
-  func snapshotChanged(
-    snapshot: [String?: Any?],
+  func summaryChanged(
+    summary: BackupSummaryDto,
     completion: @escaping (Result<Void, PigeonError>) -> Void
   ) {
-    onSnapshot?(snapshot)
+    onSnapshot?(summary)
     completion(.success(()))
   }
 }
@@ -1425,5 +2101,91 @@ private final class FakeIosKeychainClient: IosKeychainClient {
   func delete(service: String, account: String) throws {
     if let deleteError { throw deleteError }
     data = nil
+  }
+}
+
+private actor AsyncTestGate {
+  private var isOpen = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func wait() async {
+    if isOpen { return }
+    await withCheckedContinuation { continuation in
+      waiters.append(continuation)
+    }
+  }
+
+  func open() {
+    guard !isOpen else { return }
+    isOpen = true
+    let pending = waiters
+    waiters.removeAll()
+    for continuation in pending { continuation.resume() }
+  }
+}
+
+private actor AsyncProbeTracker {
+  private var started = 0
+  private var active = 0
+  private var maximumActive = 0
+  private var cancelled = 0
+  private var startWaiters: [(
+    count: Int, continuation: CheckedContinuation<Void, Never>
+  )] = []
+
+  func begin() {
+    started += 1
+    active += 1
+    maximumActive = max(maximumActive, active)
+    let ready = startWaiters.filter { started >= $0.count }
+    startWaiters.removeAll { started >= $0.count }
+    for waiter in ready { waiter.continuation.resume() }
+  }
+
+  func waitUntilStarted(_ count: Int) async {
+    if started >= count { return }
+    await withCheckedContinuation { continuation in
+      startWaiters.append((count, continuation))
+    }
+  }
+
+  func finish() {
+    active -= 1
+  }
+
+  func cancelAndFinish() {
+    cancelled += 1
+    active -= 1
+  }
+
+  func counts() -> (
+    started: Int, active: Int, maximumActive: Int, cancelled: Int
+  ) {
+    (started, active, maximumActive, cancelled)
+  }
+}
+
+private enum MaintenanceTestError: Error {
+  case expected
+}
+
+private actor AsyncMaintenanceTracker {
+  private var started = 0
+  private var active = 0
+  private var maximumActive = 0
+
+  func begin() -> Int {
+    started += 1
+    active += 1
+    maximumActive = max(maximumActive, active)
+    return started
+  }
+
+  func finish() {
+    active -= 1
+  }
+
+  func counts() -> (started: Int, active: Int, maximumActive: Int) {
+    (started, active, maximumActive)
   }
 }

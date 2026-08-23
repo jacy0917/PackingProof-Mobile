@@ -29,10 +29,7 @@ class MainActivity : FlutterActivity() {
             messenger = flutterEngine.dartExecutor.binaryMessenger,
             textures = flutterEngine.renderer,
         )
-        lanBackupPlugin = LanBackupPlugin(
-            this,
-            flutterEngine.dartExecutor.binaryMessenger,
-        )
+        lanBackupPlugin = LanBackupPlugin(this)
         videoExportPlugin = VideoExportPlugin(
             this,
             flutterEngine.dartExecutor.binaryMessenger,
@@ -128,7 +125,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onStart() {
         super.onStart()
-        lanBackupPlugin?.notifySnapshotChanged()
+        lanBackupPlugin?.notifySummaryChanged()
         orderInfoReceiverPlugin?.onHostForeground()
         maxVolumeController?.resumeSession()
     }

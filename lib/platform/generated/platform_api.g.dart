@@ -993,6 +993,491 @@ class BarcodeCandidateDto {
   }
 }
 
+class BackupJobDto {
+  BackupJobDto({
+    required this.revision,
+    required this.id,
+    required this.filePath,
+    required this.state,
+    required this.uploadedBytes,
+    required this.totalBytes,
+    this.lastModifiedMs,
+    this.contentSha256,
+    this.errorMessage,
+    this.failureKind,
+    this.fileCreatedAtMs,
+    this.backupCompletedAtMs,
+    this.scheduledCleanupAtMs,
+    this.localDeletedAtMs,
+    required this.waitingCleanup,
+    this.remoteRecordId,
+    required this.destinationComputerId,
+    this.cleanupReason,
+  });
+
+  int revision;
+
+  String id;
+
+  String filePath;
+
+  String state;
+
+  int uploadedBytes;
+
+  int totalBytes;
+
+  int? lastModifiedMs;
+
+  String? contentSha256;
+
+  String? errorMessage;
+
+  String? failureKind;
+
+  int? fileCreatedAtMs;
+
+  int? backupCompletedAtMs;
+
+  int? scheduledCleanupAtMs;
+
+  int? localDeletedAtMs;
+
+  bool waitingCleanup;
+
+  int? remoteRecordId;
+
+  String destinationComputerId;
+
+  String? cleanupReason;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      revision,
+      id,
+      filePath,
+      state,
+      uploadedBytes,
+      totalBytes,
+      lastModifiedMs,
+      contentSha256,
+      errorMessage,
+      failureKind,
+      fileCreatedAtMs,
+      backupCompletedAtMs,
+      scheduledCleanupAtMs,
+      localDeletedAtMs,
+      waitingCleanup,
+      remoteRecordId,
+      destinationComputerId,
+      cleanupReason,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static BackupJobDto decode(Object result) {
+    result as List<Object?>;
+    return BackupJobDto(
+      revision: result[0]! as int,
+      id: result[1]! as String,
+      filePath: result[2]! as String,
+      state: result[3]! as String,
+      uploadedBytes: result[4]! as int,
+      totalBytes: result[5]! as int,
+      lastModifiedMs: result[6] as int?,
+      contentSha256: result[7] as String?,
+      errorMessage: result[8] as String?,
+      failureKind: result[9] as String?,
+      fileCreatedAtMs: result[10] as int?,
+      backupCompletedAtMs: result[11] as int?,
+      scheduledCleanupAtMs: result[12] as int?,
+      localDeletedAtMs: result[13] as int?,
+      waitingCleanup: result[14]! as bool,
+      remoteRecordId: result[15] as int?,
+      destinationComputerId: result[16]! as String,
+      cleanupReason: result[17] as String?,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! BackupJobDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(revision, other.revision) && _deepEquals(id, other.id) && _deepEquals(filePath, other.filePath) && _deepEquals(state, other.state) && _deepEquals(uploadedBytes, other.uploadedBytes) && _deepEquals(totalBytes, other.totalBytes) && _deepEquals(lastModifiedMs, other.lastModifiedMs) && _deepEquals(contentSha256, other.contentSha256) && _deepEquals(errorMessage, other.errorMessage) && _deepEquals(failureKind, other.failureKind) && _deepEquals(fileCreatedAtMs, other.fileCreatedAtMs) && _deepEquals(backupCompletedAtMs, other.backupCompletedAtMs) && _deepEquals(scheduledCleanupAtMs, other.scheduledCleanupAtMs) && _deepEquals(localDeletedAtMs, other.localDeletedAtMs) && _deepEquals(waitingCleanup, other.waitingCleanup) && _deepEquals(remoteRecordId, other.remoteRecordId) && _deepEquals(destinationComputerId, other.destinationComputerId) && _deepEquals(cleanupReason, other.cleanupReason);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'BackupJobDto(revision: $revision, id: $id, filePath: $filePath, state: $state, uploadedBytes: $uploadedBytes, totalBytes: $totalBytes, lastModifiedMs: $lastModifiedMs, contentSha256: $contentSha256, errorMessage: $errorMessage, failureKind: $failureKind, fileCreatedAtMs: $fileCreatedAtMs, backupCompletedAtMs: $backupCompletedAtMs, scheduledCleanupAtMs: $scheduledCleanupAtMs, localDeletedAtMs: $localDeletedAtMs, waitingCleanup: $waitingCleanup, remoteRecordId: $remoteRecordId, destinationComputerId: $destinationComputerId, cleanupReason: $cleanupReason)';
+  }
+}
+
+class BackupSummaryDto {
+  BackupSummaryDto({
+    required this.schemaVersion,
+    required this.revision,
+    required this.completedRevision,
+    required this.cleanupHighWatermark,
+    required this.deviceId,
+    required this.deviceName,
+    this.baseUrl,
+    this.computerId,
+    this.computerName,
+    this.lastConnectedAtMs,
+    this.preferredHostId,
+    this.preferredHostName,
+    required this.totalCount,
+    required this.pendingCount,
+    required this.uploadingCount,
+    required this.pausedCount,
+    required this.completedCount,
+    required this.failedCount,
+    required this.waitingCleanupCount,
+    required this.localDeletedCount,
+    required this.unfinishedUploadedBytes,
+    required this.unfinishedTotalBytes,
+    this.dominantFailureKind,
+    this.activeJob,
+    this.problemJob,
+  });
+
+  int schemaVersion;
+
+  int revision;
+
+  int completedRevision;
+
+  int cleanupHighWatermark;
+
+  String deviceId;
+
+  String deviceName;
+
+  String? baseUrl;
+
+  String? computerId;
+
+  String? computerName;
+
+  int? lastConnectedAtMs;
+
+  String? preferredHostId;
+
+  String? preferredHostName;
+
+  int totalCount;
+
+  int pendingCount;
+
+  int uploadingCount;
+
+  int pausedCount;
+
+  int completedCount;
+
+  int failedCount;
+
+  int waitingCleanupCount;
+
+  int localDeletedCount;
+
+  int unfinishedUploadedBytes;
+
+  int unfinishedTotalBytes;
+
+  String? dominantFailureKind;
+
+  BackupJobDto? activeJob;
+
+  BackupJobDto? problemJob;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      schemaVersion,
+      revision,
+      completedRevision,
+      cleanupHighWatermark,
+      deviceId,
+      deviceName,
+      baseUrl,
+      computerId,
+      computerName,
+      lastConnectedAtMs,
+      preferredHostId,
+      preferredHostName,
+      totalCount,
+      pendingCount,
+      uploadingCount,
+      pausedCount,
+      completedCount,
+      failedCount,
+      waitingCleanupCount,
+      localDeletedCount,
+      unfinishedUploadedBytes,
+      unfinishedTotalBytes,
+      dominantFailureKind,
+      activeJob,
+      problemJob,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static BackupSummaryDto decode(Object result) {
+    result as List<Object?>;
+    return BackupSummaryDto(
+      schemaVersion: result[0]! as int,
+      revision: result[1]! as int,
+      completedRevision: result[2]! as int,
+      cleanupHighWatermark: result[3]! as int,
+      deviceId: result[4]! as String,
+      deviceName: result[5]! as String,
+      baseUrl: result[6] as String?,
+      computerId: result[7] as String?,
+      computerName: result[8] as String?,
+      lastConnectedAtMs: result[9] as int?,
+      preferredHostId: result[10] as String?,
+      preferredHostName: result[11] as String?,
+      totalCount: result[12]! as int,
+      pendingCount: result[13]! as int,
+      uploadingCount: result[14]! as int,
+      pausedCount: result[15]! as int,
+      completedCount: result[16]! as int,
+      failedCount: result[17]! as int,
+      waitingCleanupCount: result[18]! as int,
+      localDeletedCount: result[19]! as int,
+      unfinishedUploadedBytes: result[20]! as int,
+      unfinishedTotalBytes: result[21]! as int,
+      dominantFailureKind: result[22] as String?,
+      activeJob: result[23] as BackupJobDto?,
+      problemJob: result[24] as BackupJobDto?,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! BackupSummaryDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(schemaVersion, other.schemaVersion) && _deepEquals(revision, other.revision) && _deepEquals(completedRevision, other.completedRevision) && _deepEquals(cleanupHighWatermark, other.cleanupHighWatermark) && _deepEquals(deviceId, other.deviceId) && _deepEquals(deviceName, other.deviceName) && _deepEquals(baseUrl, other.baseUrl) && _deepEquals(computerId, other.computerId) && _deepEquals(computerName, other.computerName) && _deepEquals(lastConnectedAtMs, other.lastConnectedAtMs) && _deepEquals(preferredHostId, other.preferredHostId) && _deepEquals(preferredHostName, other.preferredHostName) && _deepEquals(totalCount, other.totalCount) && _deepEquals(pendingCount, other.pendingCount) && _deepEquals(uploadingCount, other.uploadingCount) && _deepEquals(pausedCount, other.pausedCount) && _deepEquals(completedCount, other.completedCount) && _deepEquals(failedCount, other.failedCount) && _deepEquals(waitingCleanupCount, other.waitingCleanupCount) && _deepEquals(localDeletedCount, other.localDeletedCount) && _deepEquals(unfinishedUploadedBytes, other.unfinishedUploadedBytes) && _deepEquals(unfinishedTotalBytes, other.unfinishedTotalBytes) && _deepEquals(dominantFailureKind, other.dominantFailureKind) && _deepEquals(activeJob, other.activeJob) && _deepEquals(problemJob, other.problemJob);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'BackupSummaryDto(schemaVersion: $schemaVersion, revision: $revision, completedRevision: $completedRevision, cleanupHighWatermark: $cleanupHighWatermark, deviceId: $deviceId, deviceName: $deviceName, baseUrl: $baseUrl, computerId: $computerId, computerName: $computerName, lastConnectedAtMs: $lastConnectedAtMs, preferredHostId: $preferredHostId, preferredHostName: $preferredHostName, totalCount: $totalCount, pendingCount: $pendingCount, uploadingCount: $uploadingCount, pausedCount: $pausedCount, completedCount: $completedCount, failedCount: $failedCount, waitingCleanupCount: $waitingCleanupCount, localDeletedCount: $localDeletedCount, unfinishedUploadedBytes: $unfinishedUploadedBytes, unfinishedTotalBytes: $unfinishedTotalBytes, dominantFailureKind: $dominantFailureKind, activeJob: $activeJob, problemJob: $problemJob)';
+  }
+}
+
+class BackupJobsByPathsDto {
+  BackupJobsByPathsDto({
+    required this.revision,
+    required this.jobs,
+    required this.missingPaths,
+  });
+
+  int revision;
+
+  List<BackupJobDto> jobs;
+
+  List<String> missingPaths;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      revision,
+      jobs,
+      missingPaths,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static BackupJobsByPathsDto decode(Object result) {
+    result as List<Object?>;
+    return BackupJobsByPathsDto(
+      revision: result[0]! as int,
+      jobs: (result[1]! as List<Object?>).cast<BackupJobDto>(),
+      missingPaths: (result[2]! as List<Object?>).cast<String>(),
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! BackupJobsByPathsDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(revision, other.revision) && _deepEquals(jobs, other.jobs) && _deepEquals(missingPaths, other.missingPaths);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'BackupJobsByPathsDto(revision: $revision, jobs: $jobs, missingPaths: $missingPaths)';
+  }
+}
+
+class BackupCleanupEventDto {
+  BackupCleanupEventDto({
+    required this.revision,
+    required this.eventId,
+    required this.jobId,
+    required this.filePath,
+    required this.fileSizeBytes,
+    required this.deletedAtMs,
+    required this.reason,
+  });
+
+  int revision;
+
+  String eventId;
+
+  String jobId;
+
+  String filePath;
+
+  int fileSizeBytes;
+
+  int deletedAtMs;
+
+  String reason;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      revision,
+      eventId,
+      jobId,
+      filePath,
+      fileSizeBytes,
+      deletedAtMs,
+      reason,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static BackupCleanupEventDto decode(Object result) {
+    result as List<Object?>;
+    return BackupCleanupEventDto(
+      revision: result[0]! as int,
+      eventId: result[1]! as String,
+      jobId: result[2]! as String,
+      filePath: result[3]! as String,
+      fileSizeBytes: result[4]! as int,
+      deletedAtMs: result[5]! as int,
+      reason: result[6]! as String,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! BackupCleanupEventDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(revision, other.revision) && _deepEquals(eventId, other.eventId) && _deepEquals(jobId, other.jobId) && _deepEquals(filePath, other.filePath) && _deepEquals(fileSizeBytes, other.fileSizeBytes) && _deepEquals(deletedAtMs, other.deletedAtMs) && _deepEquals(reason, other.reason);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'BackupCleanupEventDto(revision: $revision, eventId: $eventId, jobId: $jobId, filePath: $filePath, fileSizeBytes: $fileSizeBytes, deletedAtMs: $deletedAtMs, reason: $reason)';
+  }
+}
+
+class BackupCleanupPageDto {
+  BackupCleanupPageDto({
+    required this.latestRevision,
+    required this.nextAfterRevision,
+    required this.hasMore,
+    required this.events,
+  });
+
+  int latestRevision;
+
+  int nextAfterRevision;
+
+  bool hasMore;
+
+  List<BackupCleanupEventDto> events;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      latestRevision,
+      nextAfterRevision,
+      hasMore,
+      events,
+    ];
+  }
+
+  Object encode() {
+    return _toList();  }
+
+  static BackupCleanupPageDto decode(Object result) {
+    result as List<Object?>;
+    return BackupCleanupPageDto(
+      latestRevision: result[0]! as int,
+      nextAfterRevision: result[1]! as int,
+      hasMore: result[2]! as bool,
+      events: (result[3]! as List<Object?>).cast<BackupCleanupEventDto>(),
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! BackupCleanupPageDto || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(latestRevision, other.latestRevision) && _deepEquals(nextAfterRevision, other.nextAfterRevision) && _deepEquals(hasMore, other.hasMore) && _deepEquals(events, other.events);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'BackupCleanupPageDto(latestRevision: $latestRevision, nextAfterRevision: $nextAfterRevision, hasMore: $hasMore, events: $events)';
+  }
+}
+
 class CameraSessionStartedDto {
   CameraSessionStartedDto({
     required this.sessionId,
@@ -1318,20 +1803,35 @@ class _PigeonCodec extends StandardMessageCodec {
     }    else if (value is BarcodeCandidateDto) {
       buffer.putUint8(142);
       writeValue(buffer, value.encode());
-    }    else if (value is CameraSessionStartedDto) {
+    }    else if (value is BackupJobDto) {
       buffer.putUint8(143);
       writeValue(buffer, value.encode());
-    }    else if (value is CameraSegmentStartedDto) {
+    }    else if (value is BackupSummaryDto) {
       buffer.putUint8(144);
       writeValue(buffer, value.encode());
-    }    else if (value is CameraSegmentCompletedDto) {
+    }    else if (value is BackupJobsByPathsDto) {
       buffer.putUint8(145);
       writeValue(buffer, value.encode());
-    }    else if (value is CameraSegmentFailedDto) {
+    }    else if (value is BackupCleanupEventDto) {
       buffer.putUint8(146);
       writeValue(buffer, value.encode());
-    }    else if (value is CameraSessionFailedDto) {
+    }    else if (value is BackupCleanupPageDto) {
       buffer.putUint8(147);
+      writeValue(buffer, value.encode());
+    }    else if (value is CameraSessionStartedDto) {
+      buffer.putUint8(148);
+      writeValue(buffer, value.encode());
+    }    else if (value is CameraSegmentStartedDto) {
+      buffer.putUint8(149);
+      writeValue(buffer, value.encode());
+    }    else if (value is CameraSegmentCompletedDto) {
+      buffer.putUint8(150);
+      writeValue(buffer, value.encode());
+    }    else if (value is CameraSegmentFailedDto) {
+      buffer.putUint8(151);
+      writeValue(buffer, value.encode());
+    }    else if (value is CameraSessionFailedDto) {
+      buffer.putUint8(152);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -1371,14 +1871,24 @@ class _PigeonCodec extends StandardMessageCodec {
       case 142:
         return BarcodeCandidateDto.decode(readValue(buffer)!);
       case 143:
-        return CameraSessionStartedDto.decode(readValue(buffer)!);
+        return BackupJobDto.decode(readValue(buffer)!);
       case 144:
-        return CameraSegmentStartedDto.decode(readValue(buffer)!);
+        return BackupSummaryDto.decode(readValue(buffer)!);
       case 145:
-        return CameraSegmentCompletedDto.decode(readValue(buffer)!);
+        return BackupJobsByPathsDto.decode(readValue(buffer)!);
       case 146:
-        return CameraSegmentFailedDto.decode(readValue(buffer)!);
+        return BackupCleanupEventDto.decode(readValue(buffer)!);
       case 147:
+        return BackupCleanupPageDto.decode(readValue(buffer)!);
+      case 148:
+        return CameraSessionStartedDto.decode(readValue(buffer)!);
+      case 149:
+        return CameraSegmentStartedDto.decode(readValue(buffer)!);
+      case 150:
+        return CameraSegmentCompletedDto.decode(readValue(buffer)!);
+      case 151:
+        return CameraSegmentFailedDto.decode(readValue(buffer)!);
+      case 152:
         return CameraSessionFailedDto.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -2350,8 +2860,8 @@ class BackupNativeHostApi {
 
   final String pigeonVar_messageChannelSuffix;
 
-  Future<Map<String?, Object?>?> snapshot() async {
-    final pigeonVar_channelName = 'dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.snapshot$pigeonVar_messageChannelSuffix';
+  Future<BackupSummaryDto> summary() async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.summary$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
@@ -2363,13 +2873,13 @@ class BackupNativeHostApi {
     final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
         pigeonVar_replyList,
         pigeonVar_channelName,
-        isNullValid: true,
+        isNullValid: false,
     )
     ;
-    return (pigeonVar_replyValue as Map<Object?, Object?>?)?.cast<String?, Object?>();
+    return pigeonVar_replyValue! as BackupSummaryDto;
   }
 
-  Future<Map<String?, Object?>?> initialize(Map<String?, Object?> request) async {
+  Future<BackupSummaryDto> initialize(Map<String?, Object?> request) async {
     final pigeonVar_channelName = 'dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.initialize$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
@@ -2382,10 +2892,85 @@ class BackupNativeHostApi {
     final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
         pigeonVar_replyList,
         pigeonVar_channelName,
+        isNullValid: false,
+    )
+    ;
+    return pigeonVar_replyValue! as BackupSummaryDto;
+  }
+
+  Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths) async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.jobsForPaths$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[paths]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: false,
+    )
+    ;
+    return pigeonVar_replyValue! as BackupJobsByPathsDto;
+  }
+
+  Future<BackupCleanupPageDto> cleanupEvents(int afterRevision, int limit) async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.cleanupEvents$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[afterRevision, limit]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: false,
+    )
+    ;
+    return pigeonVar_replyValue! as BackupCleanupPageDto;
+  }
+
+  Future<void> acknowledgeCleanupEvents(int throughRevision) async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.acknowledgeCleanupEvents$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[throughRevision]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
         isNullValid: true,
     )
     ;
-    return (pigeonVar_replyValue as Map<Object?, Object?>?)?.cast<String?, Object?>();
+  }
+
+  Future<bool> hasPendingJobsOutsideDestination(String computerId) async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.hasPendingJobsOutsideDestination$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[computerId]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: false,
+    )
+    ;
+    return pigeonVar_replyValue! as bool;
   }
 
   Future<String?> loadAccessKey() async {
@@ -2576,22 +3161,22 @@ class BackupNativeHostApi {
 abstract class BackupNativeEventApi {
   static const MessageCodec<Object?> pigeonChannelCodec = _PigeonCodec();
 
-  void snapshotChanged(Map<String?, Object?> snapshot);
+  void summaryChanged(BackupSummaryDto summary);
 
   static void setUp(BackupNativeEventApi? api, {BinaryMessenger? binaryMessenger, String messageChannelSuffix = '',}) {
     messageChannelSuffix = messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
     {
       final pigeonVar_channel = BasicMessageChannel<Object?>(
-          'dev.flutter.pigeon.packing_proof_mobile.BackupNativeEventApi.snapshotChanged$messageChannelSuffix', pigeonChannelCodec,
+          'dev.flutter.pigeon.packing_proof_mobile.BackupNativeEventApi.summaryChanged$messageChannelSuffix', pigeonChannelCodec,
           binaryMessenger: binaryMessenger);
       if (api == null) {
         pigeonVar_channel.setMessageHandler(null);
       } else {
         pigeonVar_channel.setMessageHandler((Object? message) async {
           final List<Object?> args = message! as List<Object?>;
-          final Map<String?, Object?> arg_snapshot = (args[0]! as Map<Object?, Object?>).cast<String?, Object?>();
+          final BackupSummaryDto arg_summary = args[0]! as BackupSummaryDto;
           try {
-            api.snapshotChanged(arg_snapshot);
+            api.summaryChanged(arg_summary);
             return wrapResponse(empty: true);
           } on PlatformException catch (e) {
             return wrapResponse(error: e);

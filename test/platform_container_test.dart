@@ -25,9 +25,7 @@ void main() {
 
     expect(
       android.capabilities.supported,
-      containsAll(
-        PlatformCapability.values,
-      ),
+      containsAll(PlatformCapability.values),
     );
     expect(
       android.capabilities.supports(PlatformCapability.liveRecordingWatermark),
@@ -107,7 +105,7 @@ void main() {
       }
 
       await expectUnavailable(backup.isWifiConnected);
-      await expectUnavailable(backup.snapshot);
+      await expectUnavailable(backup.summary);
       await expectUnavailable(
         () => camera.ensurePermissions(recordAudio: false),
       );

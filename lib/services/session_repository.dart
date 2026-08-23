@@ -381,16 +381,6 @@ class SessionRepository {
     );
   }
 
-  Future<List<RecordingSession>> loadBackupBatch({
-    required int page,
-    int pageSize = 100,
-  }) async {
-    await initialize();
-    final List<RecordingSession> sessions = await _recordingDatabase
-        .queryBackupBatch(page: page, pageSize: pageSize);
-    return _resolveAndRepair(sessions);
-  }
-
   Future<BackupRegistrationCursor?> loadBackupRegistrationCursor() async {
     await initialize();
     final String? value = await _recordingDatabase.readMetadataValue(
@@ -406,6 +396,26 @@ class SessionRepository {
     await _recordingDatabase.writeMetadataValue(
       backupRegistrationCursorKey,
       cursor.encode(),
+    );
+  }
+
+  Future<int> loadBackupCleanupCursor() async {
+    await initialize();
+    final String? value = await _recordingDatabase.readMetadataValue(
+      backupCleanupCursorKey,
+    );
+    final int? parsed = int.tryParse(value ?? '');
+    return parsed == null || parsed < 0 ? 0 : parsed;
+  }
+
+  Future<void> saveBackupCleanupCursor(int revision) async {
+    if (revision < 0) {
+      throw ArgumentError.value(revision, 'revision', '不能小于 0');
+    }
+    await initialize();
+    await _recordingDatabase.writeMetadataValue(
+      backupCleanupCursorKey,
+      revision.toString(),
     );
   }
 
@@ -453,6 +463,7 @@ class SessionRepository {
 
   static const String backupRegistrationCursorKey =
       'backup_registration_cursor';
+  static const String backupCleanupCursorKey = 'backup_cleanup_cursor';
 
   Future<List<RecordingSession>> _loadRecentSessionsUnlocked() async =>
       _recordingDatabase.loadRecentActiveSessions();
@@ -832,34 +843,6 @@ class SessionRepository {
       historyPageSize: AppSettings.normalizeHistoryPageSize(pageSize),
     ),
   );
-
-  Future<List<RecordingSession>> pruneMissingSessions({
-    Set<String> retainedMissingPaths = const <String>{},
-  }) => _serializeSessionMutation(() async {
-    await initialize();
-    final List<({String id, String filePath})> activePaths =
-        await _recordingDatabase.loadActiveSessionPaths();
-    final Map<String, String?> resolvedPaths = await _resolvePathMap(
-      activePaths.map((({String id, String filePath}) item) => item.filePath),
-    );
-    final Map<String, String> repairs = <String, String>{};
-    for (final ({String id, String filePath}) item in activePaths) {
-      final String? resolved = resolvedPaths[item.filePath];
-      if (resolved != null && resolved != item.filePath) {
-        repairs[item.id] = resolved;
-      }
-    }
-    await _recordingDatabase.refreshMissingState(
-      retainedMissingPaths: retainedMissingPaths.map(p.normalize).toSet(),
-      resolvedPaths: repairs,
-    );
-    final List<RecordingSession> recent =
-        (await _recordingDatabase.queryActiveSessions(
-          page: 1,
-          pageSize: 50,
-        )).data;
-    return _resolveAndRepair(recent);
-  });
 
   /// 解析录像文件的实际路径；找不到时返回 null，并记录诊断信息。
   Future<String?> resolveRecordingPath(String storedPath) async {

@@ -98,6 +98,20 @@ void main() {
     expect(
       recordingWatermarkPlaybackBlockMessage(
         RecordingSession(
+          id: 'processing',
+          filePath: '/recordings/processing.mp4',
+          startedAt: startedAt,
+          endedAt: startedAt.add(const Duration(seconds: 5)),
+          markers: const <BarcodeMarker>[],
+          watermarkStatus: WatermarkProcessingStatus.processing,
+        ),
+        localAvailable: true,
+      ),
+      '水印处理中，完成后即可播放',
+    );
+    expect(
+      recordingWatermarkPlaybackBlockMessage(
+        RecordingSession(
           id: 'pending',
           filePath: '/recordings/pending.mp4',
           startedAt: startedAt,
@@ -1537,19 +1551,7 @@ void main() {
     final File video = File('${directory.path}/cleaned.mp4')
       ..writeAsBytesSync(<int>[1, 2, 3]);
     final ValueNotifier<LanBackupSnapshot> snapshots =
-        ValueNotifier<LanBackupSnapshot>(
-          LanBackupSnapshot(
-            jobs: <LanBackupJob>[
-              LanBackupJob(
-                id: 'job-cleanup',
-                filePath: video.path,
-                state: LanBackupJobState.completed,
-                uploadedBytes: 3,
-                totalBytes: 3,
-              ),
-            ],
-          ),
-        );
+        ValueNotifier<LanBackupSnapshot>(const LanBackupSnapshot());
     addTearDown(snapshots.dispose);
 
     await tester.pumpWidget(
@@ -1569,6 +1571,21 @@ void main() {
           backupSnapshot: snapshots.value,
           backupListenable: snapshots,
           backupSnapshotProvider: () => snapshots.value,
+          onLoadBackupJobsForPaths: (Iterable<String> paths) async =>
+              _backupJobsForPaths(
+                revision: snapshots.value.summary.revision,
+                requestedPaths: paths,
+                jobs: <LanBackupJob>[
+                  LanBackupJob(
+                    id: 'job-cleanup',
+                    filePath: video.path,
+                    state: LanBackupJobState.completed,
+                    uploadedBytes: 3,
+                    totalBytes: 3,
+                    localDeletedAt: video.existsSync() ? null : DateTime.now(),
+                  ),
+                ],
+              ),
           localRecordingFileProbe: (String path) async => (
             exists: video.existsSync(),
             bytes: video.existsSync() ? video.lengthSync() : 0,
@@ -1586,17 +1603,8 @@ void main() {
 
     expect(find.text('<1 MB'), findsOneWidget);
     video.deleteSync();
-    snapshots.value = LanBackupSnapshot(
-      jobs: <LanBackupJob>[
-        LanBackupJob(
-          id: 'job-cleanup',
-          filePath: video.path,
-          state: LanBackupJobState.completed,
-          uploadedBytes: 3,
-          totalBytes: 3,
-          localDeletedAt: DateTime.now(),
-        ),
-      ],
+    snapshots.value = const LanBackupSnapshot(
+      summary: LanBackupSummary(revision: 1, cleanupHighWatermark: 1),
     );
     await tester.pumpAndSettle();
 
@@ -1668,27 +1676,36 @@ void main() {
               computerId: 'computer-1',
               computerName: '仓库电脑',
             ),
-            jobs: <LanBackupJob>[
-              LanBackupJob(
-                id: 'job-pending',
-                filePath: videoPath,
-                state: LanBackupJobState.pending,
-                uploadedBytes: 0,
-                totalBytes: 1,
-                destinationComputerId: 'computer-1',
-              ),
-              LanBackupJob(
-                id: 'job-1',
-                filePath: videoPath,
-                state: LanBackupJobState.completed,
-                uploadedBytes: 1,
-                totalBytes: 1,
-                destinationComputerId: 'computer-1',
-                remoteRecordId: 1,
-              ),
-            ],
+            summary: const LanBackupSummary(
+              totalCount: 2,
+              pendingCount: 1,
+              completedCount: 1,
+            ),
             connectionStatus: LanConnectionStatus.connected,
           ),
+          onLoadBackupJobsForPaths: (Iterable<String> paths) async =>
+              _backupJobsForPaths(
+                requestedPaths: paths,
+                jobs: <LanBackupJob>[
+                  LanBackupJob(
+                    id: 'job-pending',
+                    filePath: videoPath,
+                    state: LanBackupJobState.pending,
+                    uploadedBytes: 0,
+                    totalBytes: 1,
+                    destinationComputerId: 'computer-1',
+                  ),
+                  LanBackupJob(
+                    id: 'job-1',
+                    filePath: videoPath,
+                    state: LanBackupJobState.completed,
+                    uploadedBytes: 1,
+                    totalBytes: 1,
+                    destinationComputerId: 'computer-1',
+                    remoteRecordId: 1,
+                  ),
+                ],
+              ),
           onBackupNow: () async => backupCount++,
           onAutoBackupChanged: (bool enabled) async {
             autoBackupEnabled = enabled;
@@ -1702,6 +1719,7 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
 
     expect(find.text('备份完成'), findsOneWidget);
     expect(find.byKey(const Key('backup-now-button')), findsOneWidget);
@@ -1761,19 +1779,24 @@ void main() {
           workMode: WorkMode.continuousScan,
           speechEnabled: true,
           maxVolumeEnabled: true,
-          backupSnapshot: LanBackupSnapshot(
-            jobs: <LanBackupJob>[
-              LanBackupJob(
-                id: 'job-1',
-                filePath: videoPath,
-                state: LanBackupJobState.completed,
-                uploadedBytes: 1,
-                totalBytes: 1,
-                destinationComputerId: 'previous-computer',
-                remoteRecordId: 1,
-              ),
-            ],
+          backupSnapshot: const LanBackupSnapshot(
+            summary: LanBackupSummary(totalCount: 1, completedCount: 1),
           ),
+          onLoadBackupJobsForPaths: (Iterable<String> paths) async =>
+              _backupJobsForPaths(
+                requestedPaths: paths,
+                jobs: <LanBackupJob>[
+                  LanBackupJob(
+                    id: 'job-1',
+                    filePath: videoPath,
+                    state: LanBackupJobState.completed,
+                    uploadedBytes: 1,
+                    totalBytes: 1,
+                    destinationComputerId: 'previous-computer',
+                    remoteRecordId: 1,
+                  ),
+                ],
+              ),
           localRecordingFileProbe: (String path) async => (
             exists: true,
             bytes: 1,
@@ -1927,8 +1950,10 @@ void main() {
               computerId: 'computer-1',
               computerName: '仓库电脑',
             ),
-            jobs: const <LanBackupJob>[
-              LanBackupJob(
+            summary: const LanBackupSummary(
+              totalCount: 1,
+              pausedCount: 1,
+              problemJob: LanBackupJob(
                 id: 'job-1',
                 filePath: 'video.mp4',
                 state: LanBackupJobState.paused,
@@ -1936,7 +1961,7 @@ void main() {
                 totalBytes: 1024,
                 errorMessage: '网络中断，等待自动续传',
               ),
-            ],
+            ),
             connectionStatus: LanConnectionStatus.connected,
           ),
           onWorkModeChanged: (_) async {},
@@ -1970,17 +1995,12 @@ void main() {
               computerId: 'computer-1',
               computerName: '仓库电脑',
             ),
-            jobs: const <LanBackupJob>[
-              LanBackupJob(
-                id: 'old-offline-job',
-                filePath: 'old-video.mp4',
-                state: LanBackupJobState.failed,
-                uploadedBytes: 0,
-                totalBytes: 1024,
-                errorMessage: '电脑离线',
-                failureKind: LanBackupFailureKind.offlineOrTimeout,
-              ),
-              LanBackupJob(
+            summary: const LanBackupSummary(
+              totalCount: 2,
+              failedCount: 1,
+              pausedCount: 1,
+              dominantFailureKind: LanBackupFailureKind.credentialInvalid,
+              problemJob: LanBackupJob(
                 id: 'credential-job',
                 filePath: 'video.mp4',
                 state: LanBackupJobState.paused,
@@ -1989,7 +2009,7 @@ void main() {
                 errorMessage: '设备连接已失效',
                 failureKind: LanBackupFailureKind.credentialInvalid,
               ),
-            ],
+            ),
             connectionStatus: LanConnectionStatus.rePair,
           ),
           onConnectBackupHost: (host, confirmation) async => approvalCount++,
@@ -2034,8 +2054,11 @@ void main() {
               computerId: 'computer-1',
               computerName: '录像电脑',
             ),
-            jobs: const <LanBackupJob>[
-              LanBackupJob(
+            summary: const LanBackupSummary(
+              totalCount: 1,
+              failedCount: 1,
+              dominantFailureKind: LanBackupFailureKind.incompatibleVersion,
+              problemJob: LanBackupJob(
                 id: 'legacy-404',
                 filePath: 'video.mp4',
                 state: LanBackupJobState.failed,
@@ -2044,7 +2067,7 @@ void main() {
                 errorMessage: '电脑端版本不兼容',
                 failureKind: LanBackupFailureKind.incompatibleVersion,
               ),
-            ],
+            ),
             connectionStatus: LanConnectionStatus.notBackupHost,
           ),
           onDisconnectBackup: () async {},
@@ -2981,32 +3004,42 @@ void main() {
           workMode: WorkMode.continuousScan,
           speechEnabled: true,
           maxVolumeEnabled: true,
-          backupSnapshot: LanBackupSnapshot(
-            jobs: <LanBackupJob>[
-              LanBackupJob(
-                id: 'completed',
-                filePath: paths[0],
-                state: LanBackupJobState.completed,
-                uploadedBytes: 1,
-                totalBytes: 1,
-                remoteRecordId: 1,
-              ),
-              LanBackupJob(
-                id: 'paused',
-                filePath: paths[1],
-                state: LanBackupJobState.paused,
-                uploadedBytes: 1,
-                totalBytes: 2,
-              ),
-              LanBackupJob(
-                id: 'pending',
-                filePath: paths[2],
-                state: LanBackupJobState.pending,
-                uploadedBytes: 0,
-                totalBytes: 2,
-              ),
-            ],
+          backupSnapshot: const LanBackupSnapshot(
+            summary: LanBackupSummary(
+              totalCount: 3,
+              pendingCount: 1,
+              pausedCount: 1,
+              completedCount: 1,
+            ),
           ),
+          onLoadBackupJobsForPaths: (Iterable<String> requestedPaths) async =>
+              _backupJobsForPaths(
+                requestedPaths: requestedPaths,
+                jobs: <LanBackupJob>[
+                  LanBackupJob(
+                    id: 'completed',
+                    filePath: paths[0],
+                    state: LanBackupJobState.completed,
+                    uploadedBytes: 1,
+                    totalBytes: 1,
+                    remoteRecordId: 1,
+                  ),
+                  LanBackupJob(
+                    id: 'paused',
+                    filePath: paths[1],
+                    state: LanBackupJobState.paused,
+                    uploadedBytes: 1,
+                    totalBytes: 2,
+                  ),
+                  LanBackupJob(
+                    id: 'pending',
+                    filePath: paths[2],
+                    state: LanBackupJobState.pending,
+                    uploadedBytes: 0,
+                    totalBytes: 2,
+                  ),
+                ],
+              ),
           onWorkModeChanged: (_) async {},
           onSpeechEnabledChanged: (_) async {},
           onMaxVolumeEnabledChanged: (_) async {},
@@ -3037,6 +3070,62 @@ void main() {
       chipColor('等待续传'),
       chipColor('未备份'),
     }, hasLength(3));
+  });
+
+  testWidgets('页面隐藏后不应用旧的按路径备份任务响应', (WidgetTester tester) async {
+    final String path = File('pubspec.yaml').absolute.path;
+    final Completer<LanBackupJobsByPaths> response =
+        Completer<LanBackupJobsByPaths>();
+
+    Widget buildScreen({required bool active}) => MaterialApp(
+      home: RecordingsScreen(
+        active: active,
+        sessions: <RecordingSession>[
+          _session(
+            'session',
+            'TRACKING',
+            DateTime(2026, 8, 23),
+            filePath: path,
+          ),
+        ],
+        workMode: WorkMode.continuousScan,
+        speechEnabled: true,
+        maxVolumeEnabled: true,
+        backupSnapshot: const LanBackupSnapshot(
+          summary: LanBackupSummary(revision: 1, totalCount: 1),
+        ),
+        onLoadBackupJobsForPaths: (_) => response.future,
+        onWorkModeChanged: (_) async {},
+        onSpeechEnabledChanged: (_) async {},
+        onMaxVolumeEnabledChanged: (_) async {},
+        onSpeechPreview: () async {},
+        onSessionUpdated: (_) async {},
+        onDeleteSessions: (_) async {},
+      ),
+    );
+
+    await tester.pumpWidget(buildScreen(active: true));
+    await tester.pump();
+    await tester.pumpWidget(buildScreen(active: false));
+    response.complete(
+      _backupJobsForPaths(
+        revision: 1,
+        requestedPaths: <String>[path],
+        jobs: <LanBackupJob>[
+          LanBackupJob(
+            id: 'completed',
+            filePath: path,
+            state: LanBackupJobState.completed,
+            uploadedBytes: 1,
+            totalBytes: 1,
+            remoteRecordId: 1,
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('已备份'), findsNothing);
   });
 
   testWidgets('已备份标签只匹配当前手机设备', (WidgetTester tester) async {
@@ -3185,8 +3274,13 @@ void main() {
               computerName: '电脑',
             ),
             connectionStatus: LanConnectionStatus.connected,
-            jobs: const <LanBackupJob>[
-              LanBackupJob(
+            summary: const LanBackupSummary(
+              revision: 1,
+              totalCount: 1,
+              uploadingCount: 1,
+              unfinishedUploadedBytes: 1,
+              unfinishedTotalBytes: 2,
+              activeJob: LanBackupJob(
                 id: 'job-1',
                 filePath: '/recordings/one.mp4',
                 state: LanBackupJobState.uploading,
@@ -3194,7 +3288,7 @@ void main() {
                 totalBytes: 2,
                 destinationComputerId: 'computer-1',
               ),
-            ],
+            ),
           ),
         );
     addTearDown(snapshots.dispose);
@@ -3235,17 +3329,12 @@ void main() {
     snapshots.value = LanBackupSnapshot(
       endpoint: snapshots.value.endpoint,
       connectionStatus: LanConnectionStatus.connected,
-      jobs: const <LanBackupJob>[
-        LanBackupJob(
-          id: 'job-1',
-          filePath: '/recordings/one.mp4',
-          state: LanBackupJobState.completed,
-          uploadedBytes: 2,
-          totalBytes: 2,
-          remoteRecordId: 42,
-          destinationComputerId: 'computer-1',
-        ),
-      ],
+      summary: const LanBackupSummary(
+        revision: 2,
+        completedRevision: 1,
+        totalCount: 1,
+        completedCount: 1,
+      ),
     );
     await tester.pumpAndSettle();
     expect(remoteLoadCount, 2);
@@ -5194,6 +5283,30 @@ void main() {
       lessThan(2),
     );
   });
+}
+
+LanBackupJobsByPaths _backupJobsForPaths({
+  int revision = 0,
+  required Iterable<String> requestedPaths,
+  required Iterable<LanBackupJob> jobs,
+}) {
+  final Set<String> requested = requestedPaths
+      .map(lanBackupFileIdentity)
+      .toSet();
+  final List<LanBackupJob> matchingJobs = jobs
+      .where(
+        (LanBackupJob job) =>
+            requested.contains(lanBackupFileIdentity(job.filePath)),
+      )
+      .toList(growable: false);
+  final Set<String> foundPaths = matchingJobs
+      .map((LanBackupJob job) => lanBackupFileIdentity(job.filePath))
+      .toSet();
+  return LanBackupJobsByPaths(
+    revision: revision,
+    jobs: matchingJobs,
+    missingPaths: requested.difference(foundPaths),
+  );
 }
 
 class _FakeBackupHostDiscovery extends ChangeNotifier

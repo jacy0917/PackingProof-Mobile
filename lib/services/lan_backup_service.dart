@@ -11,8 +11,9 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../models/lan_backup.dart';
 import '../models/recording_session.dart';
 import '../models/backup_retention_policy.dart';
-import '../platform/adapters/legacy_backup_platform.dart';
+import '../platform/adapters/pigeon_backup_platform.dart';
 import '../platform/contracts/backup_platform.dart';
+import '../platform/generated/platform_api.g.dart';
 import 'lan_backup_compatibility.dart';
 import 'lan_backup_discovery_service.dart';
 import 'remote_video_clip_service.dart';
@@ -165,6 +166,12 @@ abstract interface class LanBackupSink implements Listenable {
   });
   Future<void> retry(String jobId);
   Future<void> cancel(String jobId);
+  Future<LanBackupJobsByPaths> jobsForPaths(Iterable<String> paths);
+  Future<LanBackupCleanupPage> cleanupEvents({
+    required int afterRevision,
+    int limit = 100,
+  });
+  Future<void> acknowledgeCleanupEvents(int throughRevision);
   Future<StorageSpaceResult> checkAndReclaimStorage();
   Future<NetworkDiagnostics?> getNetworkDiagnostics();
   Future<void> refresh();
@@ -183,7 +190,6 @@ abstract interface class LanBackupSink implements Listenable {
 
 class LanBackupService extends ChangeNotifier implements LanBackupSink {
   LanBackupService({
-    MethodChannel? channel,
     BackupNativePlatform? platform,
     HttpClient? httpClient,
     Future<bool> Function()? wifiConnected,
@@ -191,12 +197,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     Future<void> Function(Duration)? retryDelay,
     Future<void> Function(String kind, Map<String, Object?> extra)? logEvent,
     LanBackupHostLocator? hostLocator,
-  }) : _platform =
-           platform ??
-           LegacyBackupNativePlatform(
-             channel ??
-                 const MethodChannel(LegacyBackupNativePlatform.channelName),
-           ),
+  }) : _platform = platform ?? PigeonBackupNativePlatform(),
        _httpClient = httpClient ?? HttpClient(),
        // Keep the public injection name readable while the stored callback remains private.
        // ignore: prefer_initializing_formals
@@ -244,8 +245,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   int _appBuildNumber = currentMobileCompatibilityBuildNumber;
   bool _deviceVideoClippingEnabled = false;
   bool _uploadVideoCodecEnabled = false;
-  final Set<String> _loggedFailedJobIds = <String>{};
-  String _lastSnapshotSignature = '';
+  String? _loggedProblemJobId;
   Future<Uri?>? _activeAddressRecovery;
   bool _disposed = false;
 
@@ -263,8 +263,8 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   }
 
   @visibleForTesting
-  void debugApplyNativeSnapshotForTesting(Map<Object?, Object?> values) {
-    _applyNativeSnapshot(values);
+  void debugApplyNativeSummaryForTesting(BackupSummaryDto summary) {
+    _applyNativeSummary(summary);
   }
 
   @visibleForTesting
@@ -298,14 +298,13 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     // 平台初始化失败不能让心跳永久停摆：先启动心跳定时器，
     // 后续原生事件或显式刷新会重读凭据并补发心跳。
     try {
-      final Map<Object?, Object?> values =
-          await _platform.initialize(<String, Object?>{
+      final BackupSummaryDto summary = await _platform
+          .initialize(<String, Object?>{
             'unbackedRetentionDays': unbackedRetention.days,
             'backedRetentionDays': backedRetention.days,
-          }) ??
-          <Object?, Object?>{};
+          });
       _accessKey = await _platform.loadAccessKey() ?? '';
-      _applyNativeSnapshot(values);
+      _applyNativeSummary(summary);
     } on Object catch (error) {
       _log('heartbeat_timer', <String, Object?>{
         'event': 'platform_init_failed',
@@ -374,11 +373,6 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
       notifyListeners();
       rethrow;
     }
-    final Set<String> pendingHostIds = _snapshot.jobs
-        .where((LanBackupJob job) => job.state != LanBackupJobState.completed)
-        .map((LanBackupJob job) => job.destinationComputerId.trim())
-        .where((String id) => id.isNotEmpty)
-        .toSet();
     final LanBackupEndpoint? currentEndpoint = _snapshot.endpoint;
     final bool changesCurrentHost =
         currentEndpoint != null &&
@@ -387,8 +381,9 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     // saveConnection/retargetJobs 自动转到新电脑，不再要求“更换备份电脑”确认。
     final bool changesPendingHost =
         currentEndpoint != null &&
-        pendingHostIds.isNotEmpty &&
-        !pendingHostIds.contains(candidateEndpoint.computerId);
+        await _platform.hasPendingJobsOutsideDestination(
+          candidateEndpoint.computerId,
+        );
     if ((changesCurrentHost || changesPendingHost) &&
         replacementConfirmation?.matches(candidateEndpoint) != true) {
       throw LanBackupHostMismatchException(
@@ -943,66 +938,18 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
       'sessionCount': sessions.length,
       'forceRestart': forceRestart,
     });
-    final Map<String, LanBackupJob> jobsByFile = _backupJobsByFile();
-    final List<({String filePath, List<RecordingSession> sessions})> eligible =
-        <({String filePath, List<RecordingSession> sessions})>[];
-    for (final RecordingSession session in sessions) {
-      if (!forceRestart &&
-          await _shouldSkipBackupAll(session.filePath, jobsByFile)) {
-        continue;
-      }
-      eligible.add((
-        filePath: session.filePath,
-        sessions: <RecordingSession>[session],
-      ));
-    }
     await _enqueueBatch(
-      eligible,
+      sessions
+          .map(
+            (RecordingSession session) => (
+              filePath: session.filePath,
+              sessions: <RecordingSession>[session],
+            ),
+          )
+          .toList(growable: false),
       startUpload: true,
       forceRestart: forceRestart,
     );
-  }
-
-  /// 仅当任务快照能证明该文件无需重新入队时才跳过（native 仍保留最终裁决权）：
-  /// - completed 且已持 contentSha256（与原生 needsVerifiedRestart 语义一致）；
-  /// - pending/uploading，且路径、destination、size、mtime 全部匹配。
-  Future<bool> _shouldSkipBackupAll(
-    String filePath,
-    Map<String, LanBackupJob> jobsByFile,
-  ) async {
-    final FileStat stat;
-    try {
-      stat = await File(filePath).stat();
-    } on FileSystemException {
-      return false;
-    }
-    if (stat.type == FileSystemEntityType.notFound || stat.size <= 0) {
-      return false;
-    }
-    final LanBackupJob? job = jobsByFile[lanBackupFileIdentity(filePath)];
-    if (job == null) return false;
-    final bool sameSizeAndTime =
-        job.totalBytes == stat.size &&
-        (job.lastModified?.millisecondsSinceEpoch ?? -1) ==
-            stat.modified.millisecondsSinceEpoch;
-    if (job.state == LanBackupJobState.completed && job.contentSha256 != null) {
-      return true;
-    }
-    if ((job.state == LanBackupJobState.pending ||
-            job.state == LanBackupJobState.uploading) &&
-        job.destinationComputerId == (_snapshot.endpoint?.computerId ?? '') &&
-        sameSizeAndTime) {
-      return true;
-    }
-    return false;
-  }
-
-  Map<String, LanBackupJob> _backupJobsByFile() {
-    final Map<String, LanBackupJob> jobs = <String, LanBackupJob>{};
-    for (final LanBackupJob job in _snapshot.jobs) {
-      jobs.putIfAbsent(lanBackupFileIdentity(job.filePath), () => job);
-    }
-    return jobs;
   }
 
   @override
@@ -1018,6 +965,81 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     await refresh();
     _log('backup_cancel', <String, Object?>{'jobId': jobId});
   }
+
+  @override
+  Future<LanBackupJobsByPaths> jobsForPaths(Iterable<String> paths) async {
+    final LanBackupEndpoint? requestEndpoint = _snapshot.endpoint;
+    final Map<String, String> valuesByIdentity = <String, String>{};
+    for (final String path in paths) {
+      valuesByIdentity.putIfAbsent(lanBackupFileIdentity(path), () => path);
+    }
+    final List<String> values = valuesByIdentity.values.toList(growable: false);
+    if (values.isEmpty) {
+      return LanBackupJobsByPaths(
+        revision: _snapshot.summary.revision,
+        jobs: const <LanBackupJob>[],
+        missingPaths: const <String>{},
+      );
+    }
+    var revision = _snapshot.summary.revision;
+    final List<LanBackupJob> jobs = <LanBackupJob>[];
+    final Set<String> missingPaths = <String>{};
+    for (var offset = 0; offset < values.length; offset += 100) {
+      final int end = min(offset + 100, values.length);
+      final BackupJobsByPathsDto result = await _platform.jobsForPaths(
+        values.sublist(offset, end),
+      );
+      if (!_sameEndpointIdentity(requestEndpoint, _snapshot.endpoint) ||
+          result.revision < _snapshot.summary.revision ||
+          result.revision < revision) {
+        throw StateError('备份任务查询结果已过期');
+      }
+      revision = result.revision;
+      jobs.addAll(result.jobs.map(_jobFromDto));
+      missingPaths.addAll(result.missingPaths.map(lanBackupFileIdentity));
+    }
+    return LanBackupJobsByPaths(
+      revision: revision,
+      jobs: List<LanBackupJob>.unmodifiable(jobs),
+      missingPaths: Set<String>.unmodifiable(missingPaths),
+    );
+  }
+
+  @override
+  Future<LanBackupCleanupPage> cleanupEvents({
+    required int afterRevision,
+    int limit = 100,
+  }) async {
+    final BackupCleanupPageDto result = await _platform.cleanupEvents(
+      afterRevision: afterRevision,
+      limit: limit.clamp(1, 100),
+    );
+    return LanBackupCleanupPage(
+      latestRevision: result.latestRevision,
+      nextAfterRevision: result.nextAfterRevision,
+      hasMore: result.hasMore,
+      events: result.events
+          .map(
+            (BackupCleanupEventDto event) => LanBackupCleanupEvent(
+              revision: event.revision,
+              eventId: event.eventId,
+              jobId: event.jobId,
+              filePath: event.filePath,
+              fileSizeBytes: event.fileSizeBytes,
+              deletedAt: DateTime.fromMillisecondsSinceEpoch(
+                event.deletedAtMs,
+                isUtc: true,
+              ),
+              reason: event.reason,
+            ),
+          )
+          .toList(growable: false),
+    );
+  }
+
+  @override
+  Future<void> acknowledgeCleanupEvents(int throughRevision) =>
+      _platform.acknowledgeCleanupEvents(throughRevision);
 
   @override
   Future<StorageSpaceResult> checkAndReclaimStorage() async {
@@ -1060,9 +1082,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
 
   Future<void> _refreshOnce() async {
     try {
-      final Map<Object?, Object?> values =
-          await _platform.snapshot() ?? <Object?, Object?>{};
-      _applyNativeSnapshot(values);
+      _applyNativeSummary(await _platform.summary());
     } on PlatformException {
       // A worker can briefly hold the state file while replacing it.
     }
@@ -1157,8 +1177,8 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   void _attachNativeHandler() {
     if (_nativeHandlerAttached) return;
     _nativeHandlerAttached = true;
-    _platform.setSnapshotListener((Map<Object?, Object?> values) {
-      _applyNativeSnapshot(values);
+    _platform.setSummaryListener((BackupSummaryDto summary) {
+      _applyNativeSummary(summary);
       _ensureHeartbeatAlive();
     });
   }
@@ -1730,173 +1750,96 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     }
   }
 
-  void _applyNativeSnapshot(Map<Object?, Object?> values) {
-    LanBackupEndpoint? endpoint;
-    final Object? connectionValue = values['connection'];
-    if (connectionValue is Map<Object?, Object?>) {
-      endpoint = LanBackupEndpoint(
-        baseUri: Uri.parse(connectionValue['baseUrl']! as String),
-        accessKey: '',
-        computerId: connectionValue['computerId']! as String,
-        computerName: connectionValue['computerName']! as String,
-        lastConnectedAt: DateTime.tryParse(
-          '${connectionValue['lastConnectedAt'] ?? ''}',
-        ),
-      );
+  void _applyNativeSummary(BackupSummaryDto value) {
+    if (value.schemaVersion != 1) {
+      _log('backup_summary_unsupported_schema', <String, Object?>{
+        'schemaVersion': value.schemaVersion,
+      });
+      return;
     }
-    final List<Object?> rawJobs =
-        (values['jobs'] as List<Object?>?) ?? const <Object?>[];
-    final List<LanBackupJob> jobs = rawJobs
-        .map(
-          (Object? item) =>
-              LanBackupJob.fromMap(Map<Object?, Object?>.from(item! as Map)),
-        )
-        .toList(growable: false);
-    _logBackupJobFailureEdges(jobs, rawJobs);
-    final Object? migrationValue = values['migrationHost'];
-    final Map<Object?, Object?> migration = migrationValue is Map
-        ? Map<Object?, Object?>.from(migrationValue)
-        : const <Object?, Object?>{};
+    if (value.revision < _snapshot.summary.revision) {
+      _log('backup_summary_stale', <String, Object?>{
+        'revision': value.revision,
+        'currentRevision': _snapshot.summary.revision,
+      });
+      return;
+    }
+    final LanBackupEndpoint? endpoint = value.baseUrl == null
+        ? null
+        : LanBackupEndpoint(
+            baseUri: Uri.parse(value.baseUrl!),
+            accessKey: '',
+            computerId: value.computerId ?? '',
+            computerName: value.computerName ?? '',
+            lastConnectedAt: value.lastConnectedAtMs == null
+                ? null
+                : DateTime.fromMillisecondsSinceEpoch(
+                    value.lastConnectedAtMs!,
+                    isUtc: true,
+                  ),
+          );
+    final LanBackupSummary summary = LanBackupSummary(
+      revision: value.revision,
+      completedRevision: value.completedRevision,
+      cleanupHighWatermark: value.cleanupHighWatermark,
+      totalCount: value.totalCount,
+      pendingCount: value.pendingCount,
+      uploadingCount: value.uploadingCount,
+      pausedCount: value.pausedCount,
+      completedCount: value.completedCount,
+      failedCount: value.failedCount,
+      waitingCleanupCount: value.waitingCleanupCount,
+      localDeletedCount: value.localDeletedCount,
+      unfinishedUploadedBytes: value.unfinishedUploadedBytes,
+      unfinishedTotalBytes: value.unfinishedTotalBytes,
+      activeJob: value.activeJob == null ? null : _jobFromDto(value.activeJob!),
+      problemJob: value.problemJob == null
+          ? null
+          : _jobFromDto(value.problemJob!),
+      dominantFailureKind: LanBackupFailureKind.fromWireValue(
+        value.dominantFailureKind,
+      ),
+    );
+    _logBackupJobFailureEdge(summary.problemJob);
     final LanBackupSnapshot next = LanBackupSnapshot(
-      deviceId: '${values['deviceId'] ?? _snapshot.deviceId}',
-      deviceName: '${values['deviceName'] ?? _snapshot.deviceName}',
-      preferredHostId: endpoint == null
-          ? '${migration['computerId'] ?? _snapshot.preferredHostId}'
-          : '',
-      preferredHostName: endpoint == null
-          ? '${migration['computerName'] ?? _snapshot.preferredHostName}'
-          : '',
+      deviceId: value.deviceId,
+      deviceName: value.deviceName,
+      preferredHostId: endpoint == null ? value.preferredHostId ?? '' : '',
+      preferredHostName: endpoint == null ? value.preferredHostName ?? '' : '',
       endpoint: endpoint,
-      jobs: jobs,
+      summary: summary,
       autoEnabled: _snapshot.autoEnabled,
       connectionStatus: nativeBackupConnectionStatus(
         previous: _snapshot.connectionStatus,
         endpoint: endpoint,
-        jobs: jobs,
+        dominantFailureKind: summary.dominantFailureKind,
       ),
       message:
-          jobs.any(
-            (LanBackupJob job) =>
-                job.failureKind == LanBackupFailureKind.credentialInvalid,
-          )
+          summary.dominantFailureKind == LanBackupFailureKind.credentialInvalid
           ? '设备连接已失效，请重新申请并在电脑上允许连接'
-          : jobs.any(
-              (LanBackupJob job) =>
-                  job.failureKind == LanBackupFailureKind.notBackupHost,
-            )
+          : summary.dominantFailureKind == LanBackupFailureKind.notBackupHost
           ? '连接的电脑当前不是录像备份主机，请切换电脑用途或重新搜索'
           : _snapshot.message,
     );
-    final String signature = _snapshotSignature(next);
-    if (signature == _lastSnapshotSignature) {
-      return;
-    }
-    _lastSnapshotSignature = signature;
+    if (_sameBackupSummary(_snapshot, next)) return;
     _snapshot = next;
     notifyListeners();
   }
 
-  /// 对快照中 Dart 实际消费的字段做紧凑签名；内容未变化时跳过 UI 通知，
-  /// 避免显式刷新与原生合并推送反复触发整页重建。
-  String _snapshotSignature(LanBackupSnapshot snapshot) {
-    final StringBuffer buffer = StringBuffer()
-      ..write(snapshot.deviceId)
-      ..write('|')
-      ..write(snapshot.deviceName)
-      ..write('|')
-      ..write(snapshot.preferredHostId)
-      ..write('|')
-      ..write(snapshot.preferredHostName)
-      ..write('|')
-      ..write(snapshot.endpoint?.baseUri)
-      ..write('|')
-      ..write(snapshot.endpoint?.computerId)
-      ..write('|')
-      ..write(snapshot.endpoint?.computerName)
-      ..write('|')
-      ..write(snapshot.endpoint?.lastConnectedAt)
-      ..write('|')
-      ..write(snapshot.connectionStatus.name)
-      ..write('|')
-      ..write(snapshot.message)
-      ..write('|');
-    for (final LanBackupJob job in snapshot.jobs) {
-      buffer
-        ..write(job.id)
-        ..write(',')
-        ..write(job.filePath)
-        ..write(',')
-        ..write(job.state.name)
-        ..write(',')
-        ..write(job.uploadedBytes)
-        ..write(',')
-        ..write(job.totalBytes)
-        ..write(',')
-        ..write(job.lastModified)
-        ..write(',')
-        ..write(job.contentSha256)
-        ..write(',')
-        ..write(job.errorMessage)
-        ..write(',')
-        ..write(job.failureKind)
-        ..write(',')
-        ..write(job.fileCreatedAt)
-        ..write(',')
-        ..write(job.backupCompletedAt)
-        ..write(',')
-        ..write(job.scheduledCleanupAt)
-        ..write(',')
-        ..write(job.localDeletedAt)
-        ..write(',')
-        ..write(job.waitingCleanup)
-        ..write(',')
-        ..write(job.remoteRecordId)
-        ..write(',')
-        ..write(job.destinationComputerId)
-        ..write(',')
-        ..write(job.cleanupReason)
-        ..write(';');
+  void _logBackupJobFailureEdge(LanBackupJob? job) {
+    if (job == null || job.state != LanBackupJobState.failed) {
+      _loggedProblemJobId = null;
+      return;
     }
-    return buffer.toString();
-  }
-
-  void _logBackupJobFailureEdges(
-    List<LanBackupJob> jobs,
-    List<Object?> rawJobs,
-  ) {
-    final Set<String> activeFailedIds = jobs
-        .where(
-          (LanBackupJob job) =>
-              job.state == LanBackupJobState.paused ||
-              job.state == LanBackupJobState.failed,
-        )
-        .map((LanBackupJob job) => job.id)
-        .toSet();
-    for (int index = 0; index < jobs.length; index++) {
-      final LanBackupJob job = jobs[index];
-      if (job.state != LanBackupJobState.paused &&
-          job.state != LanBackupJobState.failed) {
-        continue;
-      }
-      if (!_loggedFailedJobIds.add(job.id)) {
-        continue;
-      }
-      final Map<Object?, Object?> raw = index < rawJobs.length
-          ? Map<Object?, Object?>.from(rawJobs[index]! as Map)
-          : const <Object?, Object?>{};
-      _log('backup_job_failed', <String, Object?>{
-        'jobId': job.id,
-        'filePath': job.filePath,
-        'state': job.state.name,
-        'failureKind': job.failureKind?.name,
-        'statusCode': raw['statusCode'],
-        'errorCode': raw['errorCode'],
-        'errorMessage': job.errorMessage,
-      });
-    }
-    _loggedFailedJobIds.removeWhere(
-      (String jobId) => !activeFailedIds.contains(jobId),
-    );
+    if (_loggedProblemJobId == job.id) return;
+    _loggedProblemJobId = job.id;
+    _log('backup_job_failed', <String, Object?>{
+      'jobId': job.id,
+      'filePath': job.filePath,
+      'state': job.state.name,
+      'failureKind': job.failureKind?.name,
+      'errorMessage': job.errorMessage,
+    });
   }
 
   @override
@@ -1926,6 +1869,11 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   }
 }
 
+bool _sameEndpointIdentity(LanBackupEndpoint? left, LanBackupEndpoint? right) {
+  if (left == null || right == null) return left == null && right == null;
+  return left.computerId == right.computerId && left.baseUri == right.baseUri;
+}
+
 enum _BackupHostProbe { backupHost, notBackupHost, unknown }
 
 bool _isSameBackupHost(LanBackupEndpoint current, LanBackupEndpoint candidate) {
@@ -1944,21 +1892,82 @@ String _normalizedHostUri(Uri uri) => Uri(
   port: uri.hasPort ? uri.port : null,
 ).toString();
 
+LanBackupJob _jobFromDto(BackupJobDto value) => LanBackupJob(
+  revision: value.revision,
+  id: value.id,
+  filePath: value.filePath,
+  state: LanBackupJobState.values.firstWhere(
+    (LanBackupJobState state) => state.name == value.state,
+    orElse: () => LanBackupJobState.failed,
+  ),
+  uploadedBytes: value.uploadedBytes,
+  totalBytes: value.totalBytes,
+  lastModified: _dateTimeFromMilliseconds(value.lastModifiedMs),
+  contentSha256: value.contentSha256,
+  errorMessage: value.errorMessage,
+  failureKind: LanBackupFailureKind.fromWireValue(value.failureKind),
+  fileCreatedAt: _dateTimeFromMilliseconds(value.fileCreatedAtMs),
+  backupCompletedAt: _dateTimeFromMilliseconds(value.backupCompletedAtMs),
+  scheduledCleanupAt: _dateTimeFromMilliseconds(value.scheduledCleanupAtMs),
+  localDeletedAt: _dateTimeFromMilliseconds(value.localDeletedAtMs),
+  waitingCleanup: value.waitingCleanup,
+  remoteRecordId: value.remoteRecordId,
+  destinationComputerId: value.destinationComputerId,
+  cleanupReason: value.cleanupReason,
+);
+
+DateTime? _dateTimeFromMilliseconds(int? value) => value == null
+    ? null
+    : DateTime.fromMillisecondsSinceEpoch(value, isUtc: true);
+
+bool _sameBackupSummary(LanBackupSnapshot left, LanBackupSnapshot right) {
+  final LanBackupJob? leftActive = left.summary.activeJob;
+  final LanBackupJob? rightActive = right.summary.activeJob;
+  final LanBackupJob? leftProblem = left.summary.problemJob;
+  final LanBackupJob? rightProblem = right.summary.problemJob;
+  return left.summary.revision == right.summary.revision &&
+      left.summary.completedRevision == right.summary.completedRevision &&
+      left.summary.cleanupHighWatermark == right.summary.cleanupHighWatermark &&
+      left.endpoint?.baseUri == right.endpoint?.baseUri &&
+      left.endpoint?.computerId == right.endpoint?.computerId &&
+      left.endpoint?.computerName == right.endpoint?.computerName &&
+      left.endpoint?.lastConnectedAt == right.endpoint?.lastConnectedAt &&
+      left.deviceId == right.deviceId &&
+      left.deviceName == right.deviceName &&
+      left.preferredHostId == right.preferredHostId &&
+      left.preferredHostName == right.preferredHostName &&
+      left.connectionStatus == right.connectionStatus &&
+      left.message == right.message &&
+      left.summary.totalCount == right.summary.totalCount &&
+      left.summary.pendingCount == right.summary.pendingCount &&
+      left.summary.uploadingCount == right.summary.uploadingCount &&
+      left.summary.pausedCount == right.summary.pausedCount &&
+      left.summary.completedCount == right.summary.completedCount &&
+      left.summary.failedCount == right.summary.failedCount &&
+      left.summary.waitingCleanupCount == right.summary.waitingCleanupCount &&
+      left.summary.localDeletedCount == right.summary.localDeletedCount &&
+      left.summary.unfinishedUploadedBytes ==
+          right.summary.unfinishedUploadedBytes &&
+      left.summary.unfinishedTotalBytes == right.summary.unfinishedTotalBytes &&
+      left.summary.dominantFailureKind == right.summary.dominantFailureKind &&
+      leftActive?.id == rightActive?.id &&
+      leftActive?.revision == rightActive?.revision &&
+      leftActive?.state == rightActive?.state &&
+      leftProblem?.id == rightProblem?.id &&
+      leftProblem?.revision == rightProblem?.revision &&
+      leftProblem?.state == rightProblem?.state;
+}
+
 LanConnectionStatus nativeBackupConnectionStatus({
   required LanConnectionStatus previous,
   required LanBackupEndpoint? endpoint,
-  required List<LanBackupJob> jobs,
+  required LanBackupFailureKind? dominantFailureKind,
 }) {
   if (endpoint == null) return LanConnectionStatus.disconnected;
-  if (jobs.any(
-    (LanBackupJob job) =>
-        job.failureKind == LanBackupFailureKind.credentialInvalid,
-  )) {
+  if (dominantFailureKind == LanBackupFailureKind.credentialInvalid) {
     return LanConnectionStatus.rePair;
   }
-  if (jobs.any(
-    (LanBackupJob job) => job.failureKind == LanBackupFailureKind.notBackupHost,
-  )) {
+  if (dominantFailureKind == LanBackupFailureKind.notBackupHost) {
     return LanConnectionStatus.notBackupHost;
   }
   return previous == LanConnectionStatus.disconnected

@@ -57,64 +57,73 @@ internal class RecordingStorageManager(
         StatFs(context.filesDir.path).availableBytes
     },
 ) {
-    fun checkAndReclaim(): RecordingStorageCheckResult = LanBackupStateStore.withJobLock {
+    fun checkAndReclaim(): RecordingStorageCheckResult {
         val before = availableBytes()
         var current = before
         var deletedCount = 0
         var freedBytes = 0L
         var jobsChanged = false
         if (RecordingStoragePolicy.needsReclaim(current)) {
-            val allJobs = store.jobs().associateBy { it.getString("id") }
-            val jobs = RecordingStoragePolicy.verifiedCandidates(
-                allJobs.values.map(::candidate),
-            ).mapNotNull { allJobs[it.id] }
-            for (job in jobs) {
-                if (current >= RecordingStoragePolicy.TARGET_BYTES) break
-                val file = File(job.optString("filePath"))
-                if (!isManaged(file)) continue
-                val expectedBytes = job.optLong("totalBytes", -1L)
-                when (
-                    LanBackupFileCleanup.deleteExpected(
-                        file = file,
-                        expectedBytes = expectedBytes,
-                        expectedLastModified = job.optLong("lastModified", -1L),
-                        expectedSha256 = LanBackupCleanupScheduler.nullableText(
-                            job,
-                            "contentSha256",
-                        ),
-                    )
-                ) {
-                    LanBackupFileCleanupResult.deleted -> {
-                        deletedCount++
-                        freedBytes += expectedBytes.coerceAtLeast(0)
-                        markDeleted(job)
-                        jobsChanged = true
+            var afterCreatedAtKey: String? = null
+            var afterId: String? = null
+            var page: LanBackupStorageJobPage
+            do {
+                page = store.storageRecoveryJobsPage(afterCreatedAtKey, afterId)
+                for (job in page.jobs) {
+                    if (current >= RecordingStoragePolicy.TARGET_BYTES) break
+                    if (!RecordingStoragePolicy.verifiedCandidates(listOf(candidate(job))).any()) {
+                        continue
                     }
-                    LanBackupFileCleanupResult.missing -> {
-                        markDeleted(job)
-                        jobsChanged = true
-                    }
-                    LanBackupFileCleanupResult.stale -> {
-                        val message = "录像文件已被替换，已取消空间清理"
-                        if (job.optString("errorMessage") != message) {
-                            job.put("errorMessage", message)
-                            store.writeJob(job)
+                    val file = File(job.optString("filePath"))
+                    if (!isManaged(file)) continue
+                    val expectedBytes = job.optLong("totalBytes", -1L)
+                    when (
+                        LanBackupFileCleanup.deleteExpected(
+                            file = file,
+                            expectedBytes = expectedBytes,
+                            expectedLastModified = job.optLong("lastModified", -1L),
+                            expectedSha256 = LanBackupCleanupScheduler.nullableText(
+                                job,
+                                "contentSha256",
+                            ),
+                        )
+                    ) {
+                        LanBackupFileCleanupResult.deleted -> {
+                            deletedCount++
+                            freedBytes += expectedBytes.coerceAtLeast(0)
+                            markDeleted(job)
                             jobsChanged = true
                         }
-                    }
-                    LanBackupFileCleanupResult.failed -> {
-                        val message = "空间清理失败，已保留本机录像"
-                        if (job.optString("errorMessage") != message) {
-                            job.put("errorMessage", message)
-                            store.writeJob(job)
+                        LanBackupFileCleanupResult.missing -> {
+                            markDeleted(job)
                             jobsChanged = true
                         }
+                        LanBackupFileCleanupResult.stale -> {
+                            val message = "录像文件已被替换，已取消空间清理"
+                            if (job.optString("errorMessage") != message) {
+                                job.put("errorMessage", message)
+                                store.writeJob(job)
+                                jobsChanged = true
+                            }
+                        }
+                        LanBackupFileCleanupResult.failed -> {
+                            val message = "空间清理失败，已保留本机录像"
+                            if (job.optString("errorMessage") != message) {
+                                job.put("errorMessage", message)
+                                store.writeJob(job)
+                                jobsChanged = true
+                            }
+                        }
                     }
+                    current = availableBytes()
                 }
-                current = availableBytes()
-            }
+                afterCreatedAtKey = page.nextCreatedAtKey
+                afterId = page.nextId
+            } while (
+                current < RecordingStoragePolicy.TARGET_BYTES && page.jobs.size == 100
+            )
         }
-        RecordingStorageCheckResult(
+        return RecordingStorageCheckResult(
             values = mapOf(
                 "availableBytes" to current,
                 "availableBytesBefore" to before,

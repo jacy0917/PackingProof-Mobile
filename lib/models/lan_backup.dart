@@ -110,6 +110,7 @@ class LanBackupEndpoint {
 
 class LanBackupJob {
   const LanBackupJob({
+    this.revision = 0,
     required this.id,
     required this.filePath,
     required this.state,
@@ -131,6 +132,7 @@ class LanBackupJob {
 
   factory LanBackupJob.fromMap(Map<Object?, Object?> map) {
     return LanBackupJob(
+      revision: (map['revision'] as num?)?.toInt() ?? 0,
       id: map['id']! as String,
       filePath: map['filePath']! as String,
       state: LanBackupJobState.values.firstWhere(
@@ -154,6 +156,7 @@ class LanBackupJob {
     );
   }
 
+  final int revision;
   final String id;
   final String filePath;
   final LanBackupJobState state;
@@ -173,6 +176,97 @@ class LanBackupJob {
   final String? cleanupReason;
 
   double get progress => totalBytes <= 0 ? 0 : uploadedBytes / totalBytes;
+}
+
+class LanBackupJobsByPaths {
+  const LanBackupJobsByPaths({
+    required this.revision,
+    required this.jobs,
+    required this.missingPaths,
+  });
+
+  final int revision;
+  final List<LanBackupJob> jobs;
+  final Set<String> missingPaths;
+}
+
+class LanBackupCleanupEvent {
+  const LanBackupCleanupEvent({
+    required this.revision,
+    required this.eventId,
+    required this.jobId,
+    required this.filePath,
+    required this.fileSizeBytes,
+    required this.deletedAt,
+    required this.reason,
+  });
+
+  final int revision;
+  final String eventId;
+  final String jobId;
+  final String filePath;
+  final int fileSizeBytes;
+  final DateTime deletedAt;
+  final String reason;
+}
+
+class LanBackupCleanupPage {
+  const LanBackupCleanupPage({
+    required this.latestRevision,
+    required this.nextAfterRevision,
+    required this.hasMore,
+    required this.events,
+  });
+
+  final int latestRevision;
+  final int nextAfterRevision;
+  final bool hasMore;
+  final List<LanBackupCleanupEvent> events;
+}
+
+class LanBackupSummary {
+  const LanBackupSummary({
+    this.revision = 0,
+    this.completedRevision = 0,
+    this.cleanupHighWatermark = 0,
+    this.totalCount = 0,
+    this.pendingCount = 0,
+    this.uploadingCount = 0,
+    this.pausedCount = 0,
+    this.completedCount = 0,
+    this.failedCount = 0,
+    this.waitingCleanupCount = 0,
+    this.localDeletedCount = 0,
+    this.unfinishedUploadedBytes = 0,
+    this.unfinishedTotalBytes = 0,
+    this.activeJob,
+    this.problemJob,
+    this.dominantFailureKind,
+  });
+
+  final int revision;
+  final int completedRevision;
+  final int cleanupHighWatermark;
+  final int totalCount;
+  final int pendingCount;
+  final int uploadingCount;
+  final int pausedCount;
+  final int completedCount;
+  final int failedCount;
+  final int waitingCleanupCount;
+  final int localDeletedCount;
+  final int unfinishedUploadedBytes;
+  final int unfinishedTotalBytes;
+  final LanBackupJob? activeJob;
+  final LanBackupJob? problemJob;
+  final LanBackupFailureKind? dominantFailureKind;
+
+  int get unfinishedCount =>
+      pendingCount + uploadingCount + pausedCount + failedCount;
+
+  double get aggregateProgress => unfinishedTotalBytes <= 0
+      ? 0
+      : (unfinishedUploadedBytes / unfinishedTotalBytes).clamp(0, 1);
 }
 
 class StorageSpaceResult {
@@ -228,7 +322,7 @@ class NetworkDiagnostics {
 class LanBackupSnapshot {
   const LanBackupSnapshot({
     this.endpoint,
-    this.jobs = const <LanBackupJob>[],
+    this.summary = const LanBackupSummary(),
     this.autoEnabled = true,
     this.message,
     this.connectionStatus = LanConnectionStatus.disconnected,
@@ -240,7 +334,7 @@ class LanBackupSnapshot {
   });
 
   final LanBackupEndpoint? endpoint;
-  final List<LanBackupJob> jobs;
+  final LanBackupSummary summary;
   final bool autoEnabled;
   final String? message;
   final LanConnectionStatus connectionStatus;
@@ -251,40 +345,16 @@ class LanBackupSnapshot {
   final MobileAppUpdateNotice? mobileAppUpdate;
 
   bool get connected => endpoint != null;
-  int get pendingCount => jobs.where((LanBackupJob job) {
-    return job.state != LanBackupJobState.completed;
-  }).length;
-
-  int get activeCount => jobs.where((LanBackupJob job) {
-    return job.state == LanBackupJobState.pending ||
-        job.state == LanBackupJobState.uploading ||
-        job.state == LanBackupJobState.paused;
-  }).length;
-
-  int get completedCount => jobs
-      .where((LanBackupJob job) => job.state == LanBackupJobState.completed)
-      .length;
-
-  double get aggregateProgress {
-    final List<LanBackupJob> active = jobs
-        .where((LanBackupJob job) => job.state != LanBackupJobState.completed)
-        .toList(growable: false);
-    final int total = active.fold(
-      0,
-      (int sum, LanBackupJob job) => sum + job.totalBytes,
-    );
-    if (total <= 0) return 0;
-    final int uploaded = active.fold(
-      0,
-      (int sum, LanBackupJob job) => sum + job.uploadedBytes,
-    );
-    return (uploaded / total).clamp(0, 1);
-  }
+  int get pendingCount => summary.unfinishedCount;
+  int get activeCount =>
+      summary.pendingCount + summary.uploadingCount + summary.pausedCount;
+  int get completedCount => summary.completedCount;
+  double get aggregateProgress => summary.aggregateProgress;
 
   LanBackupSnapshot copyWith({
     LanBackupEndpoint? endpoint,
     bool clearEndpoint = false,
-    List<LanBackupJob>? jobs,
+    LanBackupSummary? summary,
     bool? autoEnabled,
     String? message,
     bool clearMessage = false,
@@ -298,7 +368,7 @@ class LanBackupSnapshot {
   }) {
     return LanBackupSnapshot(
       endpoint: clearEndpoint ? null : endpoint ?? this.endpoint,
-      jobs: jobs ?? this.jobs,
+      summary: summary ?? this.summary,
       autoEnabled: autoEnabled ?? this.autoEnabled,
       message: clearMessage ? null : message ?? this.message,
       connectionStatus: connectionStatus ?? this.connectionStatus,

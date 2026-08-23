@@ -92,6 +92,7 @@ mixin _RecordingsHistoryDataCoordinator on _RecordingsBackupCoordinator {
       if (prefetchNext && result.page < result.pageCount) {
         await _loadLocalPageWithoutBusy(result.page + 1, generation);
       }
+      await _refreshBackupJobsForPaths();
     } on Object {
       // broad-catch: Keep loaded rows visible for any local database failure.
     } finally {
@@ -273,17 +274,7 @@ mixin _RecordingsHistoryDataCoordinator on _RecordingsBackupCoordinator {
   Future<void> _refreshRemoteStatuses(List<RemoteRecording> page) async {
     final callback = widget.onLoadRemoteRecordingStatuses;
     if (callback == null) return;
-    final Set<int> ids = page.map((item) => item.id).toSet()
-      ..addAll(
-        _backupSnapshot.jobs
-            .where(
-              (job) =>
-                  job.destinationComputerId ==
-                  _backupSnapshot.endpoint?.computerId,
-            )
-            .map((job) => job.remoteRecordId)
-            .whereType<int>(),
-      );
+    final Set<int> ids = page.map((item) => item.id).toSet();
     if (ids.isEmpty) return;
     try {
       final statuses = await callback(ids);

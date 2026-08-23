@@ -46,52 +46,30 @@ class _ComputerBackupSettings extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
-    final LanBackupJob? active = snapshot.jobs.cast<LanBackupJob?>().firstWhere(
-      (LanBackupJob? job) => job?.state == LanBackupJobState.uploading,
-      orElse: () => null,
-    );
-    final LanBackupJob? failed = snapshot.jobs.cast<LanBackupJob?>().firstWhere(
-      (LanBackupJob? job) => job?.state == LanBackupJobState.failed,
-      orElse: () => null,
-    );
-    final LanBackupJob? paused = snapshot.jobs.cast<LanBackupJob?>().firstWhere(
-      (LanBackupJob? job) => job?.state == LanBackupJobState.paused,
-      orElse: () => null,
-    );
-    final LanBackupJob? credentialFailure = snapshot.jobs
-        .cast<LanBackupJob?>()
-        .firstWhere(
-          (LanBackupJob? job) =>
-              (job?.state == LanBackupJobState.failed ||
-                  job?.state == LanBackupJobState.paused) &&
-              job?.failureKind == LanBackupFailureKind.credentialInvalid,
-          orElse: () => null,
-        );
-    final LanBackupJob? notBackupHostFailure = snapshot.jobs
-        .cast<LanBackupJob?>()
-        .firstWhere(
-          (LanBackupJob? job) =>
-              (job?.state == LanBackupJobState.failed ||
-                  job?.state == LanBackupJobState.paused) &&
-              job?.failureKind == LanBackupFailureKind.notBackupHost,
-          orElse: () => null,
-        );
-    final LanBackupJob? classifiedFailure = failed?.failureKind != null
-        ? failed
-        : paused?.failureKind != null
-        ? paused
+    final LanBackupSummary summary = snapshot.summary;
+    final LanBackupJob? active =
+        summary.activeJob?.state == LanBackupJobState.uploading
+        ? summary.activeJob
         : null;
+    final LanBackupJob? failed =
+        summary.problemJob?.state == LanBackupJobState.failed
+        ? summary.problemJob
+        : null;
+    final LanBackupJob? paused =
+        summary.problemJob?.state == LanBackupJobState.paused
+        ? summary.problemJob
+        : null;
+    final LanBackupJob? classifiedFailure = summary.problemJob;
     final LanBackupFailureKind? failureKind =
         snapshot.connectionStatus == LanConnectionStatus.notBackupHost ||
-            notBackupHostFailure != null
+            summary.dominantFailureKind == LanBackupFailureKind.notBackupHost
         ? LanBackupFailureKind.notBackupHost
         : snapshot.connectionStatus == LanConnectionStatus.rePair ||
-              credentialFailure != null
+              summary.dominantFailureKind ==
+                  LanBackupFailureKind.credentialInvalid
         ? LanBackupFailureKind.credentialInvalid
         : classifiedFailure?.failureKind;
-    final int pending = snapshot.jobs
-        .where((LanBackupJob job) => job.state == LanBackupJobState.pending)
-        .length;
+    final int pending = summary.pendingCount;
     final int progress = ((active?.progress ?? 0) * 100).round();
     final bool paired = snapshot.endpoint != null;
     final String remainingLabel = remainingBackupCount == 0

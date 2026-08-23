@@ -14,15 +14,18 @@ import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
 
 private const val CLEANUP_TAG = "PackingProofCleanup"
 
 internal object LanBackupCleanupScheduler {
     private const val WORK_PREFIX = "lan-backup-cleanup-"
+    internal const val UNIQUE_WORK = "lan-backup-cleanup-dispatcher"
+    internal const val WORK_TAG = "lan-backup-cleanup"
     val RETENTION_CONFIRMATION_GRACE: Duration = Duration.ofHours(24)
 
-    fun reschedule(context: Context, store: LanBackupStateStore, job: JSONObject) =
+    fun reschedule(context: Context, store: LanBackupStateStore, job: JSONObject) {
         LanBackupStateStore.withJobLock {
             val id = job.getString("id")
             val expectedGeneration = nullableText(job, "generation") ?: return@withJobLock
@@ -32,45 +35,99 @@ internal object LanBackupCleanupScheduler {
             val workManager = WorkManager.getInstance(context)
             val dueAt = dueAt(store, current)
             if (dueAt == null || nullableText(current, "localDeletedAt") != null) {
-                store.updateJob(id, expectedGeneration) { value ->
-                    value.put("scheduledCleanupAt", JSONObject.NULL).put("waitingCleanup", false)
-                    true
-                } ?: return@withJobLock
+                if (nullableText(current, "scheduledCleanupAt") != null ||
+                    current.optBoolean("waitingCleanup")
+                ) {
+                    store.updateJob(id, expectedGeneration) { value ->
+                        value.put("scheduledCleanupAt", JSONObject.NULL)
+                            .put("waitingCleanup", false)
+                        true
+                    } ?: return@withJobLock
+                }
                 workManager.cancelUniqueWork(WORK_PREFIX + id)
                 return@withJobLock
             }
             if (shouldSkipReschedule(current, dueAt)) {
                 return@withJobLock
             }
-            val delay = Duration.between(Instant.now(), dueAt).toMillis().coerceAtLeast(0)
             store.updateJob(id, expectedGeneration) { value ->
                 value.put("scheduledCleanupAt", dueAt.toString())
                 true
             } ?: return@withJobLock
-            val request = OneTimeWorkRequestBuilder<LanBackupCleanupWorker>()
-                .setInputData(
-                    workDataOf(
-                        "jobId" to id,
-                        "generation" to expectedGeneration,
-                    ),
-                )
-                .setInitialDelay(delay, TimeUnit.MILLISECONDS)
-                .addTag("lan-backup")
-                .build()
-            workManager.enqueueUniqueWork(
-                WORK_PREFIX + id,
-                ExistingWorkPolicy.REPLACE,
-                request,
-            )
+            workManager.cancelUniqueWork(WORK_PREFIX + id)
         }
+        scheduleNext(context, store)
+    }
 
     /** 已按同一 dueAt 排程过且未到期的清理任务不重复入队，保证启动与竞态下幂等。 */
     internal fun shouldSkipReschedule(current: JSONObject, dueAt: Instant): Boolean =
         nullableText(current, "scheduledCleanupAt") == dueAt.toString()
 
     fun rescheduleAll(context: Context, store: LanBackupStateStore) {
-        store.jobs().forEach { reschedule(context, store, it) }
+        var afterId: String? = null
+        var page: List<String>
+        do {
+            page = store.cleanupSchedulingJobIdsPage(afterId)
+            page.forEach { id -> store.readJob(id)?.let { updateSchedule(store, it) } }
+            afterId = page.lastOrNull()
+        } while (page.size == 100)
+        scheduleNext(context, store)
     }
+
+    private fun updateSchedule(store: LanBackupStateStore, job: JSONObject) {
+        LanBackupStateStore.withJobLock {
+            val id = job.getString("id")
+            val expectedGeneration = nullableText(job, "generation") ?: return@withJobLock
+            val current = store.readJob(id)
+                ?.takeIf { nullableText(it, "generation") == expectedGeneration }
+                ?: return@withJobLock
+            val dueAt = dueAt(store, current)
+            if (dueAt == null || nullableText(current, "localDeletedAt") != null) {
+                if (nullableText(current, "scheduledCleanupAt") != null ||
+                    current.optBoolean("waitingCleanup")
+                ) {
+                    store.updateJob(id, expectedGeneration) { value ->
+                        value.put("scheduledCleanupAt", JSONObject.NULL)
+                            .put("waitingCleanup", false)
+                        true
+                    }
+                }
+            } else if (!shouldSkipReschedule(current, dueAt)) {
+                store.updateJob(id, expectedGeneration) { value ->
+                    value.put("scheduledCleanupAt", dueAt.toString())
+                    true
+                }
+            }
+        }
+    }
+
+    fun scheduleNext(context: Context, store: LanBackupStateStore, append: Boolean = false) {
+        val next = store.nextScheduledCleanupJob() ?: return
+        val id = next.getString("id")
+        val generation = nullableText(next, "generation") ?: return
+        val scheduledAt = nullableText(next, "scheduledCleanupAt")
+            ?.let { value -> runCatching { Instant.parse(value) }.getOrNull() }
+            ?: return
+        val delay = Duration.between(Instant.now(), scheduledAt).toMillis().coerceAtLeast(0)
+        val request = OneTimeWorkRequestBuilder<LanBackupCleanupWorker>()
+            .setInputData(workDataOf("jobId" to id, "generation" to generation))
+            .setInitialDelay(delay, TimeUnit.MILLISECONDS)
+            .addTag("lan-backup")
+            .addTag(WORK_TAG)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            UNIQUE_WORK,
+            schedulingPolicy(append),
+            request,
+        )
+    }
+
+    /**
+     * 外部重排必须替换旧的延迟请求，否则 KEEP 会让新出现的更早截止时间
+     * 被已有的较晚请求吞掉。worker 完成后的续接仍追加到当前串行链尾。
+     */
+    internal fun schedulingPolicy(append: Boolean): ExistingWorkPolicy =
+        if (append) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.REPLACE
 
     fun dueAt(store: LanBackupStateStore, job: JSONObject): Instant? {
         val completedAt = nullableText(job, "backupCompletedAt")
@@ -109,6 +166,10 @@ internal object LanBackupCleanupScheduler {
 }
 
 internal enum class LanBackupFileCleanupResult { deleted, missing, stale, failed }
+
+internal fun remoteAttestationAllowsLocalDeletion(
+    attestation: RemoteRecordAttestation,
+): Boolean = attestation == RemoteRecordAttestation.Confirmed
 
 internal object LanBackupFileCleanup {
     fun deleteExpected(
@@ -190,10 +251,61 @@ internal class LanBackupCleanupWorker(
 ) : CoroutineWorker(appContext, params) {
     private val store = LanBackupStateStore(appContext)
     private val credentials = LanBackupCredentialStore(appContext)
+    private var requestedRetry = false
 
-    override suspend fun doWork(): Result {
-        val id = inputData.getString("jobId") ?: return Result.failure()
-        val generation = inputData.getString("generation") ?: return Result.success()
+    override suspend fun doWork(): Result = try {
+        runWork()
+    } finally {
+        store.close()
+    }
+
+    private suspend fun runWork(): Result {
+        requestedRetry = false
+        val id = inputData.getString("jobId")
+        val generation = inputData.getString("generation")
+        val result = try {
+            if (id == null) {
+                Result.success()
+            } else if (generation == null) {
+                Result.success()
+            } else {
+                process(id, generation)
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.e(CLEANUP_TAG, "Cleanup dispatcher failed id=${id?.take(8)}", error)
+            if (id != null && generation != null) {
+                store.updateJob(id, generation) { job ->
+                    job.put("waitingCleanup", true)
+                        .put(
+                            "scheduledCleanupAt",
+                            Instant.now().plus(Duration.ofMinutes(15)).toString(),
+                        )
+                        .put("errorMessage", "自动清理暂时失败，已保留本地录像等待重试")
+                    true
+                }
+            }
+            Result.success()
+        }
+        if (!requestedRetry) {
+            LanBackupCleanupScheduler.scheduleNext(applicationContext, store, append = true)
+            // 清理结果已经持久化到任务行；dispatcher 需要保持成功，
+            // 避免单条异常记录取消整条 unique-work 后继链。
+            return Result.success()
+        }
+        return result
+    }
+
+    private suspend fun process(id: String, generation: String): Result {
+        store.updateJob(id, generation) { job ->
+            if (LanBackupCleanupScheduler.nullableText(job, "scheduledCleanupAt") == null) {
+                false
+            } else {
+                job.put("scheduledCleanupAt", JSONObject.NULL)
+                true
+            }
+        }
 
         // 预计算远端确认结果（网络调用不持有 job 锁，避免阻塞 snapshot/enqueue）。
         val snapshot = store.readJob(id) ?: return Result.success()
@@ -260,7 +372,7 @@ internal class LanBackupCleanupWorker(
             ) {
                 job.put("waitingCleanup", true)
                 store.writeJob(job)
-                return@withJobLock Result.retry()
+                return@withJobLock retry()
             }
 
             val file = File(job.optString("filePath"))
@@ -280,7 +392,6 @@ internal class LanBackupCleanupWorker(
                 LanBackupCleanupScheduler.nullableText(job, "backupCompletedAt")
             val contentSha256 =
                 LanBackupCleanupScheduler.nullableText(job, "contentSha256")
-            var unconfirmedCleanup = false
 
             if (completedAt != null) {
                 val recordId = job.optLong("remoteRecordId").takeIf { it > 0 }
@@ -312,36 +423,40 @@ internal class LanBackupCleanupWorker(
                     } else {
                         precomputedAttestation ?: RemoteRecordAttestation.Unreachable
                     }
-                when (attestation) {
-                    RemoteRecordAttestation.Confirmed -> {
-                        job.put("lastAttestedAt", Instant.now().toString())
-                    }
-                    RemoteRecordAttestation.Missing -> {
-                        Log.w(CLEANUP_TAG, "Cleanup preserved missing remote record path=${file.absolutePath}")
-                        job.put("waitingCleanup", false)
-                            .put("errorMessage", "远端缺失，待重新备份")
-                        store.writeJob(job)
-                        return@withJobLock Result.success()
-                    }
-                    RemoteRecordAttestation.Unauthorized -> {
-                        Log.w(CLEANUP_TAG, "Cleanup preserved unauthorized attestation path=${file.absolutePath}")
-                        job.put("waitingCleanup", false)
-                            .put("errorMessage", "需要重新扫码授权")
-                        store.writeJob(job)
-                        return@withJobLock Result.success()
-                    }
-                    RemoteRecordAttestation.NotReady -> {
-                        Log.w(CLEANUP_TAG, "Cleanup preserved not-ready remote record path=${file.absolutePath}")
-                        job.put("waitingCleanup", true)
-                            .put("errorMessage", "电脑端尚未完成校验")
-                        store.writeJob(job)
-                        return@withJobLock Result.retry()
-                    }
-                    RemoteRecordAttestation.Unreachable -> {
-                        Log.w(CLEANUP_TAG, "Cleanup unconfirmed backup path=${file.absolutePath}")
-                        unconfirmedCleanup = true
+                if (!remoteAttestationAllowsLocalDeletion(attestation)) {
+                    when (attestation) {
+                        RemoteRecordAttestation.Confirmed -> error("已确认的远端记录不应阻止清理")
+                        RemoteRecordAttestation.Missing -> {
+                            Log.w(CLEANUP_TAG, "Cleanup preserved missing remote record path=${file.absolutePath}")
+                            job.put("waitingCleanup", false)
+                                .put("errorMessage", "远端缺失，待重新备份")
+                            store.writeJob(job)
+                            return@withJobLock Result.success()
+                        }
+                        RemoteRecordAttestation.Unauthorized -> {
+                            Log.w(CLEANUP_TAG, "Cleanup preserved unauthorized attestation path=${file.absolutePath}")
+                            job.put("waitingCleanup", false)
+                                .put("errorMessage", "需要重新扫码授权")
+                            store.writeJob(job)
+                            return@withJobLock Result.success()
+                        }
+                        RemoteRecordAttestation.NotReady -> {
+                            Log.w(CLEANUP_TAG, "Cleanup preserved not-ready remote record path=${file.absolutePath}")
+                            job.put("waitingCleanup", true)
+                                .put("errorMessage", "电脑端尚未完成校验")
+                            store.writeJob(job)
+                            return@withJobLock retry()
+                        }
+                        RemoteRecordAttestation.Unreachable -> {
+                            Log.w(CLEANUP_TAG, "Cleanup preserved unreachable backup path=${file.absolutePath}")
+                            job.put("waitingCleanup", true)
+                                .put("errorMessage", "暂时无法向电脑确认备份，已保留本地录像")
+                            store.writeJob(job)
+                            return@withJobLock retry()
+                        }
                     }
                 }
+                job.put("lastAttestedAt", Instant.now().toString())
             }
 
             when (
@@ -363,7 +478,7 @@ internal class LanBackupCleanupWorker(
                     Log.w(CLEANUP_TAG, "Cleanup failed and will retry path=${file.absolutePath}")
                     job.put("waitingCleanup", true)
                     store.writeJob(job)
-                    return@withJobLock Result.retry()
+                    return@withJobLock retry()
                 }
                 LanBackupFileCleanupResult.deleted -> Log.i(
                     CLEANUP_TAG,
@@ -382,7 +497,6 @@ internal class LanBackupCleanupWorker(
                     "cleanupReason",
                     when {
                         completedAt == null -> "未备份录像保留策略清理"
-                        unconfirmedCleanup -> "已备份未确认清理（电脑离线）"
                         else -> "已备份录像保留策略清理"
                     },
                 )
@@ -393,5 +507,10 @@ internal class LanBackupCleanupWorker(
             store.writeJob(job)
             Result.success()
         }
+    }
+
+    private fun retry(): Result {
+        requestedRetry = true
+        return Result.retry()
     }
 }

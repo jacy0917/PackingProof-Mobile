@@ -169,6 +169,29 @@ final class IosBackupCredentialStore {
 final class IosBackupJobStore {
   private static let legacyDefaultsKey = "ios_backup_jobs"
   private static let isoFormatter = ISO8601DateFormatter()
+  private static let summaryCounters = [
+    (meta: "summary_total_count", value: "totalCount"),
+    (meta: "summary_pending_count", value: "pendingCount"),
+    (meta: "summary_uploading_count", value: "uploadingCount"),
+    (meta: "summary_paused_count", value: "pausedCount"),
+    (meta: "summary_completed_count", value: "completedCount"),
+    (meta: "summary_failed_count", value: "failedCount"),
+    (meta: "summary_waiting_cleanup_count", value: "waitingCleanupCount"),
+    (meta: "summary_local_deleted_count", value: "localDeletedCount"),
+    (meta: "summary_unfinished_uploaded_bytes", value: "unfinishedUploadedBytes"),
+    (meta: "summary_unfinished_total_bytes", value: "unfinishedTotalBytes"),
+  ]
+  private static let dominantFailurePriority = [
+    "credential_invalid",
+    "not_backup_host",
+    "incompatible_version",
+    "verification_failed",
+    "storage_unavailable",
+    "upload_expired",
+    "temporary_service",
+    "offline_or_timeout",
+    "unknown",
+  ]
   private static let sqliteTransient = unsafeBitCast(
     -1,
     to: sqlite3_destructor_type.self
@@ -223,32 +246,31 @@ final class IosBackupJobStore {
     sqlite3_close(db)
   }
 
-  func allJobs() throws -> [[String: Any]] {
+  func readJob(id: String) throws -> [String: Any]? {
     lock.lock()
     defer { lock.unlock() }
-    return try queryJobsUnlocked()
-  }
-
-  /// 只读取备份快照实际展示的字段，避免周期轮询加载并解码 sessions。
-  func snapshotJobs() throws -> [[String: Any]] {
-    lock.lock()
-    defer { lock.unlock() }
-    return try querySnapshotJobsUnlocked()
+    return try readJobUnlocked(id)
   }
 
   func upsert(_ rawJob: [String: Any]) throws {
     lock.lock()
     defer { lock.unlock() }
-    try upsertUnlocked(rawJob)
+    try writeTransactionUnlocked(operation: "保存任务") {
+      try writeJobUnlocked(rawJob)
+    }
   }
 
   func updateJob(id: String, mutate: (inout [String: Any]) -> Void) throws -> Bool {
     lock.lock()
     defer { lock.unlock() }
-    guard var job = try readJobUnlocked(id) else { return false }
-    mutate(&job)
-    try upsertUnlocked(job)
-    return true
+    var updated = false
+    try writeTransactionUnlocked(operation: "更新任务") {
+      guard var job = try readJobUnlocked(id) else { return }
+      mutate(&job)
+      try writeJobUnlocked(job)
+      updated = true
+    }
+    return updated
   }
 
   /// 在同一 SQLite 写事务内校验并更新任务代次，避免旧上传任务覆盖新状态。
@@ -274,7 +296,7 @@ final class IosBackupJobStore {
           message: "按代次更新不得修改 generation"
         )
       }
-      try upsertUnlocked(job)
+      try writeJobUnlocked(job)
       try execute("COMMIT", operation: "提交按代次任务更新")
       return true
     } catch {
@@ -286,7 +308,227 @@ final class IosBackupJobStore {
   func deleteJob(id: String) throws {
     lock.lock()
     defer { lock.unlock() }
-    try deleteUnlocked(id)
+    try writeTransactionUnlocked(operation: "删除任务") {
+      guard let current = try readJobUnlocked(id) else { return }
+      _ = try nextRevisionUnlocked()
+      try deleteUnlocked(id)
+      try adjustSummaryCountersUnlocked(previous: current, current: nil)
+    }
+  }
+
+  func jobsForPaths(_ paths: [String]) throws -> (revision: Int64, jobs: [[String: Any]]) {
+    lock.lock()
+    defer { lock.unlock() }
+    guard !paths.isEmpty else { return (try metaValueUnlocked("global_revision"), []) }
+    let placeholders = Array(repeating: "?", count: paths.count).joined(separator: ",")
+    let sql = "\(summaryJobSelect) WHERE file_path IN (\(placeholders)) ORDER BY last_modified DESC"
+    var stmt: OpaquePointer?
+    try prepare(sql, statement: &stmt, operation: "按路径查询任务")
+    defer { sqlite3_finalize(stmt) }
+    for (index, path) in paths.enumerated() {
+      try bindText(stmt, Int32(index + 1), path)
+    }
+    var jobs: [[String: Any]] = []
+    while sqlite3_step(stmt) == SQLITE_ROW { jobs.append(summaryJobFromRow(stmt)) }
+    return (try metaValueUnlocked("global_revision"), jobs)
+  }
+
+  /// 原子领取一条待上传任务。SQLite 是等待队列的唯一事实源；调用方只为
+  /// 实际领取到的任务创建上传 Task，不能为其余 pending 行建立等待 Task。
+  func claimNextUploadJob() throws -> [String: Any]? {
+    lock.lock()
+    defer { lock.unlock() }
+    try execute("BEGIN IMMEDIATE", operation: "开始领取上传任务")
+    do {
+      let uploading = try firstJobUnlocked(
+        whereClause: "state = 'uploading' AND local_deleted_at IS NULL",
+        orderBy: "revision ASC, id ASC"
+      )
+      guard var job = try uploading ?? firstJobUnlocked(
+        whereClause: "state = 'pending' AND local_deleted_at IS NULL",
+        orderBy: "revision ASC, id ASC"
+      ) else {
+        try execute("COMMIT", operation: "提交空上传队列领取")
+        return nil
+      }
+      if job["state"] as? String == "pending" {
+        job["state"] = "uploading"
+        try writeJobUnlocked(job)
+      }
+      try execute("COMMIT", operation: "提交上传任务领取")
+      return job
+    } catch {
+      try? execute("ROLLBACK", operation: "回滚上传任务领取")
+      throw error
+    }
+  }
+
+  func cleanupCandidateJobsPage(
+    afterId: String?, limit: Int = 100
+  ) throws -> [[String: Any]] {
+    lock.lock()
+    defer { lock.unlock() }
+    guard (1...100).contains(limit) else {
+      throw IosBackupStoreError(
+        operation: "校验清理分页", code: SQLITE_RANGE, message: "单页数量必须为 1 到 100"
+      )
+    }
+    let cursorClause = afterId == nil ? "" : " AND id > ?"
+    let sql = "SELECT * FROM backup_jobs WHERE local_deleted_at IS NULL "
+      + "AND state NOT IN ('pending', 'uploading')\(cursorClause) "
+      + "ORDER BY id ASC LIMIT \(limit)"
+    var stmt: OpaquePointer?
+    try prepare(sql, statement: &stmt, operation: "分页查询清理候选")
+    defer { sqlite3_finalize(stmt) }
+    if let afterId { try bindText(stmt, 1, afterId, operation: "绑定清理分页游标") }
+    var jobs: [[String: Any]] = []
+    while true {
+      let code = sqlite3_step(stmt)
+      if code == SQLITE_DONE { break }
+      guard code == SQLITE_ROW else {
+        throw databaseError(operation: "分页查询清理候选", code: code)
+      }
+      jobs.append(try jobFromRow(stmt))
+    }
+    return jobs
+  }
+
+  func storageRecoveryJobsPage(
+    afterCreatedAtKey: String?,
+    afterId: String?,
+    minimumVerificationVersion: Int,
+    limit: Int = 100
+  ) throws -> (jobs: [[String: Any]], nextCreatedAtKey: String?, nextId: String?) {
+    lock.lock()
+    defer { lock.unlock() }
+    guard (1...100).contains(limit), (afterCreatedAtKey == nil) == (afterId == nil) else {
+      throw IosBackupStoreError(
+        operation: "校验空间回收分页", code: SQLITE_RANGE,
+        message: "分页数量必须为 1 到 100 且游标必须完整"
+      )
+    }
+    let createdAtExpression = "COALESCE(file_created_at, '9999-12-31T23:59:59Z')"
+    let cursorClause = afterCreatedAtKey == nil
+      ? ""
+      : " AND (\(createdAtExpression) > ? OR (\(createdAtExpression) = ? AND id > ?))"
+    let sql = "SELECT * FROM backup_jobs WHERE state = 'completed' "
+      + "AND backup_completed_at IS NOT NULL AND content_sha256 IS NOT NULL "
+      + "AND verification_version >= ? AND last_attested_at IS NOT NULL "
+      + "AND local_deleted_at IS NULL\(cursorClause) "
+      + "ORDER BY \(createdAtExpression) ASC, id ASC LIMIT \(limit)"
+    var stmt: OpaquePointer?
+    try prepare(sql, statement: &stmt, operation: "分页查询空间回收候选")
+    defer { sqlite3_finalize(stmt) }
+    try bindInt(stmt, 1, Int64(minimumVerificationVersion))
+    if let afterCreatedAtKey, let afterId {
+      try bindText(stmt, 2, afterCreatedAtKey)
+      try bindText(stmt, 3, afterCreatedAtKey)
+      try bindText(stmt, 4, afterId)
+    }
+    var jobs: [[String: Any]] = []
+    while true {
+      let code = sqlite3_step(stmt)
+      if code == SQLITE_DONE { break }
+      guard code == SQLITE_ROW else {
+        throw databaseError(operation: "分页查询空间回收候选", code: code)
+      }
+      jobs.append(try jobFromRow(stmt))
+    }
+    let last = jobs.last
+    return (
+      jobs,
+      (last?["fileCreatedAt"] as? String) ?? (last == nil ? nil : "9999-12-31T23:59:59Z"),
+      last?["id"] as? String
+    )
+  }
+
+  func summaryValues() throws -> [String: Any] {
+    lock.lock()
+    defer { lock.unlock() }
+    var values: [String: Any] = [
+      "revision": try metaValueUnlocked("global_revision"),
+      "completedRevision": try metaValueUnlocked("completed_revision"),
+      "cleanupHighWatermark": try metaValueUnlocked("cleanup_high_watermark"),
+    ]
+    for counter in Self.summaryCounters {
+      values[counter.value] = try metaValueUnlocked(counter.meta)
+    }
+    values["activeJob"] = try querySummaryJobsUnlocked(
+      whereClause: "state = 'uploading' AND local_deleted_at IS NULL",
+      orderBy: "revision DESC",
+      limit: 1
+    ).first ?? querySummaryJobsUnlocked(
+      whereClause: "state = 'pending' AND local_deleted_at IS NULL",
+      orderBy: "revision DESC",
+      limit: 1
+    ).first
+    var problemJob: [String: Any]?
+    for failureKind in Self.dominantFailurePriority where problemJob == nil {
+      problemJob = try querySummaryJobsUnlocked(
+        whereClause: "state = 'failed' AND failure_kind = ?",
+        orderBy: "revision DESC",
+        limit: 1,
+        arguments: [failureKind]
+      ).first
+    }
+    problemJob = try problemJob ?? querySummaryJobsUnlocked(
+      whereClause: "state = 'failed'",
+      orderBy: "revision DESC",
+      limit: 1
+    ).first ?? querySummaryJobsUnlocked(
+      whereClause: "state = 'paused'",
+      orderBy: "revision DESC",
+      limit: 1
+    ).first
+    values["problemJob"] = problemJob
+    values["dominantFailureKind"] = problemJob?["state"] as? String == "failed"
+      ? problemJob?["failureKind"] as? String
+      : nil
+    return values
+  }
+
+  func cleanupEvents(afterRevision: Int64, limit: Int) throws -> (latest: Int64, hasMore: Bool, events: [[String: Any]]) {
+    lock.lock()
+    defer { lock.unlock() }
+    let latest = try metaValueUnlocked("cleanup_high_watermark")
+    let sql = "SELECT revision,event_id,job_id,file_path,file_size_bytes,deleted_at_ms,reason FROM backup_cleanup_events WHERE revision > ? ORDER BY revision LIMIT ?"
+    var stmt: OpaquePointer?
+    try prepare(sql, statement: &stmt, operation: "查询清理事件")
+    defer { sqlite3_finalize(stmt) }
+    try bindInt(stmt, 1, afterRevision)
+    try bindInt(stmt, 2, Int64(limit + 1))
+    var events: [[String: Any]] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      events.append(["revision": integer(stmt, 0), "eventId": text(stmt, 1) ?? "", "jobId": text(stmt, 2) ?? "", "filePath": text(stmt, 3) ?? "", "fileSizeBytes": integer(stmt, 4), "deletedAtMs": integer(stmt, 5), "reason": text(stmt, 6) ?? ""])
+    }
+    let hasMore = events.count > limit
+    if hasMore { events.removeLast() }
+    return (latest, hasMore, events)
+  }
+
+  func acknowledgeCleanupEvents(throughRevision: Int64) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try writeTransactionUnlocked(operation: "确认清理事件") {
+      let sql = "DELETE FROM backup_cleanup_events WHERE revision <= ?"
+      var stmt: OpaquePointer?
+      try prepare(sql, statement: &stmt, operation: "删除已确认清理事件")
+      defer { sqlite3_finalize(stmt) }
+      try bindInt(stmt, 1, throughRevision)
+      guard sqlite3_step(stmt) == SQLITE_DONE else { throw databaseError(operation: "删除已确认清理事件", code: sqlite3_errcode(db)) }
+      try setMetaValueUnlocked("cleanup_ack_revision", max(throughRevision, try metaValueUnlocked("cleanup_ack_revision")))
+    }
+  }
+
+  func hasPendingJobsOutsideDestination(_ computerId: String) throws -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    let sql = "SELECT EXISTS(SELECT 1 FROM backup_jobs WHERE COALESCE(destination_computer_id, '') != ? AND state != 'completed' LIMIT 1)"
+    var stmt: OpaquePointer?
+    try prepare(sql, statement: &stmt, operation: "查询其他备份目标")
+    defer { sqlite3_finalize(stmt) }
+    try bindText(stmt, 1, computerId)
+    return sqlite3_step(stmt) == SQLITE_ROW && integer(stmt, 0) != 0
   }
 
   private func createSchema() throws {
@@ -314,10 +556,33 @@ final class IosBackupJobStore {
         cleanup_reason TEXT,
         error_message TEXT,
         failure_kind TEXT,
-        sessions TEXT
+        sessions TEXT,
+        revision INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS backup_meta (
+        key TEXT PRIMARY KEY,
+        int_value INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS backup_cleanup_events (
+        revision INTEGER PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE,
+        job_id TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        file_size_bytes INTEGER NOT NULL,
+        deleted_at_ms INTEGER NOT NULL,
+        reason TEXT NOT NULL
       );
     """
     try execute(sql, operation: "建表")
+    if try !columnExistsUnlocked(table: "backup_jobs", column: "revision") {
+      try execute("ALTER TABLE backup_jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0", operation: "升级任务修订号")
+    }
+    try execute("DROP INDEX IF EXISTS idx_backup_jobs_resumable_scan; CREATE INDEX IF NOT EXISTS idx_backup_jobs_file_path ON backup_jobs(file_path); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state ON backup_jobs(state); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state_id ON backup_jobs(state, id); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state_local_revision ON backup_jobs(state, local_deleted_at, revision DESC); CREATE INDEX IF NOT EXISTS idx_backup_jobs_failure_revision ON backup_jobs(state, failure_kind, revision DESC); CREATE INDEX IF NOT EXISTS idx_backup_jobs_storage_recovery ON backup_jobs(state, local_deleted_at, COALESCE(file_created_at, '9999-12-31T23:59:59Z'), id); CREATE INDEX IF NOT EXISTS idx_backup_jobs_revision ON backup_jobs(revision); CREATE INDEX IF NOT EXISTS idx_backup_jobs_cleanup ON backup_jobs(local_deleted_at, state, scheduled_cleanup_at);", operation: "创建备份索引")
+    for key in ["global_revision", "completed_revision", "cleanup_high_watermark", "cleanup_ack_revision"] {
+      try execute("INSERT OR IGNORE INTO backup_meta(key,int_value) VALUES ('\(key)',0)", operation: "初始化备份修订号")
+    }
+    try ensureSummaryCountersUnlocked()
   }
 
   private func migrateLegacyJobsIfNeeded() throws {
@@ -332,14 +597,18 @@ final class IosBackupJobStore {
     try execute("BEGIN IMMEDIATE", operation: "开始旧任务迁移")
     do {
       for job in legacy {
-        try upsertUnlocked(job)
+        try writeJobUnlocked(job)
       }
-      let migratedIds = Set(try queryJobsUnlocked().compactMap { $0["id"] as? String })
       let expectedIds = Set(legacy.compactMap { $0["id"] as? String })
       guard expectedIds.count == legacy.count,
-            !expectedIds.contains(""),
-            expectedIds.isSubset(of: migratedIds)
+            !expectedIds.contains("")
       else {
+        throw IosBackupStoreError(
+          operation: "校验旧任务迁移", code: SQLITE_CORRUPT,
+          message: "迁移后的任务数量或 ID 不完整"
+        )
+      }
+      for id in expectedIds where try readJobUnlocked(id) == nil {
         throw IosBackupStoreError(
           operation: "校验旧任务迁移", code: SQLITE_CORRUPT,
           message: "迁移后的任务数量或 ID 不完整"
@@ -367,60 +636,94 @@ final class IosBackupJobStore {
     return try jobFromRow(stmt)
   }
 
-  private func queryJobsUnlocked() throws -> [[String: Any]] {
-    let sql = "SELECT * FROM backup_jobs ORDER BY last_modified DESC"
+  private func firstJobUnlocked(
+    whereClause: String,
+    orderBy: String
+  ) throws -> [String: Any]? {
+    let sql = "SELECT * FROM backup_jobs WHERE \(whereClause) ORDER BY \(orderBy) LIMIT 1"
     var stmt: OpaquePointer?
-    try prepare(sql, statement: &stmt, operation: "查询任务")
+    try prepare(sql, statement: &stmt, operation: "读取首个备份任务")
     defer { sqlite3_finalize(stmt) }
-    var jobs: [[String: Any]] = []
-    while true {
-      let stepCode = sqlite3_step(stmt)
-      if stepCode == SQLITE_DONE { break }
-      guard stepCode == SQLITE_ROW else {
-        throw databaseError(operation: "查询任务", code: stepCode)
-      }
-      jobs.append(try jobFromRow(stmt))
+    let stepCode = sqlite3_step(stmt)
+    if stepCode == SQLITE_DONE { return nil }
+    guard stepCode == SQLITE_ROW else {
+      throw databaseError(operation: "读取首个备份任务", code: stepCode)
     }
-    return jobs
+    return try jobFromRow(stmt)
   }
 
-  private func querySnapshotJobsUnlocked() throws -> [[String: Any]] {
-    let sql = """
-      SELECT
-        id, generation, file_path, destination_computer_id, state,
-        uploaded_bytes, total_bytes, last_modified, file_created_at,
-        backup_completed_at, scheduled_cleanup_at, local_deleted_at,
-        waiting_cleanup, remote_record_ids, content_sha256, cleanup_reason,
-        error_message, failure_kind
-      FROM backup_jobs
-      ORDER BY last_modified DESC
+  private var summaryJobSelect: String {
     """
+      SELECT revision,id,file_path,state,uploaded_bytes,total_bytes,last_modified,
+        content_sha256,error_message,failure_kind,file_created_at,backup_completed_at,
+        scheduled_cleanup_at,local_deleted_at,waiting_cleanup,remote_record_ids,
+        destination_computer_id,cleanup_reason FROM backup_jobs
+    """
+  }
+
+  private func querySummaryJobsUnlocked(
+    whereClause: String,
+    orderBy: String,
+    limit: Int,
+    arguments: [String] = []
+  ) throws -> [[String: Any]] {
+    let sql = "\(summaryJobSelect) WHERE \(whereClause) ORDER BY \(orderBy) LIMIT \(limit)"
     var stmt: OpaquePointer?
-    try prepare(sql, statement: &stmt, operation: "查询快照任务")
+    try prepare(sql, statement: &stmt, operation: "查询备份摘要任务")
     defer { sqlite3_finalize(stmt) }
+    for (index, argument) in arguments.enumerated() {
+      try bindText(stmt, Int32(index + 1), argument, operation: "绑定摘要任务条件")
+    }
     var jobs: [[String: Any]] = []
     while true {
-      let stepCode = sqlite3_step(stmt)
-      if stepCode == SQLITE_DONE { break }
-      guard stepCode == SQLITE_ROW else {
-        throw databaseError(operation: "查询快照任务", code: stepCode)
+      let code = sqlite3_step(stmt)
+      if code == SQLITE_DONE { break }
+      guard code == SQLITE_ROW else {
+        throw databaseError(operation: "查询备份摘要任务", code: code)
       }
-      jobs.append(snapshotJobFromRow(stmt))
+      jobs.append(summaryJobFromRow(stmt))
     }
     return jobs
   }
 
-  private func upsertUnlocked(_ rawJob: [String: Any]) throws {
+  private func writeJobUnlocked(_ rawJob: [String: Any]) throws {
+    let previous = try (rawJob["id"] as? String).flatMap(readJobUnlocked)
+    let revision = try nextRevisionUnlocked()
+    let job = Self.migratedJob(rawJob)
+    try upsertUnlocked(job, revision: revision)
+    try adjustSummaryCountersUnlocked(previous: previous, current: job)
+    if previous?["state"] as? String == "completed" || job["state"] as? String == "completed" {
+      try setMetaValueUnlocked("completed_revision", revision)
+    }
+    if previous?["localDeletedAt"] == nil, let deletedAt = job["localDeletedAt"] as? String {
+      try insertCleanupEventUnlocked(job: job, deletedAt: deletedAt, revision: revision)
+      try setMetaValueUnlocked("cleanup_high_watermark", revision)
+    }
+  }
+
+  private func upsertUnlocked(_ rawJob: [String: Any], revision: Int64) throws {
     let job = Self.migratedJob(rawJob)
     let sql = """
-      INSERT OR REPLACE INTO backup_jobs (
+      INSERT INTO backup_jobs (
         id, generation, file_path, file_name, destination_computer_id, state,
         uploaded_bytes, total_bytes, last_modified, file_created_at,
         backup_completed_at, scheduled_cleanup_at, local_deleted_at,
         waiting_cleanup, remote_record_ids, content_sha256, verification_version,
         verification_receipt, last_attested_at, cleanup_reason, error_message,
-        failure_kind, sessions
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        failure_kind, sessions, revision
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        generation=excluded.generation, file_path=excluded.file_path,
+        file_name=excluded.file_name, destination_computer_id=excluded.destination_computer_id,
+        state=excluded.state, uploaded_bytes=excluded.uploaded_bytes,
+        total_bytes=excluded.total_bytes, last_modified=excluded.last_modified,
+        file_created_at=excluded.file_created_at, backup_completed_at=excluded.backup_completed_at,
+        scheduled_cleanup_at=excluded.scheduled_cleanup_at, local_deleted_at=excluded.local_deleted_at,
+        waiting_cleanup=excluded.waiting_cleanup, remote_record_ids=excluded.remote_record_ids,
+        content_sha256=excluded.content_sha256, verification_version=excluded.verification_version,
+        verification_receipt=excluded.verification_receipt, last_attested_at=excluded.last_attested_at,
+        cleanup_reason=excluded.cleanup_reason, error_message=excluded.error_message,
+        failure_kind=excluded.failure_kind, sessions=excluded.sessions, revision=excluded.revision
     """
     var stmt: OpaquePointer?
     try prepare(sql, statement: &stmt, operation: "保存任务")
@@ -449,6 +752,7 @@ final class IosBackupJobStore {
     try bindText(stmt, 21, row["error_message"] as? String)
     try bindText(stmt, 22, row["failure_kind"] as? String)
     try bindText(stmt, 23, row["sessions"] as? String)
+    try bindInt(stmt, 24, revision)
     let stepCode = sqlite3_step(stmt)
     guard stepCode == SQLITE_DONE else {
       throw databaseError(operation: "保存任务", code: stepCode)
@@ -564,30 +868,175 @@ final class IosBackupJobStore {
     job["errorMessage"] = text(stmt, 20)
     job["failureKind"] = text(stmt, 21)
     job["sessions"] = try Self.jsonArray(text(stmt, 22))
+    job["revision"] = integer(stmt, 23)
     return job
   }
 
-  private func snapshotJobFromRow(_ stmt: OpaquePointer?) -> [String: Any] {
+  private func summaryJobFromRow(_ stmt: OpaquePointer?) -> [String: Any] {
     var job: [String: Any] = [:]
-    job["id"] = text(stmt, 0) ?? ""
-    job["generation"] = text(stmt, 1) ?? ""
+    job["revision"] = integer(stmt, 0)
+    job["id"] = text(stmt, 1) ?? ""
     job["filePath"] = text(stmt, 2) ?? ""
-    job["destinationComputerId"] = text(stmt, 3)
-    job["state"] = text(stmt, 4) ?? ""
-    job["uploadedBytes"] = integer(stmt, 5)
-    job["totalBytes"] = integer(stmt, 6)
-    job["lastModified"] = integer(stmt, 7)
-    job["fileCreatedAt"] = text(stmt, 8)
-    job["backupCompletedAt"] = text(stmt, 9)
-    job["scheduledCleanupAt"] = text(stmt, 10)
-    job["localDeletedAt"] = text(stmt, 11)
-    job["waitingCleanup"] = integer(stmt, 12) != 0
-    job["remoteRecordId"] = Self.recordId(text(stmt, 13))
-    job["contentSha256"] = text(stmt, 14)
-    job["cleanupReason"] = text(stmt, 15)
-    job["errorMessage"] = text(stmt, 16)
-    job["failureKind"] = text(stmt, 17)
+    job["state"] = text(stmt, 3) ?? ""
+    job["uploadedBytes"] = integer(stmt, 4)
+    job["totalBytes"] = integer(stmt, 5)
+    job["lastModified"] = integer(stmt, 6)
+    job["contentSha256"] = text(stmt, 7)
+    job["errorMessage"] = text(stmt, 8)
+    job["failureKind"] = text(stmt, 9)
+    job["fileCreatedAt"] = text(stmt, 10)
+    job["backupCompletedAt"] = text(stmt, 11)
+    job["scheduledCleanupAt"] = text(stmt, 12)
+    job["localDeletedAt"] = text(stmt, 13)
+    job["waitingCleanup"] = integer(stmt, 14) != 0
+    job["remoteRecordId"] = Self.recordId(text(stmt, 15))
+    job["destinationComputerId"] = text(stmt, 16) ?? ""
+    job["cleanupReason"] = text(stmt, 17)
     return job
+  }
+
+  private func writeTransactionUnlocked(
+    operation: String,
+    _ body: () throws -> Void
+  ) throws {
+    try execute("BEGIN IMMEDIATE", operation: "开始\(operation)")
+    do {
+      try body()
+      try execute("COMMIT", operation: "提交\(operation)")
+    } catch {
+      try? execute("ROLLBACK", operation: "回滚\(operation)")
+      throw error
+    }
+  }
+
+  private func nextRevisionUnlocked() throws -> Int64 {
+    let next = try metaValueUnlocked("global_revision") + 1
+    try setMetaValueUnlocked("global_revision", next)
+    return next
+  }
+
+  private func metaValueUnlocked(_ key: String) throws -> Int64 {
+    let sql = "SELECT int_value FROM backup_meta WHERE key = ? LIMIT 1"
+    var stmt: OpaquePointer?
+    try prepare(sql, statement: &stmt, operation: "读取备份修订号")
+    defer { sqlite3_finalize(stmt) }
+    try bindText(stmt, 1, key)
+    return sqlite3_step(stmt) == SQLITE_ROW ? integer(stmt, 0) : 0
+  }
+
+  private func setMetaValueUnlocked(_ key: String, _ value: Int64) throws {
+    let sql = "INSERT INTO backup_meta(key,int_value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET int_value=excluded.int_value"
+    var stmt: OpaquePointer?
+    try prepare(sql, statement: &stmt, operation: "保存备份修订号")
+    defer { sqlite3_finalize(stmt) }
+    try bindText(stmt, 1, key)
+    try bindInt(stmt, 2, value)
+    guard sqlite3_step(stmt) == SQLITE_DONE else {
+      throw databaseError(operation: "保存备份修订号", code: sqlite3_errcode(db))
+    }
+  }
+
+  private func ensureSummaryCountersUnlocked() throws {
+    if try metaValueUnlocked("summary_counters_initialized") == 1 { return }
+    let sql = """
+      SELECT COUNT(*),
+        SUM(CASE WHEN state = 'pending' THEN 1 ELSE 0 END),
+        SUM(CASE WHEN state = 'uploading' THEN 1 ELSE 0 END),
+        SUM(CASE WHEN state = 'paused' THEN 1 ELSE 0 END),
+        SUM(CASE WHEN state = 'completed' THEN 1 ELSE 0 END),
+        SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END),
+        SUM(CASE WHEN waiting_cleanup != 0 THEN 1 ELSE 0 END),
+        SUM(CASE WHEN local_deleted_at IS NOT NULL THEN 1 ELSE 0 END),
+        SUM(CASE WHEN state != 'completed' THEN uploaded_bytes ELSE 0 END),
+        SUM(CASE WHEN state != 'completed' THEN total_bytes ELSE 0 END)
+      FROM backup_jobs
+    """
+    var stmt: OpaquePointer?
+    try prepare(sql, statement: &stmt, operation: "播种备份摘要计数")
+    defer { sqlite3_finalize(stmt) }
+    guard sqlite3_step(stmt) == SQLITE_ROW else {
+      throw databaseError(operation: "播种备份摘要计数", code: sqlite3_errcode(db))
+    }
+    for (index, counter) in Self.summaryCounters.enumerated() {
+      try setMetaValueUnlocked(counter.meta, integer(stmt, Int32(index)))
+    }
+    try setMetaValueUnlocked("summary_counters_initialized", 1)
+  }
+
+  private func adjustSummaryCountersUnlocked(
+    previous: [String: Any]?,
+    current: [String: Any]?
+  ) throws {
+    let before = summaryMetrics(previous)
+    let after = summaryMetrics(current)
+    for (index, counter) in Self.summaryCounters.enumerated() {
+      let delta = after[index] - before[index]
+      if delta == 0 { continue }
+      let updated = try metaValueUnlocked(counter.meta) + delta
+      guard updated >= 0 else {
+        throw IosBackupStoreError(
+          operation: "更新摘要计数", code: SQLITE_CORRUPT,
+          message: "摘要计数不能为负数：\(counter.meta)"
+        )
+      }
+      try setMetaValueUnlocked(counter.meta, updated)
+    }
+  }
+
+  private func summaryMetrics(_ job: [String: Any]?) -> [Int64] {
+    guard let job else { return Array(repeating: 0, count: Self.summaryCounters.count) }
+    let state = job["state"] as? String ?? ""
+    return [
+      1,
+      state == "pending" ? 1 : 0,
+      state == "uploading" ? 1 : 0,
+      state == "paused" ? 1 : 0,
+      state == "completed" ? 1 : 0,
+      state == "failed" ? 1 : 0,
+      (job["waitingCleanup"] as? Bool) == true ? 1 : 0,
+      job["localDeletedAt"] as? String != nil ? 1 : 0,
+      state == "completed" ? 0 : (job["uploadedBytes"] as? NSNumber)?.int64Value ?? 0,
+      state == "completed" ? 0 : (job["totalBytes"] as? NSNumber)?.int64Value ?? 0,
+    ]
+  }
+
+  private func insertCleanupEventUnlocked(
+    job: [String: Any],
+    deletedAt: String,
+    revision: Int64
+  ) throws {
+    guard let jobId = job["id"] as? String,
+          let generation = job["generation"] as? String,
+          let filePath = job["filePath"] as? String,
+          let deletedDate = Self.isoFormatter.date(from: deletedAt)
+    else { return }
+    let deletedAtMs = Int64(deletedDate.timeIntervalSince1970 * 1000)
+    let eventId = "\(jobId):\(generation):\(deletedAtMs)"
+    let sql = "INSERT OR IGNORE INTO backup_cleanup_events(revision,event_id,job_id,generation,file_path,file_size_bytes,deleted_at_ms,reason) VALUES (?,?,?,?,?,?,?,?)"
+    var stmt: OpaquePointer?
+    try prepare(sql, statement: &stmt, operation: "保存清理事件")
+    defer { sqlite3_finalize(stmt) }
+    try bindInt(stmt, 1, revision)
+    try bindText(stmt, 2, eventId)
+    try bindText(stmt, 3, jobId)
+    try bindText(stmt, 4, generation)
+    try bindText(stmt, 5, filePath)
+    try bindInt(stmt, 6, (job["totalBytes"] as? NSNumber)?.int64Value ?? 0)
+    try bindInt(stmt, 7, deletedAtMs)
+    try bindText(stmt, 8, job["cleanupReason"] as? String ?? "本地录像已清理")
+    guard sqlite3_step(stmt) == SQLITE_DONE else {
+      throw databaseError(operation: "保存清理事件", code: sqlite3_errcode(db))
+    }
+  }
+
+  private func columnExistsUnlocked(table: String, column: String) throws -> Bool {
+    var stmt: OpaquePointer?
+    try prepare("PRAGMA table_info(\(table))", statement: &stmt, operation: "检查备份表字段")
+    defer { sqlite3_finalize(stmt) }
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      if text(stmt, 1) == column { return true }
+    }
+    return false
   }
 
   private func text(_ stmt: OpaquePointer?, _ index: Int32) -> String? {

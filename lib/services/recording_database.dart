@@ -302,6 +302,8 @@ class RecordingDatabase {
         ''');
         await _createRecordingFileOwnersTable(db);
         await _createActiveTimeIndex(db);
+        await _createBackupCursorIndex(db);
+        await _createPendingWatermarkIndex(db);
       }
       if (oldVersion < 4) {
         await db.execute(
@@ -529,22 +531,6 @@ class RecordingDatabase {
     await source.copy(archivePath);
   }
 
-  Future<List<({String id, String filePath})>> loadActiveSessionPaths() async {
-    final Database db = await _db;
-    final List<Map<String, Object?>> rows = await db.query(
-      'recording_sessions',
-      columns: <String>['id', 'file_path'],
-      where: 'is_deleted = 0',
-      orderBy: 'started_at DESC, id DESC',
-    );
-    return rows
-        .map(
-          (Map<String, Object?> row) =>
-              (id: row['id']! as String, filePath: row['file_path']! as String),
-        )
-        .toList(growable: false);
-  }
-
   Future<LocalRecordingPage> queryActiveSessions({
     required int page,
     required int pageSize,
@@ -654,7 +640,7 @@ class RecordingDatabase {
       <Object?>[...args, normalizedSize],
     );
     if (ascending) rows = rows.reversed.toList(growable: false);
-    LocalRecordingCursor cursorFor(Map<String, Object?> row) =>
+    LocalRecordingCursor? cursorFor(Map<String, Object?> row) =>
         LocalRecordingCursor(
           startedAt: row['started_at']! as int,
           id: row['id']! as String,
@@ -727,29 +713,12 @@ class RecordingDatabase {
     final Database db = await _db;
     final int since = DateTime.now().subtract(lookback).millisecondsSinceEpoch;
     final List<Map<String, Object?>> rows = await db.rawQuery(
-      'SELECT COUNT(1) FROM recording_sessions '
-      'WHERE is_deleted = 0 AND tracking_number = ? AND started_at >= ?',
+      'SELECT 1 FROM recording_sessions '
+      'WHERE is_deleted = 0 AND tracking_number = ? AND started_at >= ? '
+      'LIMIT 1',
       <Object?>[normalized, since],
     );
-    return (Sqflite.firstIntValue(rows) ?? 0) > 0;
-  }
-
-  Future<List<RecordingSession>> queryBackupBatch({
-    required int page,
-    required int pageSize,
-  }) async {
-    final Database db = await _db;
-    final int normalizedPage = page < 1 ? 1 : page;
-    final int normalizedSize = pageSize.clamp(1, 100);
-    final List<Map<String, Object?>> rows = await db.query(
-      'recording_sessions',
-      columns: _sessionPayloadColumns,
-      where: "is_deleted = 0 AND watermark_status IN ('completed', 'failed')",
-      orderBy: 'started_at ASC, id ASC',
-      limit: normalizedSize,
-      offset: (normalizedPage - 1) * normalizedSize,
-    );
-    return rows.map(_sessionFromRow).toList(growable: false);
+    return rows.isNotEmpty;
   }
 
   Future<List<RecordingBackupRow>> queryBackupRows({
@@ -766,8 +735,8 @@ class RecordingDatabase {
     ];
     final List<Object?> args = <Object?>[];
     if (afterUpdatedAt != null && afterId != null) {
-      // Android API 24 ships SQLite 3.9 without row-value comparisons. The
-      // explicit range anchor also keeps deep pages as an index seek.
+      // Keep an explicit range anchor so SQLite can seek the composite index;
+      // row-value comparisons are unavailable on Android API 24 SQLite 3.9.
       conditions.add('updated_at >= ?');
       conditions.add('(updated_at > ? OR id > ?)');
       args.addAll(<Object?>[afterUpdatedAt, afterUpdatedAt, afterId]);
@@ -1402,64 +1371,6 @@ class RecordingDatabase {
       <Object?>[filePath],
     );
     return Sqflite.firstIntValue(exact) ?? 0;
-  }
-
-  Future<void> refreshMissingState({
-    Set<String> retainedMissingPaths = const <String>{},
-    Map<String, String> resolvedPaths = const <String, String>{},
-  }) async {
-    final Database db = await _db;
-    final List<Map<String, Object?>> rows = await db.query(
-      'recording_sessions',
-      columns: <String>['id', 'file_path', 'missing_at'],
-      where: 'is_deleted = 0',
-    );
-    final int now = DateTime.now().millisecondsSinceEpoch;
-    final Batch batch = db.batch();
-    for (final Map<String, Object?> row in rows) {
-      final String filePath = row['file_path']! as String;
-      final String workingPath = resolvedPaths[row['id']] ?? filePath;
-      final bool missing = !File(workingPath).existsSync();
-      final bool retained =
-          retainedMissingPaths.contains(workingPath) ||
-          retainedMissingPaths.contains(filePath);
-      final Object? current = row['missing_at'];
-      final bool pathChanged = workingPath != filePath;
-      if (missing && current == null) {
-        batch.update(
-          'recording_sessions',
-          <String, Object?>{
-            if (pathChanged) 'file_path': workingPath,
-            'missing_at': now,
-            'updated_at': now,
-          },
-          where: 'id = ?',
-          whereArgs: <Object?>[row['id']],
-        );
-      } else if (!missing && current != null) {
-        batch.update(
-          'recording_sessions',
-          <String, Object?>{
-            if (pathChanged) 'file_path': workingPath,
-            'missing_at': null,
-            'updated_at': now,
-          },
-          where: 'id = ?',
-          whereArgs: <Object?>[row['id']],
-        );
-      } else if (pathChanged) {
-        batch.update(
-          'recording_sessions',
-          <String, Object?>{'file_path': workingPath, 'updated_at': now},
-          where: 'id = ?',
-          whereArgs: <Object?>[row['id']],
-        );
-      } else if (missing && retained) {
-        // Retained remote history remains active; missing_at records why local
-        // playback is unavailable without discarding the audit trail.
-      }
-    }
-    await batch.commit(noResult: true);
   }
 
   Future<void> repairFilePaths(Map<String, String> resolvedPaths) async {

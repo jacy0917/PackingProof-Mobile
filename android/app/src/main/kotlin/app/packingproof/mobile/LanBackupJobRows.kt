@@ -4,6 +4,8 @@ import android.content.ContentValues
 import android.database.Cursor
 import org.json.JSONArray
 import org.json.JSONObject
+import app.packingproof.mobile.generated.BackupJobDto
+import java.time.Instant
 
 internal val LAN_BACKUP_SNAPSHOT_COLUMNS = listOf(
     "id",
@@ -77,6 +79,7 @@ internal fun lanBackupJobToRow(job: JSONObject): Map<String, Any?> {
         "error_message" to text("errorMessage"),
         "failure_kind" to text("failureKind"),
         "sessions" to job.optJSONArray("sessions")?.toString(),
+        "updated_revision" to job.optLong("revision"),
     )
 }
 
@@ -93,6 +96,7 @@ internal fun lanBackupRowToJob(row: Map<String, Any?>): JSONObject {
         .put("lastModified", (row["last_modified"] as? Number)?.toLong() ?: 0L)
         .put("waitingCleanup", (row["waiting_cleanup"] as? Number)?.toInt() != 0)
         .put("verificationVersion", (row["verification_version"] as? Number)?.toInt() ?: 0)
+        .put("revision", (row["updated_revision"] as? Number)?.toLong() ?: 0L)
     val textColumns = mapOf(
         "file_created_at" to "fileCreatedAt",
         "backup_completed_at" to "backupCompletedAt",
@@ -153,3 +157,29 @@ internal fun Cursor.toRowMap(columns: List<String>): Map<String, Any?> =
             else -> getString(index)
         }
     }
+
+internal fun lanBackupRowToDto(row: Map<String, Any?>): BackupJobDto {
+    fun epochMillis(column: String): Long? = (row[column] as? String)?.let { value ->
+        runCatching { Instant.parse(value).toEpochMilli() }.getOrNull()
+    }
+    return BackupJobDto(
+        revision = (row["updated_revision"] as? Number)?.toLong() ?: 0L,
+        id = (row["id"] as? String).orEmpty(),
+        filePath = (row["file_path"] as? String).orEmpty(),
+        state = (row["state"] as? String).orEmpty(),
+        uploadedBytes = (row["uploaded_bytes"] as? Number)?.toLong() ?: 0L,
+        totalBytes = (row["total_bytes"] as? Number)?.toLong() ?: 0L,
+        lastModifiedMs = (row["last_modified"] as? Number)?.toLong(),
+        contentSha256 = row["content_sha256"] as? String,
+        errorMessage = row["error_message"] as? String,
+        failureKind = row["failure_kind"] as? String,
+        fileCreatedAtMs = epochMillis("file_created_at"),
+        backupCompletedAtMs = epochMillis("backup_completed_at"),
+        scheduledCleanupAtMs = epochMillis("scheduled_cleanup_at"),
+        localDeletedAtMs = epochMillis("local_deleted_at"),
+        waitingCleanup = (row["waiting_cleanup"] as? Number)?.toInt() != 0,
+        remoteRecordId = (row["remote_record_id"] as? Number)?.toLong()?.takeIf { it > 0 },
+        destinationComputerId = (row["destination_computer_id"] as? String).orEmpty(),
+        cleanupReason = row["cleanup_reason"] as? String,
+    )
+}

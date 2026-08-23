@@ -366,7 +366,7 @@ class PackingSessionController extends ChangeNotifier
       }
       if (_disposed) return;
       try {
-        await _pruneDeletedBackupSessions(notify: false);
+        await _drainCleanupEvents();
       } on Object {
         // Local history remains available even when optional cleanup cannot run.
       }

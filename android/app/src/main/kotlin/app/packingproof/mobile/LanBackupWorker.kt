@@ -8,7 +8,13 @@ import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import org.json.JSONObject
 import java.io.File
@@ -19,6 +25,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.CancellationException
 import kotlin.math.min
 
 internal fun canonicalCompletionSessions(sessions: org.json.JSONArray): org.json.JSONArray {
@@ -46,6 +54,27 @@ internal fun verifiedCompletionRecordId(response: JSONObject, fileSha256: String
     return response.optLong("recordId").takeIf { it > 0 }
 }
 
+internal object LanBackupDispatcher {
+    internal const val UNIQUE_WORK = "lan-backup-dispatcher"
+    internal const val WORK_TAG = "lan-backup-upload"
+
+    fun schedule(context: Context, append: Boolean = false) {
+        val request = OneTimeWorkRequestBuilder<LanBackupWorker>()
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+            )
+            .addTag("lan-backup")
+            .addTag(WORK_TAG)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            UNIQUE_WORK,
+            if (append) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.KEEP,
+            request,
+        )
+    }
+}
+
 internal class LanBackupWorker(
     appContext: Context,
     params: WorkerParameters,
@@ -59,16 +88,37 @@ internal class LanBackupWorker(
     private val store = LanBackupStateStore(appContext)
     private val credentials = LanBackupCredentialStore(appContext)
     private val hostResolver = LanBackupHostResolver(appContext)
+    private var requestedRetry = false
 
-    override suspend fun doWork(): Result {
-        val id = inputData.getString("jobId") ?: return Result.failure()
+    override suspend fun doWork(): Result = try {
+        runWork()
+    } finally {
+        store.close()
+    }
+
+    private suspend fun runWork(): Result {
+        val explicitId = inputData.getString("jobId")
+        val id = explicitId ?: store.claimNextUploadJob()?.optString("id")
+        if (id.isNullOrBlank()) return Result.success()
+        requestedRetry = false
+        val result = process(id)
+        if (explicitId == null && !requestedRetry) {
+            LanBackupDispatcher.schedule(applicationContext, append = true)
+            // 单个任务的终态已写入数据库；dispatcher 本身必须成功，
+            // 否则 WorkManager 会取消后继链，令其他录像永远得不到调度。
+            return Result.success()
+        }
+        return result
+    }
+
+    private suspend fun process(id: String): Result {
         val initialJob = store.readJob(id) ?: return Result.failure()
         val generation = initialJob.optString("generation")
         val connection = store.connection()
         val accessKey = credentials.load()
         val initialSourceStatus = sourceStatus(initialJob)
         if (initialSourceStatus != LanBackupSourceStatus.AVAILABLE) {
-            return discard(initialJob, generation, initialSourceStatus)
+            return preserveUnavailable(initialJob, generation, initialSourceStatus)
         }
         if (connection == null || accessKey.isNullOrBlank()) {
             return fail(
@@ -98,7 +148,7 @@ internal class LanBackupWorker(
             return if (status == LanBackupSourceStatus.AVAILABLE) {
                 Result.success()
             } else {
-                discard(initialJob, generation, status)
+                preserveUnavailable(initialJob, generation, status)
             }
         }
         val file = File(job.optString("filePath"))
@@ -278,7 +328,7 @@ internal class LanBackupWorker(
             val status = sourceStatus(job).takeIf {
                 it != LanBackupSourceStatus.AVAILABLE
             } ?: LanBackupSourceStatus.UNREADABLE
-            discard(job, generation, status)
+            preserveUnavailable(job, generation, status)
         } catch (error: BackupHttpException) {
             Log.w(TAG, "Backup HTTP failure id=${id.take(8)} status=${error.statusCode}", error)
             val failureKind = if (
@@ -324,6 +374,8 @@ internal class LanBackupWorker(
                 LanBackupFailureKind.OFFLINE_OR_TIMEOUT,
                 autoRetry = true,
             )
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
             Log.e(TAG, "Backup failed id=${id.take(8)}", error)
             fail(
@@ -385,15 +437,21 @@ internal class LanBackupWorker(
         return Result.failure()
     }
 
-    private fun discard(
+    private fun preserveUnavailable(
         job: JSONObject,
         generation: String,
         status: LanBackupSourceStatus,
     ): Result {
-        if (store.deleteJob(job.getString("id"), generation)) {
+        val updated = store.updateJob(job.getString("id"), generation) { current ->
+            current.put("state", "paused")
+                .put("errorMessage", "${status.reason}，已保留备份任务等待录像恢复")
+                .put("failureKind", LanBackupFailureKind.UNKNOWN.wireValue)
+            true
+        }
+        if (updated != null) {
             Log.w(
                 TAG,
-                "Discard unavailable backup job " +
+                "Preserved unavailable backup job " +
                     "id=${job.getString("id").take(8)} " +
                     "path=${job.optString("filePath")} reason=${status.reason}",
             )
@@ -430,6 +488,7 @@ internal class LanBackupWorker(
             true
         }
         clearBackupNotification(job)
+        requestedRetry = autoRetry
         return if (autoRetry) Result.retry() else Result.success()
     }
 

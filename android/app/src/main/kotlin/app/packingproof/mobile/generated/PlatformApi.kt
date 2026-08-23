@@ -925,6 +925,399 @@ data class BarcodeCandidateDto (
 }
 
 /** Generated class from Pigeon that represents data sent in messages. */
+data class BackupJobDto (
+  val revision: Long,
+  val id: String,
+  val filePath: String,
+  val state: String,
+  val uploadedBytes: Long,
+  val totalBytes: Long,
+  val lastModifiedMs: Long? = null,
+  val contentSha256: String? = null,
+  val errorMessage: String? = null,
+  val failureKind: String? = null,
+  val fileCreatedAtMs: Long? = null,
+  val backupCompletedAtMs: Long? = null,
+  val scheduledCleanupAtMs: Long? = null,
+  val localDeletedAtMs: Long? = null,
+  val waitingCleanup: Boolean,
+  val remoteRecordId: Long? = null,
+  val destinationComputerId: String,
+  val cleanupReason: String? = null
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): BackupJobDto {
+      val revision = pigeonVar_list[0] as Long
+      val id = pigeonVar_list[1] as String
+      val filePath = pigeonVar_list[2] as String
+      val state = pigeonVar_list[3] as String
+      val uploadedBytes = pigeonVar_list[4] as Long
+      val totalBytes = pigeonVar_list[5] as Long
+      val lastModifiedMs = pigeonVar_list[6] as Long?
+      val contentSha256 = pigeonVar_list[7] as String?
+      val errorMessage = pigeonVar_list[8] as String?
+      val failureKind = pigeonVar_list[9] as String?
+      val fileCreatedAtMs = pigeonVar_list[10] as Long?
+      val backupCompletedAtMs = pigeonVar_list[11] as Long?
+      val scheduledCleanupAtMs = pigeonVar_list[12] as Long?
+      val localDeletedAtMs = pigeonVar_list[13] as Long?
+      val waitingCleanup = pigeonVar_list[14] as Boolean
+      val remoteRecordId = pigeonVar_list[15] as Long?
+      val destinationComputerId = pigeonVar_list[16] as String
+      val cleanupReason = pigeonVar_list[17] as String?
+      return BackupJobDto(revision, id, filePath, state, uploadedBytes, totalBytes, lastModifiedMs, contentSha256, errorMessage, failureKind, fileCreatedAtMs, backupCompletedAtMs, scheduledCleanupAtMs, localDeletedAtMs, waitingCleanup, remoteRecordId, destinationComputerId, cleanupReason)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      revision,
+      id,
+      filePath,
+      state,
+      uploadedBytes,
+      totalBytes,
+      lastModifiedMs,
+      contentSha256,
+      errorMessage,
+      failureKind,
+      fileCreatedAtMs,
+      backupCompletedAtMs,
+      scheduledCleanupAtMs,
+      localDeletedAtMs,
+      waitingCleanup,
+      remoteRecordId,
+      destinationComputerId,
+      cleanupReason,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as BackupJobDto
+    return PlatformApiPigeonUtils.deepEquals(this.revision, other.revision) && PlatformApiPigeonUtils.deepEquals(this.id, other.id) && PlatformApiPigeonUtils.deepEquals(this.filePath, other.filePath) && PlatformApiPigeonUtils.deepEquals(this.state, other.state) && PlatformApiPigeonUtils.deepEquals(this.uploadedBytes, other.uploadedBytes) && PlatformApiPigeonUtils.deepEquals(this.totalBytes, other.totalBytes) && PlatformApiPigeonUtils.deepEquals(this.lastModifiedMs, other.lastModifiedMs) && PlatformApiPigeonUtils.deepEquals(this.contentSha256, other.contentSha256) && PlatformApiPigeonUtils.deepEquals(this.errorMessage, other.errorMessage) && PlatformApiPigeonUtils.deepEquals(this.failureKind, other.failureKind) && PlatformApiPigeonUtils.deepEquals(this.fileCreatedAtMs, other.fileCreatedAtMs) && PlatformApiPigeonUtils.deepEquals(this.backupCompletedAtMs, other.backupCompletedAtMs) && PlatformApiPigeonUtils.deepEquals(this.scheduledCleanupAtMs, other.scheduledCleanupAtMs) && PlatformApiPigeonUtils.deepEquals(this.localDeletedAtMs, other.localDeletedAtMs) && PlatformApiPigeonUtils.deepEquals(this.waitingCleanup, other.waitingCleanup) && PlatformApiPigeonUtils.deepEquals(this.remoteRecordId, other.remoteRecordId) && PlatformApiPigeonUtils.deepEquals(this.destinationComputerId, other.destinationComputerId) && PlatformApiPigeonUtils.deepEquals(this.cleanupReason, other.cleanupReason)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.revision)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.id)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.filePath)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.state)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.uploadedBytes)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.totalBytes)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.lastModifiedMs)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.contentSha256)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.errorMessage)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.failureKind)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.fileCreatedAtMs)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.backupCompletedAtMs)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.scheduledCleanupAtMs)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.localDeletedAtMs)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.waitingCleanup)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.remoteRecordId)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.destinationComputerId)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.cleanupReason)
+    return result
+  }
+  override fun toString(): String {
+    return "BackupJobDto(revision=$revision, id=$id, filePath=$filePath, state=$state, uploadedBytes=$uploadedBytes, totalBytes=$totalBytes, lastModifiedMs=$lastModifiedMs, contentSha256=$contentSha256, errorMessage=$errorMessage, failureKind=$failureKind, fileCreatedAtMs=$fileCreatedAtMs, backupCompletedAtMs=$backupCompletedAtMs, scheduledCleanupAtMs=$scheduledCleanupAtMs, localDeletedAtMs=$localDeletedAtMs, waitingCleanup=$waitingCleanup, remoteRecordId=$remoteRecordId, destinationComputerId=$destinationComputerId, cleanupReason=$cleanupReason)"
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class BackupSummaryDto (
+  val schemaVersion: Long,
+  val revision: Long,
+  val completedRevision: Long,
+  val cleanupHighWatermark: Long,
+  val deviceId: String,
+  val deviceName: String,
+  val baseUrl: String? = null,
+  val computerId: String? = null,
+  val computerName: String? = null,
+  val lastConnectedAtMs: Long? = null,
+  val preferredHostId: String? = null,
+  val preferredHostName: String? = null,
+  val totalCount: Long,
+  val pendingCount: Long,
+  val uploadingCount: Long,
+  val pausedCount: Long,
+  val completedCount: Long,
+  val failedCount: Long,
+  val waitingCleanupCount: Long,
+  val localDeletedCount: Long,
+  val unfinishedUploadedBytes: Long,
+  val unfinishedTotalBytes: Long,
+  val dominantFailureKind: String? = null,
+  val activeJob: BackupJobDto? = null,
+  val problemJob: BackupJobDto? = null
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): BackupSummaryDto {
+      val schemaVersion = pigeonVar_list[0] as Long
+      val revision = pigeonVar_list[1] as Long
+      val completedRevision = pigeonVar_list[2] as Long
+      val cleanupHighWatermark = pigeonVar_list[3] as Long
+      val deviceId = pigeonVar_list[4] as String
+      val deviceName = pigeonVar_list[5] as String
+      val baseUrl = pigeonVar_list[6] as String?
+      val computerId = pigeonVar_list[7] as String?
+      val computerName = pigeonVar_list[8] as String?
+      val lastConnectedAtMs = pigeonVar_list[9] as Long?
+      val preferredHostId = pigeonVar_list[10] as String?
+      val preferredHostName = pigeonVar_list[11] as String?
+      val totalCount = pigeonVar_list[12] as Long
+      val pendingCount = pigeonVar_list[13] as Long
+      val uploadingCount = pigeonVar_list[14] as Long
+      val pausedCount = pigeonVar_list[15] as Long
+      val completedCount = pigeonVar_list[16] as Long
+      val failedCount = pigeonVar_list[17] as Long
+      val waitingCleanupCount = pigeonVar_list[18] as Long
+      val localDeletedCount = pigeonVar_list[19] as Long
+      val unfinishedUploadedBytes = pigeonVar_list[20] as Long
+      val unfinishedTotalBytes = pigeonVar_list[21] as Long
+      val dominantFailureKind = pigeonVar_list[22] as String?
+      val activeJob = pigeonVar_list[23] as BackupJobDto?
+      val problemJob = pigeonVar_list[24] as BackupJobDto?
+      return BackupSummaryDto(schemaVersion, revision, completedRevision, cleanupHighWatermark, deviceId, deviceName, baseUrl, computerId, computerName, lastConnectedAtMs, preferredHostId, preferredHostName, totalCount, pendingCount, uploadingCount, pausedCount, completedCount, failedCount, waitingCleanupCount, localDeletedCount, unfinishedUploadedBytes, unfinishedTotalBytes, dominantFailureKind, activeJob, problemJob)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      schemaVersion,
+      revision,
+      completedRevision,
+      cleanupHighWatermark,
+      deviceId,
+      deviceName,
+      baseUrl,
+      computerId,
+      computerName,
+      lastConnectedAtMs,
+      preferredHostId,
+      preferredHostName,
+      totalCount,
+      pendingCount,
+      uploadingCount,
+      pausedCount,
+      completedCount,
+      failedCount,
+      waitingCleanupCount,
+      localDeletedCount,
+      unfinishedUploadedBytes,
+      unfinishedTotalBytes,
+      dominantFailureKind,
+      activeJob,
+      problemJob,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as BackupSummaryDto
+    return PlatformApiPigeonUtils.deepEquals(this.schemaVersion, other.schemaVersion) && PlatformApiPigeonUtils.deepEquals(this.revision, other.revision) && PlatformApiPigeonUtils.deepEquals(this.completedRevision, other.completedRevision) && PlatformApiPigeonUtils.deepEquals(this.cleanupHighWatermark, other.cleanupHighWatermark) && PlatformApiPigeonUtils.deepEquals(this.deviceId, other.deviceId) && PlatformApiPigeonUtils.deepEquals(this.deviceName, other.deviceName) && PlatformApiPigeonUtils.deepEquals(this.baseUrl, other.baseUrl) && PlatformApiPigeonUtils.deepEquals(this.computerId, other.computerId) && PlatformApiPigeonUtils.deepEquals(this.computerName, other.computerName) && PlatformApiPigeonUtils.deepEquals(this.lastConnectedAtMs, other.lastConnectedAtMs) && PlatformApiPigeonUtils.deepEquals(this.preferredHostId, other.preferredHostId) && PlatformApiPigeonUtils.deepEquals(this.preferredHostName, other.preferredHostName) && PlatformApiPigeonUtils.deepEquals(this.totalCount, other.totalCount) && PlatformApiPigeonUtils.deepEquals(this.pendingCount, other.pendingCount) && PlatformApiPigeonUtils.deepEquals(this.uploadingCount, other.uploadingCount) && PlatformApiPigeonUtils.deepEquals(this.pausedCount, other.pausedCount) && PlatformApiPigeonUtils.deepEquals(this.completedCount, other.completedCount) && PlatformApiPigeonUtils.deepEquals(this.failedCount, other.failedCount) && PlatformApiPigeonUtils.deepEquals(this.waitingCleanupCount, other.waitingCleanupCount) && PlatformApiPigeonUtils.deepEquals(this.localDeletedCount, other.localDeletedCount) && PlatformApiPigeonUtils.deepEquals(this.unfinishedUploadedBytes, other.unfinishedUploadedBytes) && PlatformApiPigeonUtils.deepEquals(this.unfinishedTotalBytes, other.unfinishedTotalBytes) && PlatformApiPigeonUtils.deepEquals(this.dominantFailureKind, other.dominantFailureKind) && PlatformApiPigeonUtils.deepEquals(this.activeJob, other.activeJob) && PlatformApiPigeonUtils.deepEquals(this.problemJob, other.problemJob)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.schemaVersion)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.revision)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.completedRevision)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.cleanupHighWatermark)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.deviceId)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.deviceName)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.baseUrl)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.computerId)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.computerName)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.lastConnectedAtMs)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.preferredHostId)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.preferredHostName)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.totalCount)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.pendingCount)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.uploadingCount)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.pausedCount)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.completedCount)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.failedCount)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.waitingCleanupCount)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.localDeletedCount)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.unfinishedUploadedBytes)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.unfinishedTotalBytes)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.dominantFailureKind)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.activeJob)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.problemJob)
+    return result
+  }
+  override fun toString(): String {
+    return "BackupSummaryDto(schemaVersion=$schemaVersion, revision=$revision, completedRevision=$completedRevision, cleanupHighWatermark=$cleanupHighWatermark, deviceId=$deviceId, deviceName=$deviceName, baseUrl=$baseUrl, computerId=$computerId, computerName=$computerName, lastConnectedAtMs=$lastConnectedAtMs, preferredHostId=$preferredHostId, preferredHostName=$preferredHostName, totalCount=$totalCount, pendingCount=$pendingCount, uploadingCount=$uploadingCount, pausedCount=$pausedCount, completedCount=$completedCount, failedCount=$failedCount, waitingCleanupCount=$waitingCleanupCount, localDeletedCount=$localDeletedCount, unfinishedUploadedBytes=$unfinishedUploadedBytes, unfinishedTotalBytes=$unfinishedTotalBytes, dominantFailureKind=$dominantFailureKind, activeJob=$activeJob, problemJob=$problemJob)"
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class BackupJobsByPathsDto (
+  val revision: Long,
+  val jobs: List<BackupJobDto>,
+  val missingPaths: List<String>
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): BackupJobsByPathsDto {
+      val revision = pigeonVar_list[0] as Long
+      val jobs = pigeonVar_list[1] as List<BackupJobDto>
+      val missingPaths = pigeonVar_list[2] as List<String>
+      return BackupJobsByPathsDto(revision, jobs, missingPaths)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      revision,
+      jobs,
+      missingPaths,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as BackupJobsByPathsDto
+    return PlatformApiPigeonUtils.deepEquals(this.revision, other.revision) && PlatformApiPigeonUtils.deepEquals(this.jobs, other.jobs) && PlatformApiPigeonUtils.deepEquals(this.missingPaths, other.missingPaths)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.revision)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.jobs)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.missingPaths)
+    return result
+  }
+  override fun toString(): String {
+    return "BackupJobsByPathsDto(revision=$revision, jobs=$jobs, missingPaths=$missingPaths)"
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class BackupCleanupEventDto (
+  val revision: Long,
+  val eventId: String,
+  val jobId: String,
+  val filePath: String,
+  val fileSizeBytes: Long,
+  val deletedAtMs: Long,
+  val reason: String
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): BackupCleanupEventDto {
+      val revision = pigeonVar_list[0] as Long
+      val eventId = pigeonVar_list[1] as String
+      val jobId = pigeonVar_list[2] as String
+      val filePath = pigeonVar_list[3] as String
+      val fileSizeBytes = pigeonVar_list[4] as Long
+      val deletedAtMs = pigeonVar_list[5] as Long
+      val reason = pigeonVar_list[6] as String
+      return BackupCleanupEventDto(revision, eventId, jobId, filePath, fileSizeBytes, deletedAtMs, reason)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      revision,
+      eventId,
+      jobId,
+      filePath,
+      fileSizeBytes,
+      deletedAtMs,
+      reason,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as BackupCleanupEventDto
+    return PlatformApiPigeonUtils.deepEquals(this.revision, other.revision) && PlatformApiPigeonUtils.deepEquals(this.eventId, other.eventId) && PlatformApiPigeonUtils.deepEquals(this.jobId, other.jobId) && PlatformApiPigeonUtils.deepEquals(this.filePath, other.filePath) && PlatformApiPigeonUtils.deepEquals(this.fileSizeBytes, other.fileSizeBytes) && PlatformApiPigeonUtils.deepEquals(this.deletedAtMs, other.deletedAtMs) && PlatformApiPigeonUtils.deepEquals(this.reason, other.reason)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.revision)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.eventId)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.jobId)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.filePath)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.fileSizeBytes)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.deletedAtMs)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.reason)
+    return result
+  }
+  override fun toString(): String {
+    return "BackupCleanupEventDto(revision=$revision, eventId=$eventId, jobId=$jobId, filePath=$filePath, fileSizeBytes=$fileSizeBytes, deletedAtMs=$deletedAtMs, reason=$reason)"
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
+data class BackupCleanupPageDto (
+  val latestRevision: Long,
+  val nextAfterRevision: Long,
+  val hasMore: Boolean,
+  val events: List<BackupCleanupEventDto>
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): BackupCleanupPageDto {
+      val latestRevision = pigeonVar_list[0] as Long
+      val nextAfterRevision = pigeonVar_list[1] as Long
+      val hasMore = pigeonVar_list[2] as Boolean
+      val events = pigeonVar_list[3] as List<BackupCleanupEventDto>
+      return BackupCleanupPageDto(latestRevision, nextAfterRevision, hasMore, events)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      latestRevision,
+      nextAfterRevision,
+      hasMore,
+      events,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as BackupCleanupPageDto
+    return PlatformApiPigeonUtils.deepEquals(this.latestRevision, other.latestRevision) && PlatformApiPigeonUtils.deepEquals(this.nextAfterRevision, other.nextAfterRevision) && PlatformApiPigeonUtils.deepEquals(this.hasMore, other.hasMore) && PlatformApiPigeonUtils.deepEquals(this.events, other.events)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.latestRevision)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.nextAfterRevision)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.hasMore)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.events)
+    return result
+  }
+  override fun toString(): String {
+    return "BackupCleanupPageDto(latestRevision=$latestRevision, nextAfterRevision=$nextAfterRevision, hasMore=$hasMore, events=$events)"
+  }
+}
+
+/** Generated class from Pigeon that represents data sent in messages. */
 data class CameraSessionStartedDto (
   val sessionId: String,
   val startedAtMs: Long
@@ -1223,25 +1616,50 @@ private open class PlatformApiPigeonCodec : StandardMessageCodec() {
       }
       143.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          CameraSessionStartedDto.fromList(it)
+          BackupJobDto.fromList(it)
         }
       }
       144.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          CameraSegmentStartedDto.fromList(it)
+          BackupSummaryDto.fromList(it)
         }
       }
       145.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          CameraSegmentCompletedDto.fromList(it)
+          BackupJobsByPathsDto.fromList(it)
         }
       }
       146.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          CameraSegmentFailedDto.fromList(it)
+          BackupCleanupEventDto.fromList(it)
         }
       }
       147.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          BackupCleanupPageDto.fromList(it)
+        }
+      }
+      148.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          CameraSessionStartedDto.fromList(it)
+        }
+      }
+      149.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          CameraSegmentStartedDto.fromList(it)
+        }
+      }
+      150.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          CameraSegmentCompletedDto.fromList(it)
+        }
+      }
+      151.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          CameraSegmentFailedDto.fromList(it)
+        }
+      }
+      152.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           CameraSessionFailedDto.fromList(it)
         }
@@ -1307,24 +1725,44 @@ private open class PlatformApiPigeonCodec : StandardMessageCodec() {
         stream.write(142)
         writeValue(stream, value.toList())
       }
-      is CameraSessionStartedDto -> {
+      is BackupJobDto -> {
         stream.write(143)
         writeValue(stream, value.toList())
       }
-      is CameraSegmentStartedDto -> {
+      is BackupSummaryDto -> {
         stream.write(144)
         writeValue(stream, value.toList())
       }
-      is CameraSegmentCompletedDto -> {
+      is BackupJobsByPathsDto -> {
         stream.write(145)
         writeValue(stream, value.toList())
       }
-      is CameraSegmentFailedDto -> {
+      is BackupCleanupEventDto -> {
         stream.write(146)
         writeValue(stream, value.toList())
       }
-      is CameraSessionFailedDto -> {
+      is BackupCleanupPageDto -> {
         stream.write(147)
+        writeValue(stream, value.toList())
+      }
+      is CameraSessionStartedDto -> {
+        stream.write(148)
+        writeValue(stream, value.toList())
+      }
+      is CameraSegmentStartedDto -> {
+        stream.write(149)
+        writeValue(stream, value.toList())
+      }
+      is CameraSegmentCompletedDto -> {
+        stream.write(150)
+        writeValue(stream, value.toList())
+      }
+      is CameraSegmentFailedDto -> {
+        stream.write(151)
+        writeValue(stream, value.toList())
+      }
+      is CameraSessionFailedDto -> {
+        stream.write(152)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -2259,8 +2697,12 @@ class CameraEventApi(private val binaryMessenger: BinaryMessenger, private val m
 }
 /** Generated interface from Pigeon that represents a handler of messages from Flutter. */
 interface BackupNativeHostApi {
-  fun snapshot(callback: (Result<Map<String?, Any?>?>) -> Unit)
-  fun initialize(request: Map<String?, Any?>, callback: (Result<Map<String?, Any?>?>) -> Unit)
+  fun summary(callback: (Result<BackupSummaryDto>) -> Unit)
+  fun initialize(request: Map<String?, Any?>, callback: (Result<BackupSummaryDto>) -> Unit)
+  fun jobsForPaths(paths: List<String>, callback: (Result<BackupJobsByPathsDto>) -> Unit)
+  fun cleanupEvents(afterRevision: Long, limit: Long, callback: (Result<BackupCleanupPageDto>) -> Unit)
+  fun acknowledgeCleanupEvents(throughRevision: Long, callback: (Result<Unit>) -> Unit)
+  fun hasPendingJobsOutsideDestination(computerId: String, callback: (Result<Boolean>) -> Unit)
   fun loadAccessKey(callback: (Result<String?>) -> Unit)
   fun isWifiConnected(callback: (Result<Boolean>) -> Unit)
   fun saveConnection(connection: Map<String?, Any?>, callback: (Result<Unit>) -> Unit)
@@ -2281,11 +2723,12 @@ interface BackupNativeHostApi {
     @JvmOverloads
     fun setUp(binaryMessenger: BinaryMessenger, api: BackupNativeHostApi?, messageChannelSuffix: String = "") {
       val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
+      val taskQueue = binaryMessenger.makeBackgroundTaskQueue()
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.snapshot$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.summary$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { _, reply ->
-            api.snapshot{ result: Result<Map<String?, Any?>?> ->
+            api.summary{ result: Result<BackupSummaryDto> ->
               val error = result.exceptionOrNull()
               if (error != null) {
                 reply.reply(PlatformApiPigeonUtils.wrapError(error))
@@ -2300,12 +2743,12 @@ interface BackupNativeHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.initialize$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.initialize$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
             val requestArg = args[0] as Map<String?, Any?>
-            api.initialize(requestArg) { result: Result<Map<String?, Any?>?> ->
+            api.initialize(requestArg) { result: Result<BackupSummaryDto> ->
               val error = result.exceptionOrNull()
               if (error != null) {
                 reply.reply(PlatformApiPigeonUtils.wrapError(error))
@@ -2320,7 +2763,87 @@ interface BackupNativeHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.loadAccessKey$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.jobsForPaths$separatedMessageChannelSuffix", codec, taskQueue)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val pathsArg = args[0] as List<String>
+            api.jobsForPaths(pathsArg) { result: Result<BackupJobsByPathsDto> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(PlatformApiPigeonUtils.wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(PlatformApiPigeonUtils.wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.cleanupEvents$separatedMessageChannelSuffix", codec, taskQueue)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val afterRevisionArg = args[0] as Long
+            val limitArg = args[1] as Long
+            api.cleanupEvents(afterRevisionArg, limitArg) { result: Result<BackupCleanupPageDto> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(PlatformApiPigeonUtils.wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(PlatformApiPigeonUtils.wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.acknowledgeCleanupEvents$separatedMessageChannelSuffix", codec, taskQueue)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val throughRevisionArg = args[0] as Long
+            api.acknowledgeCleanupEvents(throughRevisionArg) { result: Result<Unit> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(PlatformApiPigeonUtils.wrapError(error))
+              } else {
+                reply.reply(PlatformApiPigeonUtils.wrapResult(null))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.hasPendingJobsOutsideDestination$separatedMessageChannelSuffix", codec, taskQueue)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val computerIdArg = args[0] as String
+            api.hasPendingJobsOutsideDestination(computerIdArg) { result: Result<Boolean> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(PlatformApiPigeonUtils.wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(PlatformApiPigeonUtils.wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.loadAccessKey$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { _, reply ->
             api.loadAccessKey{ result: Result<String?> ->
@@ -2338,7 +2861,7 @@ interface BackupNativeHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.isWifiConnected$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.isWifiConnected$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { _, reply ->
             api.isWifiConnected{ result: Result<Boolean> ->
@@ -2356,7 +2879,7 @@ interface BackupNativeHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.saveConnection$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.saveConnection$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
@@ -2375,7 +2898,7 @@ interface BackupNativeHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.disconnect$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.disconnect$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { _, reply ->
             api.disconnect{ result: Result<Unit> ->
@@ -2392,7 +2915,7 @@ interface BackupNativeHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.enqueueJob$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.enqueueJob$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
@@ -2411,7 +2934,7 @@ interface BackupNativeHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.requeueJob$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.requeueJob$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
@@ -2430,7 +2953,7 @@ interface BackupNativeHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.cancelJob$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.cancelJob$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
@@ -2449,7 +2972,7 @@ interface BackupNativeHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.updateRetentionSchedule$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.updateRetentionSchedule$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
@@ -2468,7 +2991,7 @@ interface BackupNativeHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.reclaimStorageIfNeeded$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.reclaimStorageIfNeeded$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { _, reply ->
             api.reclaimStorageIfNeeded{ result: Result<Map<String?, Any?>> ->
@@ -2486,7 +3009,7 @@ interface BackupNativeHostApi {
         }
       }
       run {
-        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.getNetworkDiagnostics$separatedMessageChannelSuffix", codec)
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.getNetworkDiagnostics$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { _, reply ->
             api.getNetworkDiagnostics{ result: Result<Map<String?, Any?>?> ->
@@ -2514,12 +3037,12 @@ class BackupNativeEventApi(private val binaryMessenger: BinaryMessenger, private
       PlatformApiPigeonCodec()
     }
   }
-  fun snapshotChanged(snapshotArg: Map<String?, Any?>, callback: (Result<Unit>) -> Unit)
+  fun summaryChanged(summaryArg: BackupSummaryDto, callback: (Result<Unit>) -> Unit)
 {
     val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
-    val channelName = "dev.flutter.pigeon.packing_proof_mobile.BackupNativeEventApi.snapshotChanged$separatedMessageChannelSuffix"
+    val channelName = "dev.flutter.pigeon.packing_proof_mobile.BackupNativeEventApi.summaryChanged$separatedMessageChannelSuffix"
     val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
-    channel.send(listOf(snapshotArg)) {
+    channel.send(listOf(summaryArg)) {
       if (it is List<*>) {
         if (it.size > 1) {
           callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))

@@ -2,6 +2,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import Network
+import UIKit
 
 private struct BackupTransferError: Error {
   let statusCode: Int
@@ -262,6 +263,58 @@ enum IosBackupUploadFailureHandlingResult: Equatable {
   case persistenceFailed
 }
 
+private actor IosBackupUploadStartGate {
+  private var isOpen = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func wait() async {
+    if isOpen { return }
+    await withCheckedContinuation { continuation in
+      waiters.append(continuation)
+    }
+  }
+
+  func open() {
+    guard !isOpen else { return }
+    isOpen = true
+    let pending = waiters
+    waiters.removeAll()
+    for continuation in pending { continuation.resume() }
+  }
+}
+
+private actor IosBackupMaintenanceGate {
+  private var occupied = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+  private var nextWaiterIndex = 0
+
+  func acquire() async {
+    if !occupied {
+      occupied = true
+      return
+    }
+    await withCheckedContinuation { continuation in
+      waiters.append(continuation)
+    }
+  }
+
+  func release() {
+    guard nextWaiterIndex < waiters.count else {
+      occupied = false
+      waiters.removeAll(keepingCapacity: true)
+      nextWaiterIndex = 0
+      return
+    }
+    let continuation = waiters[nextWaiterIndex]
+    nextWaiterIndex += 1
+    if nextWaiterIndex == waiters.count {
+      waiters.removeAll(keepingCapacity: true)
+      nextWaiterIndex = 0
+    }
+    continuation.resume()
+  }
+}
+
 final class IosBackupHostApi: BackupNativeHostApi {
   private struct ActiveUpload {
     let identity: IosBackupUploadIdentity
@@ -278,24 +331,30 @@ final class IosBackupHostApi: BackupNativeHostApi {
     (([String: Any], String, Int64) async -> String?)?
   private let uploadFailureUpdateOverride: ((String, String) throws -> Bool)?
   private let uploadPersistenceFailureReporter: ((String, String, Error) -> Void)?
+  private let uploadOperationOverride:
+    (([String: Any], IosBackupUploadIdentity) async -> Void)?
+  private let storageReclaimOperationOverride:
+    (() async throws -> [String?: Any?])?
+  private let cleanupOperationOverride: (() async throws -> Void)?
   private let networkMonitor = NWPathMonitor()
   private let networkQueue = DispatchQueue(label: "ios.backup.network")
   private var lastLanReachable = false
   private let uploadsLock = NSLock()
   private var activeUploads: [String: ActiveUpload] = [:]
-  private var uploadTail: Task<Void, Never> = Task { }
+  private var uploadDispatcherTask: Task<Void, Never>?
+  private var uploadDispatchRequested = false
+  private let maintenanceGate = IosBackupMaintenanceGate()
   private let cleanupLock = NSLock()
   private let hostResolver = IosLanBackupHostResolver()
   private var cleanupRunning = false
   private var lastCleanupAt = Date.distantPast
   private let emitLock = NSLock()
-  private var emitScheduled = false
-  private let snapshotQueue = DispatchQueue(
-    label: "ios.backup.snapshot",
-    qos: .utility
-  )
-  private let enqueueQueue = DispatchQueue(
-    label: "ios.backup.enqueue",
+  private var summaryEventInFlight = false
+  private var summaryEventPending = false
+  private var summaryProgressWorkItem: DispatchWorkItem?
+  private var lastSummaryEventRequestedAt = Date.distantPast
+  private let summaryQueue = DispatchQueue(
+    label: "ios.backup.summary",
     qos: .utility
   )
   private let uploadFailureLock = NSLock()
@@ -312,6 +371,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private static let retentionConfirmationGrace: TimeInterval = 24 * 60 * 60
   private static let storageAttestationFreshness: TimeInterval = 5 * 60
   private static let cleanupThrottle: TimeInterval = 60
+  private static let summaryProgressThrottle: TimeInterval = 1
   private static let isoFormatter = ISO8601DateFormatter()
 
   private enum AttestationResult {
@@ -340,7 +400,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
       (([String: Any], String, Int64) async -> String?)? = nil,
     uploadFailureUpdateOverride: ((String, String) throws -> Bool)? = nil,
     uploadPersistenceFailureReporter:
-      ((String, String, Error) -> Void)? = nil
+      ((String, String, Error) -> Void)? = nil,
+    uploadOperationOverride:
+      (([String: Any], IosBackupUploadIdentity) async -> Void)? = nil,
+    storageReclaimOperationOverride:
+      (() async throws -> [String?: Any?])? = nil,
+    cleanupOperationOverride: (() async throws -> Void)? = nil
   ) {
     self.eventApi = eventApi
     self.defaults = defaults
@@ -352,6 +417,9 @@ final class IosBackupHostApi: BackupNativeHostApi {
     self.storageAttestationOverride = storageAttestationOverride
     self.uploadFailureUpdateOverride = uploadFailureUpdateOverride
     self.uploadPersistenceFailureReporter = uploadPersistenceFailureReporter
+    self.uploadOperationOverride = uploadOperationOverride
+    self.storageReclaimOperationOverride = storageReclaimOperationOverride
+    self.cleanupOperationOverride = cleanupOperationOverride
     networkMonitor.pathUpdateHandler = { [weak self] path in
       self?.lastLanReachable =
         path.status == .satisfied && !path.usesInterfaceType(.cellular)
@@ -361,27 +429,109 @@ final class IosBackupHostApi: BackupNativeHostApi {
 
   deinit {
     networkMonitor.cancel()
+    uploadsLock.lock()
+    uploadDispatcherTask?.cancel()
+    for upload in activeUploads.values { upload.task.cancel() }
+    uploadsLock.unlock()
   }
 
-  func snapshot(completion: @escaping (Result<[String?: Any?]?, Error>) -> Void) {
-    snapshotQueue.async {
-      self.triggerCleanupIfDue()
-      completion(Result { try self.currentSnapshot() })
-    }
+  func summary(completion: @escaping (Result<BackupSummaryDto, Error>) -> Void) {
+    triggerCleanupIfDue()
+    completion(Result { try currentSummary() })
   }
 
   func initialize(
     request: [String?: Any?],
-    completion: @escaping (Result<[String?: Any?]?, Error>) -> Void
+    completion: @escaping (Result<BackupSummaryDto, Error>) -> Void
   ) {
-    snapshotQueue.async {
-      self.saveRetentionDays(
-        unbacked: (request["unbackedRetentionDays"] as? Int) ?? -1,
-        backed: (request["backedRetentionDays"] as? Int) ?? -1
-      )
-      self.triggerCleanup()
-      completion(Result { try self.currentSnapshot() })
+    saveRetentionDays(
+      unbacked: (request["unbackedRetentionDays"] as? Int) ?? -1,
+      backed: (request["backedRetentionDays"] as? Int) ?? -1
+    )
+    triggerCleanup()
+    do {
+      requestUploadDispatch()
+      completion(.success(try currentSummary()))
+    } catch {
+      completion(.failure(error))
     }
+  }
+
+  func jobsForPaths(
+    paths: [String],
+    completion: @escaping (Result<BackupJobsByPathsDto, Error>) -> Void
+  ) {
+    guard paths.count <= 100 else {
+      completion(.failure(pigeonError("每次最多查询 100 个录像路径", code: "backup_paths_limit")))
+      return
+    }
+    var seen = Set<String>()
+    let unique = paths.filter { seen.insert($0).inserted }
+    completion(Result {
+      let result = try jobStore.get().jobsForPaths(unique)
+      let found = Set(result.jobs.compactMap { $0["filePath"] as? String })
+      return BackupJobsByPathsDto(
+        revision: result.revision,
+        jobs: result.jobs.map(jobDto),
+        missingPaths: unique.filter { !found.contains($0) }
+      )
+    })
+  }
+
+  func cleanupEvents(
+    afterRevision: Int64,
+    limit: Int64,
+    completion: @escaping (Result<BackupCleanupPageDto, Error>) -> Void
+  ) {
+    guard afterRevision >= 0 else {
+      completion(.failure(pigeonError("清理事件游标不能为负数", code: "backup_cleanup_cursor")))
+      return
+    }
+    guard (1...100).contains(limit) else {
+      completion(.failure(pigeonError("清理事件分页大小必须为 1 到 100", code: "backup_cleanup_limit")))
+      return
+    }
+    completion(Result {
+      let page = try jobStore.get().cleanupEvents(
+        afterRevision: afterRevision,
+        limit: Int(limit)
+      )
+      let events = page.events.map {
+        BackupCleanupEventDto(
+          revision: int64($0["revision"]),
+          eventId: $0["eventId"] as? String ?? "",
+          jobId: $0["jobId"] as? String ?? "",
+          filePath: $0["filePath"] as? String ?? "",
+          fileSizeBytes: int64($0["fileSizeBytes"]),
+          deletedAtMs: int64($0["deletedAtMs"]),
+          reason: $0["reason"] as? String ?? ""
+        )
+      }
+      return BackupCleanupPageDto(
+        latestRevision: page.latest,
+        nextAfterRevision: events.last?.revision ?? afterRevision,
+        hasMore: page.hasMore,
+        events: events
+      )
+    })
+  }
+
+  func acknowledgeCleanupEvents(
+    throughRevision: Int64,
+    completion: @escaping (Result<Void, Error>) -> Void
+  ) {
+    guard throughRevision >= 0 else {
+      completion(.failure(pigeonError("清理事件确认游标不能为负数", code: "backup_cleanup_cursor")))
+      return
+    }
+    completion(Result { try jobStore.get().acknowledgeCleanupEvents(throughRevision: throughRevision) })
+  }
+
+  func hasPendingJobsOutsideDestination(
+    computerId: String,
+    completion: @escaping (Result<Bool, Error>) -> Void
+  ) {
+    completion(Result { try jobStore.get().hasPendingJobsOutsideDestination(computerId) })
   }
 
   func loadAccessKey(completion: @escaping (Result<String?, Error>) -> Void) {
@@ -405,7 +555,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
       stored.removeValue(forKey: "accessKey")
       defaults.set(stored, forKey: keys.connection)
       defaults.set(connection["deviceName"] as? String, forKey: keys.deviceName)
-      emitSnapshot()
+      emitSummary()
       completion(.success(()))
     } catch {
       completion(.failure(error))
@@ -416,7 +566,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
     do {
       try credentialStore.delete()
       defaults.removeObject(forKey: keys.connection)
-      emitSnapshot()
+      emitSummary()
       completion(.success(()))
     } catch {
       completion(.failure(error))
@@ -427,30 +577,67 @@ final class IosBackupHostApi: BackupNativeHostApi {
     request: [String?: Any?],
     completion: @escaping (Result<Void, Error>) -> Void
   ) {
-    enqueueQueue.async {
-      var job = self.normalized(request)
-      let path = request["filePath"] as? String ?? ""
-      let id = request["id"] as? String ?? self.stableId(path)
-      let startUploadRequested = request["startUpload"] as? Bool != false
-      let fileSize = (try? FileManager.default.attributesOfItem(
-        atPath: path
-      )[.size] as? Int64) ?? 0
-      job["id"] = id
-      job["generation"] = UUID().uuidString
-      job["state"] = startUploadRequested ? "pending" : "paused"
-      job["uploadedBytes"] = 0
-      job["totalBytes"] = fileSize
-      job.removeValue(forKey: "errorMessage")
-      job.removeValue(forKey: "failureKind")
-      do {
-        try self.upsert(job)
-        if startUploadRequested {
-          self.startUpload(job)
+    let path = request["filePath"] as? String ?? ""
+    let id = request["id"] as? String ?? stableId(path)
+    let startUploadRequested = request["startUpload"] as? Bool != false
+    let forceRestart = request["forceRestart"] as? Bool == true
+    do {
+      let attributes = try FileManager.default.attributesOfItem(atPath: path)
+      let fileSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+      let lastModified = Int64(
+        ((attributes[.modificationDate] as? Date) ?? .distantPast)
+          .timeIntervalSince1970 * 1000
+      )
+      let requested = normalized(request)
+      let destination = requested["destinationComputerId"] as? String ??
+        defaults.dictionary(forKey: keys.connection)?["computerId"] as? String ?? ""
+      let existing = try jobStore.get().readJob(id: id)
+      let requestedSessionId = ((requested["sessions"] as? [Any])?.first as? [String: Any])?["id"] as? String
+      let existingSessionId = ((existing?["sessions"] as? [Any])?.first as? [String: Any])?["id"] as? String
+      let sameSource = existing != nil &&
+        requestedSessionId != nil && requestedSessionId == existingSessionId &&
+        int64(existing?["totalBytes"]) == fileSize &&
+        int64(existing?["lastModified"]) == lastModified &&
+        (existing?["destinationComputerId"] as? String ?? "") == destination
+      var job: [String: Any]
+      if sameSource, var preserved = existing {
+        preserved["filePath"] = path
+        if let sessions = requested["sessions"] { preserved["sessions"] = sessions }
+        let completedWithEvidence = preserved["state"] as? String == "completed" &&
+          !(preserved["contentSha256"] as? String ?? "").isEmpty
+        if forceRestart && !completedWithEvidence {
+          preserved["generation"] = UUID().uuidString
+          preserved["state"] = "pending"
+          preserved["uploadedBytes"] = 0
+          for key in ["backupCompletedAt", "contentSha256", "remoteRecordId", "errorMessage", "failureKind"] {
+            preserved.removeValue(forKey: key)
+          }
+        } else if startUploadRequested && ["paused", "failed"].contains(preserved["state"] as? String ?? "") {
+          preserved["state"] = "pending"
+          preserved.removeValue(forKey: "errorMessage")
+          preserved.removeValue(forKey: "failureKind")
         }
-        completion(.success(()))
-      } catch {
-        completion(.failure(error))
+        job = preserved
+      } else {
+        job = requested
+        job["id"] = id
+        job["generation"] = UUID().uuidString
+        job["state"] = startUploadRequested ? "pending" : "paused"
+        job["uploadedBytes"] = 0
+        job["totalBytes"] = fileSize
+        job["lastModified"] = lastModified
+        job["destinationComputerId"] = destination
+        job.removeValue(forKey: "errorMessage")
+        job.removeValue(forKey: "failureKind")
       }
+      try upsert(job)
+      if startUploadRequested && job["state"] as? String != "completed" {
+        startUpload(job)
+      }
+      emitSummary()
+      completion(.success(()))
+    } catch {
+      completion(.failure(error))
     }
   }
 
@@ -466,10 +653,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
         job.removeValue(forKey: "failureKind")
       })
       cancelActiveUpload(jobId: jobId)
-      if let job = try jobs().first(where: { $0["id"] as? String == jobId }) {
+      if let job = try readJobById(jobId) {
         startUpload(job)
       }
-      emitSnapshot()
+      emitSummary()
       completion(.success(()))
     } catch {
       completion(.failure(error))
@@ -486,7 +673,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
         job["state"] = "paused"
       })
       cancelActiveUpload(jobId: jobId)
-      emitSnapshot()
+      emitSummary()
       completion(.success(()))
     } catch {
       completion(.failure(error))
@@ -519,6 +706,15 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func performStorageReclaim() async throws -> [String?: Any?] {
+    try await withMaintenanceSlot {
+      if let storageReclaimOperationOverride {
+        return try await storageReclaimOperationOverride()
+      }
+      return try await performStorageReclaimUncoordinated()
+    }
+  }
+
+  private func performStorageReclaimUncoordinated() async throws -> [String?: Any?] {
     let minimumBytes: Int64 = 2 * 1024 * 1024 * 1024
     let targetBytes: Int64 = 3 * 1024 * 1024 * 1024
     let before = availableStorageBytes()
@@ -528,7 +724,16 @@ final class IosBackupHostApi: BackupNativeHostApi {
     var jobsChanged = false
     if current < minimumBytes {
       let recordingsRoot = recordingsDirectory().path + "/"
-      for job in try jobs() where current < targetBytes {
+      var afterCreatedAtKey: String?
+      var afterId: String?
+      var page: (jobs: [[String: Any]], nextCreatedAtKey: String?, nextId: String?)
+      repeat {
+        page = try jobStore.get().storageRecoveryJobsPage(
+          afterCreatedAtKey: afterCreatedAtKey,
+          afterId: afterId,
+          minimumVerificationVersion: Self.verificationVersion
+        )
+        for job in page.jobs where current < targetBytes {
         guard
           job["state"] as? String == "completed",
           IosBackupCleanupGate.hasVerifiedRetentionEvidence(
@@ -546,7 +751,21 @@ final class IosBackupHostApi: BackupNativeHostApi {
           continue
         }
         let file = URL(fileURLWithPath: path)
-        guard FileManager.default.fileExists(atPath: path) else { continue }
+        if !FileManager.default.fileExists(atPath: path) {
+          guard let id = job["id"] as? String,
+                let generation = job["generation"] as? String
+          else { continue }
+          let reconciled = try jobStore.get().updateJob(
+            id: id, expectedGeneration: generation
+          ) { current in
+            guard current["localDeletedAt"] as? String == nil else { return }
+            current["localDeletedAt"] = Self.isoFormatter.string(from: Date())
+            current["cleanupReason"] = "存储空间不足提前清理"
+            current["waitingCleanup"] = false
+          }
+          jobsChanged = jobsChanged || reconciled
+          continue
+        }
         guard sha256(file: file) == expectedSha256 else {
           var updated = job
           let message = "录像文件已被替换，已取消空间清理"
@@ -621,10 +840,13 @@ final class IosBackupHostApi: BackupNativeHostApi {
         try upsert(currentJob)
         jobsChanged = true
         current = availableStorageBytes()
-      }
+        }
+        afterCreatedAtKey = page.nextCreatedAtKey
+        afterId = page.nextId
+      } while current < targetBytes && page.jobs.count == 100
     }
     if jobsChanged {
-      emitSnapshot()
+      emitSummary()
     }
     return [
       "availableBytes": current,
@@ -687,27 +909,85 @@ final class IosBackupHostApi: BackupNativeHostApi {
     completion(.success(["wifiConnected": lastLanReachable]))
   }
 
-  private func currentSnapshot() throws -> [String?: Any?] {
-    return [
-      "deviceId": deviceId(),
-      "deviceName": deviceName(),
-      "connection": defaults.dictionary(forKey: keys.connection),
-      "jobs": try snapshotJobs().map(slimJob),
-    ]
+  private func currentSummary() throws -> BackupSummaryDto {
+    let values = try jobStore.get().summaryValues()
+    let connection = defaults.dictionary(forKey: keys.connection)
+    var problemJob = values["problemJob"] as? [String: Any]
+    uploadFailureLock.lock()
+    let override = uploadFailureOverrides.first
+    uploadFailureLock.unlock()
+    if let (jobId, _) = override,
+       let stored = try jobStore.get().readJob(id: jobId) {
+      problemJob = jobsApplyingFailureOverrides([stored]).first
+    }
+    return BackupSummaryDto(
+      schemaVersion: 1,
+      revision: int64(values["revision"]),
+      completedRevision: int64(values["completedRevision"]),
+      cleanupHighWatermark: int64(values["cleanupHighWatermark"]),
+      deviceId: deviceId(),
+      deviceName: deviceName(),
+      baseUrl: connection?["baseUrl"] as? String,
+      computerId: connection?["computerId"] as? String,
+      computerName: connection?["computerName"] as? String,
+      lastConnectedAtMs: epochMilliseconds(connection?["lastConnectedAt"]),
+      preferredHostId: nil,
+      preferredHostName: nil,
+      totalCount: int64(values["totalCount"]),
+      pendingCount: int64(values["pendingCount"]),
+      uploadingCount: int64(values["uploadingCount"]),
+      pausedCount: int64(values["pausedCount"]),
+      completedCount: int64(values["completedCount"]),
+      failedCount: int64(values["failedCount"]),
+      waitingCleanupCount: int64(values["waitingCleanupCount"]),
+      localDeletedCount: int64(values["localDeletedCount"]),
+      unfinishedUploadedBytes: int64(values["unfinishedUploadedBytes"]),
+      unfinishedTotalBytes: int64(values["unfinishedTotalBytes"]),
+      dominantFailureKind: values["dominantFailureKind"] as? String,
+      activeJob: (values["activeJob"] as? [String: Any]).map(jobDto),
+      problemJob: problemJob.map(jobDto)
+    )
   }
 
-  /// 快照瘦身：只下发 Dart 实际消费的字段，避免 sessions 等大字段随每次推送跨通道传输。
-  private func slimJob(_ job: [String: Any]) -> [String: Any] {
-    var slim: [String: Any] = [:]
-    for key in [
-      "id", "filePath", "state", "uploadedBytes", "totalBytes", "lastModified",
-      "contentSha256", "errorMessage", "failureKind", "fileCreatedAt",
-      "backupCompletedAt", "scheduledCleanupAt", "localDeletedAt", "waitingCleanup",
-      "remoteRecordId", "destinationComputerId", "cleanupReason",
-    ] {
-      slim[key] = job[key]
-    }
-    return slim
+  private func jobDto(_ job: [String: Any]) -> BackupJobDto {
+    BackupJobDto(
+      revision: int64(job["revision"]),
+      id: job["id"] as? String ?? "",
+      filePath: job["filePath"] as? String ?? "",
+      state: job["state"] as? String ?? "",
+      uploadedBytes: int64(job["uploadedBytes"]),
+      totalBytes: int64(job["totalBytes"]),
+      lastModifiedMs: optionalInt64(job["lastModified"]),
+      contentSha256: job["contentSha256"] as? String,
+      errorMessage: job["errorMessage"] as? String,
+      failureKind: job["failureKind"] as? String,
+      fileCreatedAtMs: epochMilliseconds(job["fileCreatedAt"]),
+      backupCompletedAtMs: epochMilliseconds(job["backupCompletedAt"]),
+      scheduledCleanupAtMs: epochMilliseconds(job["scheduledCleanupAt"]),
+      localDeletedAtMs: epochMilliseconds(job["localDeletedAt"]),
+      waitingCleanup: job["waitingCleanup"] as? Bool ?? false,
+      remoteRecordId: optionalInt64(job["remoteRecordId"]).flatMap { $0 > 0 ? $0 : nil },
+      destinationComputerId: job["destinationComputerId"] as? String ?? "",
+      cleanupReason: job["cleanupReason"] as? String
+    )
+  }
+
+  private func int64(_ value: Any?) -> Int64 {
+    optionalInt64(value) ?? 0
+  }
+
+  private func optionalInt64(_ value: Any?) -> Int64? {
+    if let number = value as? NSNumber { return number.int64Value }
+    if let value = value as? Int64 { return value }
+    if let value = value as? Int { return Int64(value) }
+    return nil
+  }
+
+  private func epochMilliseconds(_ value: Any?) -> Int64? {
+    guard let text = value as? String,
+          let date = Self.isoFormatter.date(from: text)
+    else { return nil }
+    return Int64(date.timeIntervalSince1970 * 1000)
   }
 
   private func deviceId() -> String {
@@ -741,16 +1021,6 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private func backedRetentionDays() -> Int {
     let values = defaults.dictionary(forKey: keys.retention)
     return (values?["backedRetentionDays"] as? Int) ?? 7
-  }
-
-  private func jobs() throws -> [[String: Any]] {
-    let stored = try jobStore.get().allJobs()
-    return jobsApplyingFailureOverrides(stored)
-  }
-
-  private func snapshotJobs() throws -> [[String: Any]] {
-    let stored = try jobStore.get().snapshotJobs()
-    return jobsApplyingFailureOverrides(stored)
   }
 
   private func jobsApplyingFailureOverrides(
@@ -831,7 +1101,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
       uploadFailureOverrides.removeValue(forKey: jobId)
       uploadFailureLock.unlock()
       guard updated else { return .staleGeneration }
-      emitSnapshot()
+      emitSummary()
       return .persisted
     } catch {
       uploadFailureLock.lock()
@@ -847,26 +1117,69 @@ final class IosBackupHostApi: BackupNativeHostApi {
           error.localizedDescription
         )
       }
-      emitSnapshot()
+      emitSummary()
       return .persistenceFailed
     }
   }
 
-  private func emitSnapshot() {
+  private func emitSummary() {
+    summaryQueue.async { [weak self] in
+      guard let self else { return }
+      self.summaryProgressWorkItem?.cancel()
+      self.summaryProgressWorkItem = nil
+      self.lastSummaryEventRequestedAt = Date()
+      self.sendSummaryIfPossible()
+    }
+  }
+
+  private func emitProgressSummary() {
+    summaryQueue.async { [weak self] in
+      guard let self, self.summaryProgressWorkItem == nil else { return }
+      let delay = max(
+        0,
+        Self.summaryProgressThrottle
+          - Date().timeIntervalSince(self.lastSummaryEventRequestedAt)
+      )
+      let work = DispatchWorkItem { [weak self] in
+        guard let self else { return }
+        self.summaryProgressWorkItem = nil
+        self.lastSummaryEventRequestedAt = Date()
+        self.sendSummaryIfPossible()
+      }
+      self.summaryProgressWorkItem = work
+      self.summaryQueue.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+  }
+
+  func emitProgressSummaryForTesting() {
+    emitProgressSummary()
+  }
+
+  private func sendSummaryIfPossible() {
     emitLock.lock()
-    let alreadyScheduled = emitScheduled
-    emitScheduled = true
-    emitLock.unlock()
-    if alreadyScheduled {
+    if summaryEventInFlight {
+      summaryEventPending = true
+      emitLock.unlock()
       return
     }
-    snapshotQueue.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+    summaryEventInFlight = true
+    emitLock.unlock()
+    guard let summary = try? currentSummary() else {
+      emitLock.lock()
+      summaryEventInFlight = false
+      emitLock.unlock()
+      return
+    }
+    eventApi.summaryChanged(summary: summary) { [weak self] _ in
       guard let self else { return }
-      self.emitLock.lock()
-      self.emitScheduled = false
-      self.emitLock.unlock()
-      guard let snapshot = try? self.currentSnapshot() else { return }
-      self.eventApi.snapshotChanged(snapshot: snapshot) { _ in }
+      self.summaryQueue.async {
+        self.emitLock.lock()
+        self.summaryEventInFlight = false
+        let shouldSend = self.summaryEventPending
+        self.summaryEventPending = false
+        self.emitLock.unlock()
+        if shouldSend { self.sendSummaryIfPossible() }
+      }
     }
   }
 
@@ -888,26 +1201,98 @@ final class IosBackupHostApi: BackupNativeHostApi {
     return result
   }
 
-  private func startUpload(_ job: [String: Any]) {
-    guard let jobId = job["id"] as? String,
-          let generation = job["generation"] as? String,
-          !generation.isEmpty
-    else { return }
-    let identity = IosBackupUploadIdentity(
-      generation: generation,
-      token: UUID()
-    )
+  private func startUpload(_: [String: Any]) {
+    requestUploadDispatch()
+  }
+
+  private func withUploadsLock<T>(_ body: () -> T) -> T {
     uploadsLock.lock()
-    activeUploads[jobId]?.task.cancel()
-    let previous = uploadTail
-    let task = Task.detached { [weak self] in
-      await previous.value
-      guard let self, !Task.isCancelled else { return }
-      await self.upload(job: job, identity: identity)
+    defer { uploadsLock.unlock() }
+    return body()
+  }
+
+  private func requestUploadDispatch() {
+    uploadsLock.lock()
+    uploadDispatchRequested = true
+    guard uploadDispatcherTask == nil else {
+      uploadsLock.unlock()
+      return
     }
-    activeUploads[jobId] = ActiveUpload(identity: identity, task: task)
-    uploadTail = task
+    uploadDispatcherTask = Task.detached { [weak self] in
+      await self?.runUploadDispatcher()
+    }
     uploadsLock.unlock()
+  }
+
+  private func runUploadDispatcher() async {
+    while !Task.isCancelled {
+      withUploadsLock { uploadDispatchRequested = false }
+
+      do {
+        while !Task.isCancelled,
+              let job = try jobStore.get().claimNextUploadJob() {
+          guard let jobId = job["id"] as? String,
+                let generation = job["generation"] as? String,
+                !generation.isEmpty
+          else { continue }
+          let identity = IosBackupUploadIdentity(
+            generation: generation,
+            token: UUID()
+          )
+          let startGate = IosBackupUploadStartGate()
+          let task = Task.detached { [weak self] in
+            await startGate.wait()
+            guard let self, !Task.isCancelled else { return }
+            if let uploadOperationOverride = self.uploadOperationOverride {
+              await uploadOperationOverride(job, identity)
+            } else {
+              await self.upload(job: job, identity: identity)
+            }
+          }
+          withUploadsLock {
+            activeUploads[jobId]?.task.cancel()
+            activeUploads[jobId] = ActiveUpload(identity: identity, task: task)
+          }
+          let current = try jobStore.get().readJob(id: jobId)
+          guard current?["generation"] as? String == generation,
+                current?["state"] as? String == "uploading"
+          else {
+            task.cancel()
+            finishActiveUpload(jobId: jobId, identity: identity)
+            await startGate.open()
+            await task.value
+            continue
+          }
+          await startGate.open()
+          await task.value
+          finishActiveUpload(jobId: jobId, identity: identity)
+          if let current = try jobStore.get().readJob(id: jobId),
+             current["generation"] as? String == generation,
+             current["state"] as? String == "uploading" {
+            // 上传状态无法落盘时保留 SQLite 原状，停止本轮 dispatcher，
+            // 避免同一任务在数据库故障期间形成无间隔重试循环。
+            break
+          }
+        }
+      } catch {
+        NSLog(
+          "PackingProof backup dispatcher failed: %@",
+          error.localizedDescription
+        )
+      }
+
+      let shouldContinue = withUploadsLock { () -> Bool in
+        if uploadDispatchRequested { return true }
+        uploadDispatcherTask = nil
+        return false
+      }
+      if shouldContinue {
+        continue
+      }
+      return
+    }
+
+    withUploadsLock { uploadDispatcherTask = nil }
   }
 
   private func cancelActiveUpload(jobId: String) {
@@ -928,6 +1313,21 @@ final class IosBackupHostApi: BackupNativeHostApi {
       activeUploads.removeValue(forKey: jobId)
     }
     uploadsLock.unlock()
+  }
+
+  func requestUploadDispatchForTesting() {
+    requestUploadDispatch()
+  }
+
+  func uploadTaskCountsForTesting() -> (dispatcher: Int, active: Int) {
+    withUploadsLock {
+      (uploadDispatcherTask == nil ? 0 : 1, activeUploads.count)
+    }
+  }
+
+  func waitForUploadDispatcherForTesting() async {
+    let task = withUploadsLock { uploadDispatcherTask }
+    await task?.value
   }
 
   private func upload(
@@ -1041,7 +1441,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
                 current["uploadedBytes"] = offset
               }
             ) else { return }
-            emitSnapshot()
+            emitProgressSummary()
             continue
           }
           guard let recovered = await recoverBaseUrl(
@@ -1076,7 +1476,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
             current["uploadedBytes"] = offset
           }
         ) else { return }
-        emitSnapshot()
+        emitProgressSummary()
       }
 
       try Task.checkCancellation()
@@ -1157,7 +1557,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
           current["lastAttestedAt"] = completedAt
         }
       ) else { return }
-      emitSnapshot()
+      emitSummary()
       triggerCleanup()
     } catch {
       handleUploadFailure(
@@ -1187,7 +1587,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
     updated["baseUrl"] = resolved
     updated["lastConnectedAt"] = Self.isoFormatter.string(from: Date())
     defaults.set(updated, forKey: keys.connection)
-    emitSnapshot()
+    emitSummary()
     return resolved
   }
 
@@ -1465,7 +1865,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
   // MARK: - 保留策略清理
 
   private func readJobById(_ id: String) throws -> [String: Any]? {
-    try jobs().first(where: { $0["id"] as? String == id })
+    try jobStore.get().readJob(id: id)
   }
 
   private func dueAt(_ job: [String: Any]) -> Date? {
@@ -1498,40 +1898,71 @@ final class IosBackupHostApi: BackupNativeHostApi {
     return now.timeIntervalSince(attested) <= Self.retentionConfirmationGrace
   }
 
-  private func triggerCleanup() {
-    cleanupLock.lock()
-    guard !cleanupRunning else {
-      cleanupLock.unlock()
-      return
+  private func withMaintenanceSlot<T>(
+    _ operation: () async throws -> T
+  ) async throws -> T {
+    await maintenanceGate.acquire()
+    do {
+      try Task.checkCancellation()
+      let result = try await operation()
+      await maintenanceGate.release()
+      return result
+    } catch {
+      await maintenanceGate.release()
+      throw error
     }
-    cleanupRunning = true
-    lastCleanupAt = Date()
-    cleanupLock.unlock()
+  }
+
+  private func withCleanupLock<T>(_ operation: () -> T) -> T {
+    cleanupLock.lock()
+    defer { cleanupLock.unlock() }
+    return operation()
+  }
+
+  private func triggerCleanup() {
+    let shouldStart = withCleanupLock { () -> Bool in
+      guard !cleanupRunning else { return false }
+      cleanupRunning = true
+      lastCleanupAt = Date()
+      return true
+    }
+    guard shouldStart else { return }
 
     Task.detached { [weak self] in
       guard let self else { return }
       try? await self.performCleanup()
-      self.cleanupLock.lock()
-      self.cleanupRunning = false
-      self.cleanupLock.unlock()
+      self.withCleanupLock { self.cleanupRunning = false }
     }
   }
 
   private func triggerCleanupIfDue() {
-    cleanupLock.lock()
-    let due = Date().timeIntervalSince(lastCleanupAt) >= Self.cleanupThrottle
-    cleanupLock.unlock()
+    let due = withCleanupLock {
+      Date().timeIntervalSince(lastCleanupAt) >= Self.cleanupThrottle
+    }
     if due {
       triggerCleanup()
     }
   }
 
   func performCleanup() async throws {
+    try await withMaintenanceSlot {
+      if let cleanupOperationOverride {
+        try await cleanupOperationOverride()
+      } else {
+        try await performCleanupUncoordinated()
+      }
+    }
+  }
+
+  private func performCleanupUncoordinated() async throws {
     let root = recordingsDirectory().path + "/"
     let now = Date()
     var changed = false
-
-    for job in try jobs() {
+    var afterId: String?
+    var storedPage: [[String: Any]]
+    repeat {
+      storedPage = try jobStore.get().cleanupCandidateJobsPage(afterId: afterId)
+      for job in jobsApplyingFailureOverrides(storedPage) {
       guard
         let id = job["id"] as? String,
         let path = job["filePath"] as? String,
@@ -1648,10 +2079,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
       }
       try upsert(baseJob)
       changed = true
-    }
+      }
+      afterId = storedPage.last?["id"] as? String
+    } while storedPage.count == 100
 
     if changed {
-      emitSnapshot()
+      emitSummary()
     }
   }
 
@@ -1824,34 +2257,61 @@ final class IosLanBackupHostResolver: @unchecked Sendable {
   private static let backupProtocol = "mobile-backup-v2"
   private static let enrollmentVersion = 2
   private static let authenticationVersion = 3
+  private static let maximumConcurrentProbes = 4
+
+  typealias CandidateProvider = @Sendable () -> [String]
+  typealias ProbeOperation = @Sendable (String, String) async -> String?
+
+  private let candidateProvider: CandidateProvider
+  private let probeOperation: ProbeOperation
+
+  init() {
+    candidateProvider = { IosLanBackupHostResolver.subnetCandidates() }
+    probeOperation = { baseUrl, nodeId in
+      await IosLanBackupHostResolver.probe(baseUrl: baseUrl, nodeId: nodeId)
+    }
+  }
+
+  init(
+    candidateProvider: @escaping CandidateProvider,
+    probeOperation: @escaping ProbeOperation
+  ) {
+    self.candidateProvider = candidateProvider
+    self.probeOperation = probeOperation
+  }
 
   func resolve(currentBaseUrl: String, expectedNodeId: String) async -> String? {
     let nodeId = expectedNodeId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !nodeId.isEmpty else { return nil }
-    if let current = await Self.probe(baseUrl: currentBaseUrl, nodeId: nodeId) {
+    if let current = await probeOperation(currentBaseUrl, nodeId) {
       return current
     }
 
-    for batch in Self.subnetCandidates().chunks(ofCount: 32) {
-      let match = await withTaskGroup(of: String?.self, returning: String?.self) { group in
-        for candidate in batch {
-          group.addTask {
-            await Self.probe(baseUrl: candidate, nodeId: nodeId)
-          }
+    var candidates = candidateProvider().makeIterator()
+    return await withTaskGroup(of: String?.self, returning: String?.self) { group in
+      func addNextCandidate() -> Bool {
+        guard let candidate = candidates.next() else { return false }
+        group.addTask { [probeOperation] in
+          guard !Task.isCancelled else { return nil }
+          return await probeOperation(candidate, nodeId)
         }
-        for await result in group {
-          if let result {
-            group.cancelAll()
-            return result
-          }
+        return true
+      }
+
+      for _ in 0..<Self.maximumConcurrentProbes where addNextCandidate() {}
+      while let result = await group.next() {
+        if let result {
+          group.cancelAll()
+          return result
         }
-        return nil
+        if Task.isCancelled {
+          group.cancelAll()
+          return nil
+        }
+        _ = addNextCandidate()
       }
-      if let match {
-        return match
-      }
+      return nil
     }
-    return nil
   }
 
   private static func probe(baseUrl: String, nodeId: String) async -> String? {

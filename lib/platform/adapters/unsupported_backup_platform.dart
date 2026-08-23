@@ -1,4 +1,5 @@
 import '../contracts/backup_platform.dart';
+import '../generated/platform_api.g.dart';
 import '../platform_capabilities.dart';
 import '../platform_exceptions.dart';
 
@@ -6,20 +7,35 @@ class UnsupportedBackupNativePlatform implements BackupNativePlatform {
   const UnsupportedBackupNativePlatform();
 
   @override
-  void setSnapshotListener(
-    void Function(Map<Object?, Object?> snapshot)? listener,
-  ) {}
+  void setSummaryListener(void Function(BackupSummaryDto summary)? listener) {}
 
   @override
-  Future<Map<Object?, Object?>?> snapshot() => _unsupported();
+  Future<BackupSummaryDto> summary() => _unsupported();
 
   @override
-  Future<Map<Object?, Object?>?> initialize(Map<Object?, Object?> request) {
+  Future<BackupSummaryDto> initialize(Map<Object?, Object?> request) {
     throw const CapabilityUnavailableException(
       PlatformCapability.lanBackup,
       reason: '当前平台暂不支持电脑备份',
     );
   }
+
+  @override
+  Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths) =>
+      _unsupported();
+
+  @override
+  Future<BackupCleanupPageDto> cleanupEvents({
+    required int afterRevision,
+    required int limit,
+  }) => _unsupported();
+
+  @override
+  Future<void> acknowledgeCleanupEvents(int throughRevision) => _unsupported();
+
+  @override
+  Future<bool> hasPendingJobsOutsideDestination(String computerId) =>
+      _unsupported();
 
   @override
   Future<String?> loadAccessKey() => _unsupported();

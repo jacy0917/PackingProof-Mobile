@@ -15,6 +15,7 @@ dependencies {
     testImplementation("org.json:json:20240303")
     // 在 JVM 上执行 Android Bitmap/Canvas 真实绘制，防止水印文字裁切回归。
     testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("androidx.work:work-testing:2.10.1")
 }
 
 val releaseStorePath = System.getenv("PACKING_PROOF_KEYSTORE_PATH")?.trim().orEmpty()

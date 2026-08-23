@@ -8,232 +8,169 @@ import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import androidx.lifecycle.Observer
-import androidx.work.BackoffPolicy
-import androidx.work.Constraints
-import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkInfo
 import androidx.work.WorkManager
-import androidx.work.workDataOf
-import io.flutter.plugin.common.BinaryMessenger
-import io.flutter.plugin.common.MethodCall
-import io.flutter.plugin.common.MethodChannel
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
-import java.util.concurrent.TimeUnit
+import app.packingproof.mobile.generated.BackupCleanupPageDto
+import app.packingproof.mobile.generated.BackupJobsByPathsDto
+import app.packingproof.mobile.generated.BackupSummaryDto
+import app.packingproof.mobile.generated.FlutterError
 
 internal class LanBackupPlugin(
     private val activity: Activity,
-    messenger: BinaryMessenger,
-) : MethodChannel.MethodCallHandler {
+) {
     companion object {
-        private const val CHANNEL = "app.packingproof.mobile/lan_backup"
         private const val WORK_PREFIX = "lan-backup-"
         private const val TAG = "PackingProofBackup"
         private const val INVALID_RSSI = -127
-        private const val SNAPSHOT_PUSH_DEBOUNCE_MS = 250L
+        private const val SUMMARY_PROGRESS_THROTTLE_MS = 1_000L
     }
 
     private val context: Context = activity.applicationContext
-    private val channel = MethodChannel(messenger, CHANNEL)
     private val store = LanBackupStateStore(context)
     private val storageManager = RecordingStorageManager(context, store)
     private val credentials = LanBackupCredentialStore(context)
-    private val snapshotListeners = mutableListOf<(Map<String, Any?>) -> Unit>()
+    private val summaryListeners = mutableListOf<(BackupSummaryDto) -> Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var snapshotPushPending = false
-    private val snapshotPushRunnable = Runnable {
-        snapshotPushPending = false
-        pushSnapshotNow()
+    private val serialExecutor = LanBackupSerialExecutor()
+    private var summaryPushPending = false
+    private var summaryPushScheduled = false
+    private var requestedSummaryRevision = 0L
+    private var requestedImmediateRevision = 0L
+    private val summaryPushRunnable = Runnable {
+        pushSummaryNow()
     }
-    private val workObserver = Observer<List<WorkInfo>> {
-        notifySnapshotChangedDebounced()
+    private val revisionListener: (LanBackupRevisionNotifier.Notice) -> Unit = { notice ->
+        notifySummaryChanged(notice.revision, immediate = notice.immediate)
     }
-
-    /** Dart int 可能以 Integer 或 Long 到达，统一按 Number 转换避免类型强转崩溃。 */
-    private fun intArgument(call: MethodCall, name: String): Int? =
-        (call.argument<Number>(name) ?: return null).toInt()
 
     init {
-        channel.setMethodCallHandler(this)
-        WorkManager.getInstance(context)
-            .getWorkInfosByTagLiveData("lan-backup")
-            .observeForever(workObserver)
+        LanBackupRevisionNotifier.addListener(revisionListener)
     }
 
-    override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        try {
-            when (call.method) {
-                "initialize", "snapshot" -> {
-                    if (call.method == "initialize") {
-                        val migration = store.migrateLegacyConnection()
-                        if (migration != null) {
-                            credentials.clear()
-                            WorkManager.getInstance(context).cancelAllWorkByTag("lan-backup")
-                        }
-                        store.discardUnavailableJobs()
-                        store.saveRetentionPolicies(
-                            intArgument(call, "unbackedRetentionDays"),
-                            intArgument(call, "backedRetentionDays"),
-                        )
-                        schedulePending()
-                        LanBackupCleanupScheduler.rescheduleAll(context, store)
-                    }
-                    result.success(snapshot())
-                }
-                "loadAccessKey" -> result.success(credentials.load() ?: "")
-                "isWifiConnected" -> result.success(isWifiConnected())
-                "saveConnection" -> {
-                    val baseUrl = call.argument<String>("baseUrl") ?: error("缺少电脑地址")
-                    val accessKey = call.argument<String>("accessKey") ?: error("缺少设备令牌")
-                    val computerId = call.argument<String>("computerId") ?: ""
-                    WorkManager.getInstance(context).cancelAllWorkByTag("lan-backup")
-                    store.saveConnection(
-                        baseUrl,
-                        computerId,
-                        call.argument<String>("computerName") ?: "已连接电脑",
-                        call.argument<String>("deviceName") ?: "",
-                        call.argument<Boolean>("supportsUploadVideoCodec") ?: false,
-                    )
-                    credentials.save(accessKey)
-                    store.retargetJobs(computerId)
-                    store.clearMigrationHint()
-                    schedulePending()
-                    LanBackupCleanupScheduler.rescheduleAll(context, store)
-                    result.success(null)
-                }
-                "disconnect" -> {
-                    WorkManager.getInstance(context).cancelAllWorkByTag("lan-backup")
-                    store.clearConnection()
-                    credentials.clear()
-                    LanBackupCleanupScheduler.rescheduleAll(context, store)
-                    result.success(null)
-                }
-                "enqueue" -> {
-                    val path = call.argument<String>("filePath") ?: error("缺少录像路径")
-                    val sessions = JSONArray(
-                        call.argument<List<Map<String, Any?>>>("sessions")
-                            ?: emptyList<Map<String, Any?>>(),
-                    )
-                    require(sessions.length() == 1) {
-                        "每个备份任务必须且只能包含一条录像记录"
-                    }
-                    val source = File(path)
-                    val sourceStatus = LanBackupSourcePolicy.inspect(source, -1L, -1L)
-                    if (sourceStatus != LanBackupSourceStatus.AVAILABLE) {
-                        store.discardJobIfUnavailable(
-                            LanBackupStateStore.stableId(source.canonicalPath),
-                        )
-                        notifySnapshotChanged()
-                        result.success(null)
-                        return
-                    }
-                    val upsert = store.upsertJob(path, sessions)
-                    var job = upsert.job
-                    val forceRestart = call.argument<Boolean>("forceRestart") == true
-                    val recreated = upsert.recreated
-                    val startUpload = call.argument<Boolean>("startUpload") != false
-                    val needsVerifiedRestart = forceRestart &&
-                        (job.optString("state") != "completed" ||
-                            LanBackupCleanupScheduler.nullableText(job, "contentSha256") == null)
-                    if (needsVerifiedRestart) {
-                        job = store.updateJob(
-                            job.getString("id"),
-                            LanBackupCleanupScheduler.nullableText(job, "generation"),
-                        ) { current ->
-                            current.put("generation", UUID.randomUUID().toString())
-                                .put("state", "pending")
-                                .put("uploadedBytes", 0L)
-                                .put("backupCompletedAt", JSONObject.NULL)
-                                .put("contentSha256", JSONObject.NULL)
-                                .put("remoteRecordId", JSONObject.NULL)
-                                .put("errorMessage", JSONObject.NULL)
-                                .put("failureKind", JSONObject.NULL)
-                            true
-                        } ?: job
-                    } else if (!startUpload && job.optString("state") == "pending") {
-                        job = store.updateJob(
-                            job.getString("id"),
-                            LanBackupCleanupScheduler.nullableText(job, "generation"),
-                        ) { current ->
-                            current.put("state", "paused")
-                            true
-                        } ?: job
-                    }
-                    LanBackupCleanupScheduler.reschedule(context, store, job)
-                    if (startUpload) {
-                        // 只有用户显式强制重启或任务确实是新建/替换（需要换 generation）
-                        // 时才 REPLACE；普通恢复（paused/failed）保留已有进度与 work。
-                        schedule(job.getString("id"), replace = forceRestart || recreated)
-                    }
-                    Log.i(
-                        TAG,
-                        "Enqueue path=${job.optString("filePath")} " +
-                            "sessions=${sessions.length()} " +
-                            "startUpload=$startUpload forceRestart=$forceRestart " +
-                            "state=${job.optString("state")}",
-                    )
-                    result.success(null)
-                }
-                "setRetentionPolicies" -> {
-                    store.saveRetentionPolicies(
-                        intArgument(call, "unbackedRetentionDays"),
-                        intArgument(call, "backedRetentionDays"),
-                    )
-                    LanBackupCleanupScheduler.rescheduleAll(context, store)
-                    result.success(null)
-                }
-                "checkAndReclaimStorage" -> {
-                    val storageCheck = storageManager.checkAndReclaim()
-                    result.success(storageCheck.values)
-                    if (storageCheck.jobsChanged) notifySnapshotChanged()
-                }
-                "getNetworkDiagnostics" -> result.success(networkDiagnostics())
-                "retry" -> {
-                    val id = call.argument<String>("id") ?: error("缺少任务编号")
-                    val sourceStatus = store.discardJobIfUnavailable(id)
-                    if (sourceStatus != null &&
-                        sourceStatus != LanBackupSourceStatus.AVAILABLE
-                    ) {
-                        WorkManager.getInstance(context).cancelUniqueWork(WORK_PREFIX + id)
-                        notifySnapshotChanged()
-                        result.success(null)
-                        return
-                    }
-                    store.updateJob(id) { job ->
-                        job.put("generation", UUID.randomUUID().toString())
-                            .put("state", "pending")
-                            .put("errorMessage", JSONObject.NULL)
-                            .put("failureKind", JSONObject.NULL)
-                        true
-                    } ?: error("找不到备份任务")
-                    schedule(id, replace = true)
-                    Log.i(TAG, "Retry id=$id")
-                    result.success(null)
-                }
-                "cancel" -> {
-                    val id = call.argument<String>("id") ?: error("缺少任务编号")
-                    WorkManager.getInstance(context).cancelUniqueWork(WORK_PREFIX + id)
-                    store.updateJob(id) { job ->
-                        job.put("generation", UUID.randomUUID().toString())
-                            .put("state", "paused")
-                        true
-                    }
-                    Log.i(TAG, "Cancel id=$id")
-                    result.success(null)
-                }
-                else -> result.notImplemented()
-            }
-        } catch (error: Throwable) {
-            result.error("lan_backup", error.message ?: "局域网备份失败", null)
+    fun initialize(request: Map<String?, Any?>): BackupSummaryDto {
+        val unbackedDays = (request["unbackedRetentionDays"] as? Number)?.toInt()
+        val backedDays = (request["backedRetentionDays"] as? Number)?.toInt()
+        WorkManager.getInstance(context).cancelAllWorkByTag("lan-backup").result.get()
+        if (store.migrateLegacyConnection() != null) credentials.clear()
+        store.reconcileUnavailableJobs()
+        store.saveRetentionPolicies(unbackedDays, backedDays)
+        schedulePending()
+        LanBackupCleanupScheduler.rescheduleAll(context, store)
+        return summary()
+    }
+
+    fun loadAccessKey(): String = credentials.load() ?: ""
+
+    fun saveConnection(connection: Map<String?, Any?>) {
+        val baseUrl = connection["baseUrl"] as? String ?: error("缺少电脑地址")
+        val accessKey = connection["accessKey"] as? String ?: error("缺少设备令牌")
+        val computerId = connection["computerId"] as? String ?: ""
+        WorkManager.getInstance(context).cancelAllWorkByTag("lan-backup")
+        store.saveConnection(
+            baseUrl,
+            computerId,
+            connection["computerName"] as? String ?: "已连接电脑",
+            connection["deviceName"] as? String ?: "",
+            connection["supportsUploadVideoCodec"] as? Boolean ?: false,
+        )
+        credentials.save(accessKey)
+        store.retargetJobs(computerId)
+        store.clearMigrationHint()
+        schedulePending()
+        LanBackupCleanupScheduler.rescheduleAll(context, store)
+    }
+
+    fun disconnect() {
+        WorkManager.getInstance(context).cancelAllWorkByTag("lan-backup")
+        store.clearConnection()
+        credentials.clear()
+        LanBackupCleanupScheduler.rescheduleAll(context, store)
+    }
+
+    fun enqueueJob(request: Map<String?, Any?>) {
+        val path = request["filePath"] as? String ?: error("缺少录像路径")
+        @Suppress("UNCHECKED_CAST")
+        val sessions = JSONArray(
+            request["sessions"] as? List<Map<String, Any?>> ?: emptyList<Map<String, Any?>>(),
+        )
+        require(sessions.length() == 1) { "每个备份任务必须且只能包含一条录像记录" }
+        val source = File(path)
+        if (LanBackupSourcePolicy.inspect(source, -1L, -1L) != LanBackupSourceStatus.AVAILABLE) {
+            store.reconcileJobSource(LanBackupStateStore.stableId(source.canonicalPath))
+            return
+        }
+        val upsert = store.upsertJob(path, sessions)
+        var job = upsert.job
+        val forceRestart = request["forceRestart"] == true
+        val startUpload = request["startUpload"] != false
+        if (forceRestart &&
+            (job.optString("state") != "completed" ||
+                LanBackupCleanupScheduler.nullableText(job, "contentSha256") == null)
+        ) {
+            job = store.updateJob(
+                job.getString("id"),
+                LanBackupCleanupScheduler.nullableText(job, "generation"),
+            ) { current ->
+                current.put("generation", UUID.randomUUID().toString())
+                    .put("state", "pending")
+                    .put("uploadedBytes", 0L)
+                    .put("backupCompletedAt", JSONObject.NULL)
+                    .put("contentSha256", JSONObject.NULL)
+                    .put("remoteRecordId", JSONObject.NULL)
+                    .put("errorMessage", JSONObject.NULL)
+                    .put("failureKind", JSONObject.NULL)
+                true
+            } ?: job
+        } else if (!startUpload && job.optString("state") == "pending") {
+            job = store.updateJob(
+                job.getString("id"),
+                LanBackupCleanupScheduler.nullableText(job, "generation"),
+            ) { current -> current.put("state", "paused"); true } ?: job
+        }
+        LanBackupCleanupScheduler.reschedule(context, store, job)
+        if (startUpload) schedule(job.getString("id"), replace = forceRestart || upsert.recreated)
+        Log.i(TAG, "Enqueue path=${job.optString("filePath")} sessions=1 state=${job.optString("state")}")
+    }
+
+    fun updateRetentionSchedule(request: Map<String?, Any?>) {
+        store.saveRetentionPolicies(
+            (request["unbackedRetentionDays"] as? Number)?.toInt(),
+            (request["backedRetentionDays"] as? Number)?.toInt(),
+        )
+        LanBackupCleanupScheduler.rescheduleAll(context, store)
+    }
+
+    fun reclaimStorageIfNeeded(): Map<String?, Any?> =
+        storageManager.checkAndReclaim().values.mapKeys { it.key as String? }
+
+    fun requeueJob(id: String) {
+        val sourceStatus = store.reconcileJobSource(id)
+        if (sourceStatus != null && sourceStatus != LanBackupSourceStatus.AVAILABLE) {
+            WorkManager.getInstance(context).cancelUniqueWork(WORK_PREFIX + id)
+            return
+        }
+        store.updateJob(id) { job ->
+            job.put("generation", UUID.randomUUID().toString())
+                .put("state", "pending")
+                .put("errorMessage", JSONObject.NULL)
+                .put("failureKind", JSONObject.NULL)
+            true
+        } ?: error("找不到备份任务")
+        schedule(id, replace = true)
+    }
+
+    fun cancelJob(id: String) {
+        WorkManager.getInstance(context).cancelUniqueWork(WORK_PREFIX + id)
+        store.updateJob(id) { job ->
+            job.put("generation", UUID.randomUUID().toString()).put("state", "paused")
+            true
         }
     }
 
-    private fun isWifiConnected(): Boolean {
+    fun isWifiConnected(): Boolean {
         val connectivity = context.getSystemService(ConnectivityManager::class.java)
         return connectivity.allNetworks.any { network ->
             connectivity.getNetworkCapabilities(network)
@@ -241,7 +178,7 @@ internal class LanBackupPlugin(
         }
     }
 
-    private fun networkDiagnostics(): Map<String, Any?> {
+    fun networkDiagnostics(): Map<String?, Any?> {
         val wifiConnected = isWifiConnected()
         var rssiDbm: Int? = null
         var linkSpeedMbps: Int? = null
@@ -258,7 +195,7 @@ internal class LanBackupPlugin(
                 }
             }
         }
-        return mapOf(
+        return mapOf<String?, Any?>(
             "wifiConnected" to wifiConnected,
             "rssiDbm" to rssiDbm,
             "linkSpeedMbps" to linkSpeedMbps,
@@ -267,11 +204,8 @@ internal class LanBackupPlugin(
 
     private fun schedulePending() {
         if (store.connection() == null || credentials.load().isNullOrBlank()) return
-        val pending = store.jobs()
-            .filter { it.optString("state") in setOf("pending", "paused", "uploading") }
-        Log.i(TAG, "SchedulePending jobs=${pending.size}")
-        pending
-            .forEach { schedule(it.getString("id"), replace = false) }
+        LanBackupDispatcher.schedule(context)
+        Log.i(TAG, "Backup dispatcher scheduled")
     }
 
     private fun schedule(id: String, replace: Boolean) {
@@ -283,70 +217,111 @@ internal class LanBackupPlugin(
             Log.w(TAG, "Upload schedule skipped job=$id reason=no_credential")
             return
         }
-        val request = OneTimeWorkRequestBuilder<LanBackupWorker>()
-            .setInputData(workDataOf("jobId" to id))
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
-            .setConstraints(
-                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
-            )
-            .addTag("lan-backup")
-            .build()
-        Log.i(TAG, "Upload scheduled job=$id replace=$replace")
-        WorkManager.getInstance(context).enqueueUniqueWork(
-            WORK_PREFIX + id,
-            if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
-            request,
-        )
+        LanBackupDispatcher.schedule(context)
+        Log.i(TAG, "Upload dispatcher requested job=$id replace=$replace")
     }
 
-    private fun snapshot(): Map<String, Any?> = mapOf(
-        "deviceId" to store.deviceId(),
-        "deviceName" to store.deviceName(),
-        "connection" to store.connection()?.toFlutterValue(),
-        "jobs" to store.jobsForSnapshot(),
-        "migrationHost" to store.migrationHint()?.toFlutterValue(),
-    )
+    fun summary(): BackupSummaryDto = store.summary()
 
-    /** WorkManager 状态变化可能成批到达，全局合并为一次推送，避免推送风暴。 */
-    private fun notifySnapshotChangedDebounced() {
-        if (snapshotPushPending) return
-        snapshotPushPending = true
-        mainHandler.postDelayed(snapshotPushRunnable, SNAPSHOT_PUSH_DEBOUNCE_MS)
+    fun jobsForPaths(paths: List<String>): BackupJobsByPathsDto = store.jobsForPaths(paths)
+
+    fun cleanupEvents(afterRevision: Long, limit: Int): BackupCleanupPageDto =
+        store.cleanupEvents(afterRevision, limit)
+
+    fun acknowledgeCleanupEvents(throughRevision: Long) =
+        store.acknowledgeCleanupEvents(throughRevision)
+
+    fun hasPendingJobsOutsideDestination(computerId: String): Boolean =
+        store.hasPendingJobsOutsideDestination(computerId)
+
+    /**
+     * 所有 Pigeon host 调用都进入插件自有的唯一串行执行器。Pigeon TaskQueue
+     * 负责让消息解码离开平台线程；这里负责数据库所有权和 dispose 生命周期。
+     */
+    fun <T> submit(callback: (Result<T>) -> Unit, action: () -> T) {
+        val accepted = serialExecutor.execute {
+            val result = runCatching(action)
+            mainHandler.post { callback(result) }
+        }
+        if (!accepted) {
+            mainHandler.post {
+                callback(
+                    Result.failure(
+                        FlutterError("lan_backup_disposed", "局域网备份服务已关闭", null),
+                    ),
+                )
+            }
+        }
     }
 
-    fun notifySnapshotChanged() {
-        mainHandler.removeCallbacks(snapshotPushRunnable)
-        snapshotPushPending = false
-        pushSnapshotNow()
+    fun notifySummaryChanged() {
+        notifySummaryChanged(0L, immediate = true)
     }
 
-    private fun pushSnapshotNow() {
-        val value = snapshot()
-        snapshotListeners.forEach { it(value) }
+    /** 字节进度按一秒 latest-wins 合并；状态、失败和完成边沿立即推送。 */
+    private fun notifySummaryChanged(revision: Long, immediate: Boolean) {
+        mainHandler.post {
+            requestedSummaryRevision = maxOf(requestedSummaryRevision, revision)
+            if (immediate) {
+                requestedImmediateRevision = maxOf(requestedImmediateRevision, revision)
+            }
+            if (summaryPushPending) {
+                if (immediate && summaryPushScheduled) {
+                    mainHandler.removeCallbacks(summaryPushRunnable)
+                    mainHandler.post(summaryPushRunnable)
+                }
+                return@post
+            }
+            summaryPushPending = true
+            summaryPushScheduled = true
+            if (immediate) {
+                mainHandler.post(summaryPushRunnable)
+            } else {
+                mainHandler.postDelayed(summaryPushRunnable, SUMMARY_PROGRESS_THROTTLE_MS)
+            }
+        }
     }
 
-    fun addSnapshotListener(listener: (Map<String, Any?>) -> Unit) {
-        snapshotListeners.add(listener)
+    private fun pushSummaryNow() {
+        summaryPushScheduled = false
+        serialExecutor.execute {
+            val value = runCatching(::summary).getOrNull()
+            mainHandler.post {
+                summaryPushPending = false
+                if (value != null) {
+                    summaryListeners.toList().forEach { it(value) }
+                }
+                val deliveredRevision = value?.revision ?: -1L
+                if (requestedSummaryRevision > deliveredRevision) {
+                    notifySummaryChanged(
+                        requestedSummaryRevision,
+                        immediate = requestedImmediateRevision > deliveredRevision,
+                    )
+                }
+            }
+        }.also { accepted ->
+            if (!accepted) {
+                summaryPushPending = false
+            }
+        }
     }
 
-    fun removeSnapshotListener(listener: (Map<String, Any?>) -> Unit) {
-        snapshotListeners.remove(listener)
+    fun addSummaryListener(listener: (BackupSummaryDto) -> Unit) {
+        summaryListeners.add(listener)
+    }
+
+    fun removeSummaryListener(listener: (BackupSummaryDto) -> Unit) {
+        summaryListeners.remove(listener)
     }
 
     fun dispose() {
-        WorkManager.getInstance(context)
-            .getWorkInfosByTagLiveData("lan-backup")
-            .removeObserver(workObserver)
-        mainHandler.removeCallbacks(snapshotPushRunnable)
-        snapshotPushPending = false
-        snapshotListeners.clear()
-        channel.setMethodCallHandler(null)
+        LanBackupRevisionNotifier.removeListener(revisionListener)
+        mainHandler.removeCallbacks(summaryPushRunnable)
+        summaryPushPending = false
+        summaryPushScheduled = false
+        requestedSummaryRevision = 0L
+        requestedImmediateRevision = 0L
+        summaryListeners.clear()
+        serialExecutor.disposeAfterDraining(store::close)
     }
-}
-
-internal fun Any?.toFlutterValue(): Any? = when (this) {
-    null, JSONObject.NULL -> null
-    is JSONObject -> keys().asSequence().associateWith { get(it).toFlutterValue() }
-    is JSONArray -> (0 until length()).map { get(it).toFlutterValue() }
-    else -> this
 }

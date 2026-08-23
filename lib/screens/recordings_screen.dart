@@ -200,6 +200,7 @@ class RecordingsScreen extends StatefulWidget {
     this.onDisconnectBackup,
     this.onRetryConnection,
     this.onRetryBackup,
+    this.onLoadBackupJobsForPaths,
     this.onRefreshHistory,
     this.onManagingChanged,
     this.capabilityMode,
@@ -272,6 +273,8 @@ class RecordingsScreen extends StatefulWidget {
   final Future<void> Function()? onDisconnectBackup;
   final Future<void> Function()? onRetryConnection;
   final Future<void> Function(String jobId)? onRetryBackup;
+  final Future<LanBackupJobsByPaths> Function(Iterable<String> paths)?
+  onLoadBackupJobsForPaths;
   final Future<void> Function()? onRefreshHistory;
   final ValueChanged<bool>? onManagingChanged;
   final CameraCapabilityMode? capabilityMode;
@@ -403,6 +406,11 @@ class _RecordingsScreenState extends State<RecordingsScreen>
       widget.capabilities?.supports(PlatformCapability.orderInfoReceiver) ??
       true;
 
+  @override
+  Iterable<String> get _backupLookupPaths => _sessions
+      .map((RecordingSession session) => session.filePath)
+      .where((String path) => path.isNotEmpty);
+
   bool get _systemVideoPlayerSupported =>
       widget.capabilities?.supports(PlatformCapability.systemVideoPlayer) ??
       true;
@@ -434,6 +442,7 @@ class _RecordingsScreenState extends State<RecordingsScreen>
     if (widget.mode == RecordingsScreenMode.history && widget.active) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_loadLocal(reset: true, pageNumber: 1, prefetchNext: true));
+        unawaited(_refreshBackupJobsForPaths());
         unawaited(_loadRemote(reset: true, pageNumber: 1, prefetchNext: true));
         _startBackupHostDiscoveryIfNeeded();
       });
@@ -975,9 +984,12 @@ class _RecordingsScreenState extends State<RecordingsScreen>
         : _localTotal;
     final bool hasOtherDeviceRecordings = _hasOtherDeviceRecordings;
     final List<RecordingSession> existingLocalSessions = _existingLocalSessions;
-    final Set<String> confirmedBackupPaths = _backupSnapshot.jobs
-        .where(_isJobConfirmedAvailable)
-        .map((LanBackupJob job) => lanBackupFileIdentity(job.filePath))
+    final Set<String> confirmedBackupPaths = _backupJobsByPath.entries
+        .where(
+          (MapEntry<String, List<LanBackupJob>> entry) =>
+              entry.value.any(_isJobConfirmedAvailable),
+        )
+        .map((MapEntry<String, List<LanBackupJob>> entry) => entry.key)
         .toSet();
     final bool allLocalFilesBackedUp = _localRecordingPaths
         .map(lanBackupFileIdentity)

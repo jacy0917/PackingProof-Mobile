@@ -5,13 +5,17 @@ mixin _PackingSessionBackupCoordinator on ChangeNotifier {
   SessionRepository get _repository;
   LanBackupSink get _lanBackupService;
   DiagnosticsLogService get _runtimeLog;
+  // Declared for mixins constrained by this coordinator.
+  // ignore: unused_element
   List<RecordingSession> get _sessions;
   set _sessions(List<RecordingSession> value);
   set _unbackedRetention(UnbackedRetentionPolicy value);
   set _backedRetention(BackedRetentionPolicy value);
   bool get _disposed;
 
-  final Set<String> _handledDeletedBackupJobs = <String>{};
+  bool _cleanupDrainRunning = false;
+  bool _cleanupCursorLoaded = false;
+  int _cleanupAfterRevision = 0;
 
   void _runInBackground(Future<void> task);
   Future<void> _refreshLocalStatistics();
@@ -39,6 +43,9 @@ mixin _PackingSessionBackupCoordinator on ChangeNotifier {
   }
 
   Future<void> backupAllSessions() => _backupAllRepositorySessions('manual');
+
+  Future<LanBackupJobsByPaths> loadBackupJobsForPaths(Iterable<String> paths) =>
+      _lanBackupService.jobsForPaths(paths);
 
   Future<void> retryBackupConnection() async {
     final bool connected = await _lanBackupService.retryConnection();
@@ -79,42 +86,70 @@ mixin _PackingSessionBackupCoordinator on ChangeNotifier {
   }
 
   void _handleBackupChanged() {
-    final List<LanBackupJob> newlyDeletedJobs = _lanBackupService.snapshot.jobs
-        .where((LanBackupJob job) => job.localDeletedAt != null)
-        .where(
-          (LanBackupJob job) => !_handledDeletedBackupJobs.contains(job.id),
-        )
-        .toList(growable: false);
-    if (newlyDeletedJobs.isNotEmpty) {
-      _handledDeletedBackupJobs.addAll(
-        newlyDeletedJobs.map((LanBackupJob job) => job.id),
-      );
-      _runInBackground(_recordDeletedBackupJobs(newlyDeletedJobs));
+    if (_lanBackupService.snapshot.summary.cleanupHighWatermark >
+            _cleanupAfterRevision &&
+        !_cleanupDrainRunning) {
+      _runInBackground(_drainCleanupEvents());
     }
     if (!_disposed) {
       notifyListeners();
     }
   }
 
-  Future<void> _recordDeletedBackupJobs(List<LanBackupJob> jobs) async {
-    for (final LanBackupJob job in jobs) {
-      try {
-        await _repository.recordAutomaticCleanup(
-          eventId: job.id,
-          filePath: job.filePath,
-          fileSizeBytes: job.totalBytes,
-          deletedAt: job.localDeletedAt!,
-          reason:
-              job.cleanupReason ??
-              (job.backupCompletedAt == null ? '未备份录像保留策略清理' : '已备份录像保留策略清理'),
-        );
-      } on Object {
-        // broad-catch: Keep the cleanup job retryable when history persistence fails.
-        _handledDeletedBackupJobs.remove(job.id);
+  Future<void> _drainCleanupEvents() async {
+    if (_cleanupDrainRunning) return;
+    _cleanupDrainRunning = true;
+    var changed = false;
+    try {
+      if (!_cleanupCursorLoaded) {
+        _cleanupAfterRevision = await _repository.loadBackupCleanupCursor();
+        _cleanupCursorLoaded = true;
       }
+      if (_cleanupAfterRevision > 0) {
+        await _lanBackupService.acknowledgeCleanupEvents(_cleanupAfterRevision);
+      }
+      while (!_disposed) {
+        final LanBackupCleanupPage page = await _lanBackupService.cleanupEvents(
+          afterRevision: _cleanupAfterRevision,
+        );
+        for (final LanBackupCleanupEvent event in page.events) {
+          await _repository.recordAutomaticCleanup(
+            eventId: event.eventId,
+            filePath: event.filePath,
+            fileSizeBytes: event.fileSizeBytes,
+            deletedAt: event.deletedAt,
+            reason: event.reason,
+          );
+          changed = true;
+        }
+        if (page.nextAfterRevision > _cleanupAfterRevision) {
+          await _repository.saveBackupCleanupCursor(page.nextAfterRevision);
+          _cleanupAfterRevision = page.nextAfterRevision;
+          await _lanBackupService.acknowledgeCleanupEvents(
+            _cleanupAfterRevision,
+          );
+        }
+        if (!page.hasMore) break;
+        await Future<void>.delayed(Duration.zero);
+      }
+    } on Object catch (error) {
+      unawaited(
+        _runtimeLog.log(
+          kind: 'backup_cleanup_reconcile_failed',
+          extra: <String, Object?>{'error': error.toString()},
+        ),
+      );
+    } finally {
+      _cleanupDrainRunning = false;
     }
-    await _pruneDeletedBackupSessions();
+    if (changed) {
+      await _refreshLocalStatistics();
+      if (!_disposed) notifyListeners();
+    }
   }
+
+  @visibleForTesting
+  Future<void> drainCleanupEventsForTesting() => _drainCleanupEvents();
 
   Future<void> _backupAllRepositorySessions(String reason) async {
     unawaited(
@@ -164,6 +199,7 @@ mixin _PackingSessionBackupCoordinator on ChangeNotifier {
           return;
         }
         await action(page.sessions);
+        await _repository.saveBackupRegistrationCursor(page.nextAfter);
         after = page.nextAfter;
       }
     } on Object catch (error) {
@@ -186,14 +222,18 @@ mixin _PackingSessionBackupCoordinator on ChangeNotifier {
   Future<void> _forEachRepositoryBackupBatch(
     Future<void> Function(List<RecordingSession> sessions) action,
   ) async {
-    var page = 1;
+    final BackupRegistrationCursor? highWatermark = await _repository
+        .loadBackupRegistrationHighWatermark();
+    if (highWatermark == null) return;
+    BackupRegistrationCursor? after;
     while (!_disposed) {
-      final List<RecordingSession> sessions = await _repository.loadBackupBatch(
-        page: page,
+      final BackupIncrementPage? page = await _repository.loadBackupIncrement(
+        after: after,
+        highWatermark: highWatermark,
       );
-      if (sessions.isEmpty) return;
-      await action(sessions);
-      page++;
+      if (page == null) return;
+      await action(page.sessions);
+      after = page.nextAfter;
     }
   }
 
@@ -202,7 +242,6 @@ mixin _PackingSessionBackupCoordinator on ChangeNotifier {
   ) async {
     final Map<String, List<RecordingSession>> grouped =
         <String, List<RecordingSession>>{};
-    final Map<String, LanBackupJob> jobsByFile = _backupJobsByFile();
     for (final RecordingSession session in sessions) {
       final FileStat stat;
       try {
@@ -213,58 +252,9 @@ mixin _PackingSessionBackupCoordinator on ChangeNotifier {
       if (stat.type == FileSystemEntityType.notFound || stat.size <= 0) {
         continue;
       }
-      if (_hasRegisteredRetentionJob(session.filePath, stat, jobsByFile)) {
-        continue;
-      }
       grouped[session.filePath] = <RecordingSession>[session];
     }
     await _lanBackupService.enqueueFinalizedFiles(grouped);
-  }
-
-  Map<String, LanBackupJob> _backupJobsByFile() {
-    final Map<String, LanBackupJob> jobs = <String, LanBackupJob>{};
-    for (final LanBackupJob job in _lanBackupService.snapshot.jobs) {
-      jobs.putIfAbsent(lanBackupFileIdentity(job.filePath), () => job);
-    }
-    return jobs;
-  }
-
-  bool _hasRegisteredRetentionJob(
-    String filePath,
-    FileStat stat,
-    Map<String, LanBackupJob> jobsByFile,
-  ) {
-    final LanBackupJob? job = jobsByFile[lanBackupFileIdentity(filePath)];
-    return job != null &&
-        job.totalBytes == stat.size &&
-        (job.lastModified?.millisecondsSinceEpoch ?? -1) ==
-            stat.modified.millisecondsSinceEpoch;
-  }
-
-  Future<void> _pruneDeletedBackupSessions({bool notify = true}) async {
-    final List<LanBackupJob> deletedBackupJobs = _lanBackupService.snapshot.jobs
-        .where(
-          (LanBackupJob job) =>
-              job.state == LanBackupJobState.completed &&
-              job.localDeletedAt != null,
-        )
-        .toList(growable: false);
-    final Set<String> deletedBackupPaths = deletedBackupJobs
-        .map((LanBackupJob job) => lanBackupFileIdentity(job.filePath))
-        .toSet();
-    final Set<String> backedPaths = _sessions
-        .where(
-          (RecordingSession session) => deletedBackupPaths.contains(
-            lanBackupFileIdentity(session.filePath),
-          ),
-        )
-        .map((RecordingSession session) => session.filePath)
-        .toSet();
-    _sessions = await _repository.pruneMissingSessions(
-      retainedMissingPaths: backedPaths,
-    );
-    await _refreshLocalStatistics();
-    if (notify && !_disposed) notifyListeners();
   }
 }
 

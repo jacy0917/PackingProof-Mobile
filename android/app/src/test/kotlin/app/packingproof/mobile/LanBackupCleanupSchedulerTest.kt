@@ -1,16 +1,29 @@
 package app.packingproof.mobile
 
+import androidx.work.ExistingWorkPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.json.JSONObject
-import java.time.Instant
 import java.nio.file.Files
 import java.security.MessageDigest
+import java.time.Instant
 
 class LanBackupCleanupSchedulerTest {
+    @Test
+    fun earlierCleanupReplacesExistingDelayedDispatcher() {
+        assertEquals(
+            ExistingWorkPolicy.REPLACE,
+            LanBackupCleanupScheduler.schedulingPolicy(append = false),
+        )
+        assertEquals(
+            ExistingWorkPolicy.APPEND_OR_REPLACE,
+            LanBackupCleanupScheduler.schedulingPolicy(append = true),
+        )
+    }
+
     @Test
     fun jsonNullIsNotTreatedAsDeletedTimestamp() {
         assertNull(LanBackupCleanupScheduler.normalizeNullableText(null))
@@ -28,6 +41,16 @@ class LanBackupCleanupSchedulerTest {
         assertTrue(LanBackupCleanupScheduler.shouldDeferForBackupState("pending"))
         assertTrue(LanBackupCleanupScheduler.shouldDeferForBackupState("uploading"))
         assertFalse(LanBackupCleanupScheduler.shouldDeferForBackupState("paused"))
+    }
+
+    @Test
+    fun unreachableRemoteAttestationNeverAuthorizesLocalDeletion() {
+        assertFalse(
+            remoteAttestationAllowsLocalDeletion(RemoteRecordAttestation.Unreachable),
+        )
+        assertTrue(
+            remoteAttestationAllowsLocalDeletion(RemoteRecordAttestation.Confirmed),
+        )
     }
 
     @Test

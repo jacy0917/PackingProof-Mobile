@@ -563,9 +563,10 @@ void main() {
     await video.delete();
 
     final List<RecordingSession> sessions = await repository
-        .pruneMissingSessions();
+        .findActiveSessionsByIds(<String>{'missing-session'});
 
     expect(sessions.single.id, 'missing-session');
+    expect(await repository.resolveRecordingPath(video.path), isNull);
     expect(
       await repository.loadSessions(includeMissingFiles: true),
       hasLength(1),
@@ -717,7 +718,7 @@ void main() {
     expect(await repository.hasRecentTrackingNumber('RECENT-TRACK'), isFalse);
   });
 
-  test('备份分页按独立录像记录稳定分页', () async {
+  test('备份按 keyset 游标稳定分页', () async {
     final Directory root = await Directory.systemTemp.createTemp(
       'packing_proof_mobile_backup_page_test',
     );
@@ -751,11 +752,21 @@ void main() {
       ),
     ]);
 
-    final first = await repository.loadBackupBatch(page: 1, pageSize: 1);
-    final second = await repository.loadBackupBatch(page: 2, pageSize: 1);
+    final BackupRegistrationCursor highWatermark = (await repository
+        .loadBackupRegistrationHighWatermark())!;
+    final BackupIncrementPage first = (await repository.loadBackupIncrement(
+      after: null,
+      highWatermark: highWatermark,
+      pageSize: 1,
+    ))!;
+    final BackupIncrementPage second = (await repository.loadBackupIncrement(
+      after: first.nextAfter,
+      highWatermark: highWatermark,
+      pageSize: 1,
+    ))!;
 
-    expect(first.single.id, 'first');
-    expect(second.single.id, 'second');
+    expect(first.sessions.single.id, 'first');
+    expect(second.sessions.single.id, 'second');
   });
 
   test('旧索引中的共享录像会迁移为独立物理文件', () async {

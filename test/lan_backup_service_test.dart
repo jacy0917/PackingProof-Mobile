@@ -12,6 +12,7 @@ import 'package:packing_proof_mobile/models/order_info.dart';
 import 'package:packing_proof_mobile/models/recording_session.dart';
 import 'package:packing_proof_mobile/models/recording_operation_mode.dart';
 import 'package:packing_proof_mobile/platform/contracts/backup_platform.dart';
+import 'package:packing_proof_mobile/platform/generated/platform_api.g.dart';
 import 'package:packing_proof_mobile/services/lan_backup_service.dart';
 import 'package:packing_proof_mobile/services/lan_backup_discovery_service.dart';
 
@@ -34,9 +35,7 @@ void main() {
 
   test('主机显式声明录像编码上传能力时才启用协议字段', () {
     expect(
-      parseUploadVideoCodecFeature(
-        '{"features":{"uploadVideoCodec":true}}',
-      ),
+      parseUploadVideoCodecFeature('{"features":{"uploadVideoCodec":true}}'),
       isTrue,
     );
     expect(parseUploadVideoCodecFeature('{"features":{}}'), isFalse);
@@ -63,7 +62,7 @@ void main() {
       Uri.parse('http://192.168.1.30:5280'),
     );
     final LanBackupService service = LanBackupService(
-      channel: channel,
+      platform: _TestChannelBackupPlatform(channel),
       hostLocator: locator,
     );
     addTearDown(service.dispose);
@@ -110,7 +109,7 @@ void main() {
     );
     final _FailThenSucceedHttpClient client = _FailThenSucceedHttpClient();
     final LanBackupService service = LanBackupService(
-      channel: channel,
+      platform: _TestChannelBackupPlatform(channel),
       httpClient: client,
       hostLocator: _FakeHostLocator(Uri.parse('http://192.168.1.30:5280')),
     );
@@ -143,23 +142,7 @@ void main() {
       'app.packingproof.mobile/lan_backup_heartbeat_watchdog_test',
     );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (MethodCall call) async {
-          if (call.method == 'snapshot') {
-            return <Object?, Object?>{
-              'deviceId': 'android-watchdog-test',
-              'deviceName': '手机1',
-              'connection': <Object?, Object?>{
-                'baseUrl': 'http://192.168.31.250:5280',
-                'computerId': 'host-1',
-                'computerName': '电脑1',
-                'lastConnectedAt': '',
-              },
-              'jobs': <Object?>[],
-              'migrationHost': null,
-            };
-          }
-          return null;
-        });
+        .setMockMethodCallHandler(channel, (_) async => null);
     addTearDown(
       () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null),
@@ -168,7 +151,14 @@ void main() {
     final List<String> logKinds = <String>[];
     final _HeartbeatHttpClient client = _HeartbeatHttpClient();
     final LanBackupService service = LanBackupService(
-      channel: channel,
+      platform: _TestChannelBackupPlatform(
+        channel,
+        summary: _backupSnapshot(deviceName: '手机1')
+          ..deviceId = 'android-watchdog-test'
+          ..baseUrl = 'http://192.168.31.250:5280'
+          ..computerId = 'host-1'
+          ..computerName = '电脑1',
+      ),
       httpClient: client,
       hostLocator: _FakeHostLocator(null),
       logEvent: (String kind, Map<String, Object?> extra) async {
@@ -270,7 +260,7 @@ void main() {
       nativeBackupConnectionStatus(
         previous: LanConnectionStatus.connected,
         endpoint: endpoint,
-        jobs: <LanBackupJob>[invalidKey],
+        dominantFailureKind: invalidKey.failureKind,
       ),
       LanConnectionStatus.rePair,
     );
@@ -286,7 +276,7 @@ void main() {
       nativeBackupConnectionStatus(
         previous: LanConnectionStatus.connected,
         endpoint: endpoint,
-        jobs: <LanBackupJob>[wrongRole],
+        dominantFailureKind: wrongRole.failureKind,
       ),
       LanConnectionStatus.notBackupHost,
     );
@@ -534,7 +524,9 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
     });
-    final LanBackupService service = LanBackupService(channel: channel);
+    final LanBackupService service = LanBackupService(
+      platform: _TestChannelBackupPlatform(channel),
+    );
     addTearDown(service.dispose);
     final DateTime startedAt = DateTime.utc(2026, 7, 19, 10);
 
@@ -555,14 +547,13 @@ void main() {
     expect(arguments['forceRestart'], isTrue);
   });
 
-  test('启动备份跳过已完成且带校验值的任务', () async {
+  test('启动备份把已完成任务交给原生幂等裁决', () async {
     final Directory root = await Directory.systemTemp.createTemp(
       'packing-proof-skip-completed-',
     );
     addTearDown(() => root.delete(recursive: true));
     final File video = File('${root.path}/video.mp4');
     await video.writeAsBytes(<int>[1, 2, 3]);
-    final FileStat stat = await video.stat();
     final MethodChannel channel = MethodChannel(
       'app.packingproof.mobile/lan_backup_skip_completed_${root.path.hashCode}',
     );
@@ -576,23 +567,10 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
     });
-    final LanBackupService service = LanBackupService(channel: channel);
-    addTearDown(service.dispose);
-    service.debugSetSnapshotForTesting(
-      LanBackupSnapshot(
-        jobs: <LanBackupJob>[
-          LanBackupJob(
-            id: 'job-completed',
-            filePath: video.path,
-            state: LanBackupJobState.completed,
-            uploadedBytes: stat.size,
-            totalBytes: stat.size,
-            lastModified: stat.modified,
-            contentSha256: 'verified-sha',
-          ),
-        ],
-      ),
+    final LanBackupService service = LanBackupService(
+      platform: _TestChannelBackupPlatform(channel),
     );
+    addTearDown(service.dispose);
     final DateTime startedAt = DateTime.utc(2026, 7, 19, 10);
 
     await service.backupAll(<RecordingSession>[
@@ -605,17 +583,16 @@ void main() {
       ),
     ]);
 
-    expect(enqueueCalls, 0);
+    expect(enqueueCalls, 1);
   });
 
-  test('启动备份满足全部条件时跳过待上传任务且不强制重启', () async {
+  test('启动备份把待上传任务交给原生幂等裁决且不强制重启', () async {
     final Directory root = await Directory.systemTemp.createTemp(
       'packing-proof-skip-pending-',
     );
     addTearDown(() => root.delete(recursive: true));
     final File video = File('${root.path}/video.mp4');
     await video.writeAsBytes(<int>[1, 2, 3]);
-    final FileStat stat = await video.stat();
     final MethodChannel channel = MethodChannel(
       'app.packingproof.mobile/lan_backup_skip_pending_${root.path.hashCode}',
     );
@@ -629,22 +606,10 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
     });
-    final LanBackupService service = LanBackupService(channel: channel);
-    addTearDown(service.dispose);
-    service.debugSetSnapshotForTesting(
-      LanBackupSnapshot(
-        jobs: <LanBackupJob>[
-          LanBackupJob(
-            id: 'job-pending',
-            filePath: video.path,
-            state: LanBackupJobState.pending,
-            uploadedBytes: 0,
-            totalBytes: stat.size,
-            lastModified: stat.modified,
-          ),
-        ],
-      ),
+    final LanBackupService service = LanBackupService(
+      platform: _TestChannelBackupPlatform(channel),
     );
+    addTearDown(service.dispose);
     final DateTime startedAt = DateTime.utc(2026, 7, 19, 10);
 
     await service.backupAll(<RecordingSession>[
@@ -657,7 +622,7 @@ void main() {
       ),
     ]);
 
-    expect(enqueueCalls, 0);
+    expect(enqueueCalls, 1);
   });
 
   test('启动备份对暂停任务重新入队但不强制重启', () async {
@@ -667,7 +632,6 @@ void main() {
     addTearDown(() => root.delete(recursive: true));
     final File video = File('${root.path}/video.mp4');
     await video.writeAsBytes(<int>[1, 2, 3]);
-    final FileStat stat = await video.stat();
     final MethodChannel channel = MethodChannel(
       'app.packingproof.mobile/lan_backup_resume_paused_${root.path.hashCode}',
     );
@@ -681,22 +645,10 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
     });
-    final LanBackupService service = LanBackupService(channel: channel);
-    addTearDown(service.dispose);
-    service.debugSetSnapshotForTesting(
-      LanBackupSnapshot(
-        jobs: <LanBackupJob>[
-          LanBackupJob(
-            id: 'job-paused',
-            filePath: video.path,
-            state: LanBackupJobState.paused,
-            uploadedBytes: 37,
-            totalBytes: stat.size,
-            lastModified: stat.modified,
-          ),
-        ],
-      ),
+    final LanBackupService service = LanBackupService(
+      platform: _TestChannelBackupPlatform(channel),
     );
+    addTearDown(service.dispose);
     final DateTime startedAt = DateTime.utc(2026, 7, 19, 10);
 
     await service.backupAll(<RecordingSession>[
@@ -736,21 +688,10 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
     });
-    final LanBackupService service = LanBackupService(channel: channel);
-    addTearDown(service.dispose);
-    service.debugSetSnapshotForTesting(
-      LanBackupSnapshot(
-        jobs: <LanBackupJob>[
-          LanBackupJob(
-            id: 'job-stale-size',
-            filePath: video.path,
-            state: LanBackupJobState.pending,
-            uploadedBytes: 0,
-            totalBytes: 999999,
-          ),
-        ],
-      ),
+    final LanBackupService service = LanBackupService(
+      platform: _TestChannelBackupPlatform(channel),
     );
+    addTearDown(service.dispose);
     final DateTime startedAt = DateTime.utc(2026, 7, 19, 10);
 
     await service.backupAll(<RecordingSession>[
@@ -766,47 +707,167 @@ void main() {
     expect(enqueueCalls, 1);
   });
 
-  test('快照内容未变时不重复通知监听者', () {
+  test('摘要内容未变时不重复通知监听者', () {
     final LanBackupService service = LanBackupService();
     addTearDown(service.dispose);
     int notifications = 0;
     service.addListener(() => notifications++);
-    final Map<Object?, Object?> values = <Object?, Object?>{
-      'deviceId': 'android-signature',
-      'deviceName': '手机1',
-      'connection': null,
-      'jobs': <Object?>[],
-      'migrationHost': null,
-    };
+    final BackupSummaryDto values = _backupSnapshot(deviceName: '手机1')
+      ..deviceId = 'android-signature';
 
-    service.debugApplyNativeSnapshotForTesting(values);
+    service.debugApplyNativeSummaryForTesting(values);
     expect(notifications, 1);
-    service.debugApplyNativeSnapshotForTesting(values);
+    service.debugApplyNativeSummaryForTesting(values);
     expect(notifications, 1);
   });
 
-  test('瘦身快照缺省字段可正常解析', () {
+  test('原生摘要拒绝低 revision 与不支持的 schemaVersion', () {
     final LanBackupService service = LanBackupService();
     addTearDown(service.dispose);
-    service.debugApplyNativeSnapshotForTesting(<Object?, Object?>{
-      'deviceId': 'android-slim',
-      'deviceName': '手机2',
-      'connection': null,
-      'jobs': <Object?>[
-        <Object?, Object?>{
-          'id': 'job-slim',
-          'filePath': '/data/user/0/app.packingproof.mobile/recordings/a.mp4',
-          'state': 'pending',
-          'uploadedBytes': 0,
-          'totalBytes': 100,
-          'lastModified': 1000,
-          'contentSha256': 'sha-slim',
-        },
-      ],
-      'migrationHost': null,
-    });
 
-    final LanBackupJob job = service.snapshot.jobs.single;
+    service.debugApplyNativeSummaryForTesting(
+      _backupSnapshot(deviceName: '新摘要', revision: 10),
+    );
+    service.debugApplyNativeSummaryForTesting(
+      _backupSnapshot(deviceName: '旧摘要', revision: 9),
+    );
+    service.debugApplyNativeSummaryForTesting(
+      _backupSnapshot(deviceName: '未知协议', schemaVersion: 2, revision: 11),
+    );
+
+    expect(service.snapshot.deviceName, '新摘要');
+    expect(service.snapshot.summary.revision, 10);
+  });
+
+  test('按路径查询拒绝 endpoint 切换后的旧响应', () async {
+    final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
+    final LanBackupService service = _testBackupService(platform);
+    addTearDown(service.dispose);
+    service.debugApplyNativeSummaryForTesting(
+      _backupSnapshot(
+        deviceName: '手机',
+        revision: 5,
+        baseUrl: 'http://192.168.1.10:5280',
+        computerId: 'computer-a',
+      ),
+    );
+    final Completer<BackupJobsByPathsDto> response =
+        Completer<BackupJobsByPathsDto>();
+    platform.jobResults.add(response);
+
+    final Future<LanBackupJobsByPaths> request = service.jobsForPaths(<String>[
+      '/recordings/a.mp4',
+    ]);
+    service.debugApplyNativeSummaryForTesting(
+      _backupSnapshot(
+        deviceName: '手机',
+        revision: 6,
+        baseUrl: 'http://192.168.1.11:5280',
+        computerId: 'computer-b',
+      ),
+    );
+    response.complete(
+      BackupJobsByPathsDto(
+        revision: 5,
+        jobs: <BackupJobDto>[],
+        missingPaths: <String>['/recordings/a.mp4'],
+      ),
+    );
+
+    await expectLater(request, throwsStateError);
+  });
+
+  test('按路径查询去重 Android 私有目录别名但向原生保留真实路径', () async {
+    final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
+    final LanBackupService service = _testBackupService(platform);
+    addTearDown(service.dispose);
+
+    await service.jobsForPaths(<String>[
+      '/data/user/0/app.packingproof.mobile/files/a.mp4',
+      '/data/data/app.packingproof.mobile/files/a.mp4',
+    ]);
+
+    expect(platform.requestedJobPaths, <List<String>>[
+      <String>['/data/user/0/app.packingproof.mobile/files/a.mp4'],
+    ]);
+  });
+
+  test('按路径查询拒绝摘要推进及分页 revision 倒退', () async {
+    final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
+    final LanBackupService service = _testBackupService(platform);
+    addTearDown(service.dispose);
+    service.debugApplyNativeSummaryForTesting(
+      _backupSnapshot(deviceName: '手机', revision: 4),
+    );
+    final Completer<BackupJobsByPathsDto> staleResponse =
+        Completer<BackupJobsByPathsDto>();
+    platform.jobResults.add(staleResponse);
+    final Future<LanBackupJobsByPaths> staleRequest = service.jobsForPaths(
+      <String>['/recordings/a.mp4'],
+    );
+    service.debugApplyNativeSummaryForTesting(
+      _backupSnapshot(deviceName: '手机', revision: 5),
+    );
+    staleResponse.complete(
+      BackupJobsByPathsDto(
+        revision: 4,
+        jobs: <BackupJobDto>[],
+        missingPaths: <String>['/recordings/a.mp4'],
+      ),
+    );
+    await expectLater(staleRequest, throwsStateError);
+
+    platform.jobResults.addAll(<Completer<BackupJobsByPathsDto>>[
+      Completer<BackupJobsByPathsDto>()..complete(
+        BackupJobsByPathsDto(
+          revision: 6,
+          jobs: <BackupJobDto>[],
+          missingPaths: List<String>.generate(
+            100,
+            (int index) => '/recordings/$index.mp4',
+          ),
+        ),
+      ),
+      Completer<BackupJobsByPathsDto>()..complete(
+        BackupJobsByPathsDto(
+          revision: 5,
+          jobs: <BackupJobDto>[],
+          missingPaths: <String>['/recordings/100.mp4'],
+        ),
+      ),
+    ]);
+    await expectLater(
+      service.jobsForPaths(
+        List<String>.generate(101, (int index) => '/recordings/$index.mp4'),
+      ),
+      throwsStateError,
+    );
+  });
+
+  test('固定大小摘要缺省字段可正常解析', () {
+    final LanBackupService service = LanBackupService();
+    addTearDown(service.dispose);
+    service.debugApplyNativeSummaryForTesting(
+      _backupSnapshot(deviceName: '手机2')
+        ..deviceId = 'android-slim'
+        ..totalCount = 1
+        ..pendingCount = 1
+        ..unfinishedTotalBytes = 100
+        ..activeJob = BackupJobDto(
+          revision: 0,
+          id: 'job-slim',
+          filePath: '/data/user/0/app.packingproof.mobile/recordings/a.mp4',
+          state: 'pending',
+          uploadedBytes: 0,
+          totalBytes: 100,
+          lastModifiedMs: 1000,
+          contentSha256: 'sha-slim',
+          waitingCleanup: false,
+          destinationComputerId: '',
+        ),
+    );
+
+    final LanBackupJob job = service.snapshot.summary.activeJob!;
     expect(job.id, 'job-slim');
     expect(job.lastModified?.millisecondsSinceEpoch, 1000);
     expect(job.contentSha256, 'sha-slim');
@@ -814,7 +875,7 @@ void main() {
     expect(job.destinationComputerId, '');
   });
 
-  testWidgets('任意推进周期时钟都不会自动读取完整快照', (WidgetTester tester) async {
+  testWidgets('任意推进周期时钟都不会自动读取全量任务', (WidgetTester tester) async {
     final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
     final LanBackupService service = _testBackupService(platform);
     await service.initialize(
@@ -828,7 +889,7 @@ void main() {
     await service.dispose();
   });
 
-  test('存储检查依赖原生变更事件而不主动读取完整快照', () async {
+  test('存储检查依赖原生变更事件而不主动读取全量任务', () async {
     final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
     final LanBackupService service = _testBackupService(platform);
     addTearDown(service.dispose);
@@ -854,11 +915,11 @@ void main() {
       unbackedRetention: UnbackedRetentionPolicy.days30,
       backedRetention: BackedRetentionPolicy.days7,
     );
-    final Completer<Map<Object?, Object?>?> firstSnapshot =
-        Completer<Map<Object?, Object?>?>();
-    final Completer<Map<Object?, Object?>?> mergedSnapshot =
-        Completer<Map<Object?, Object?>?>();
-    platform.snapshotResults.addAll(<Completer<Map<Object?, Object?>?>>[
+    final Completer<BackupSummaryDto> firstSnapshot =
+        Completer<BackupSummaryDto>();
+    final Completer<BackupSummaryDto> mergedSnapshot =
+        Completer<BackupSummaryDto>();
+    platform.snapshotResults.addAll(<Completer<BackupSummaryDto>>[
       firstSnapshot,
       mergedSnapshot,
     ]);
@@ -879,7 +940,7 @@ void main() {
     expect(service.snapshot.deviceName, '合并刷新');
   });
 
-  testWidgets('dispose 后不会留下周期定时器或快照轮询', (WidgetTester tester) async {
+  testWidgets('dispose 后不会留下周期摘要轮询', (WidgetTester tester) async {
     final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
     final LanBackupService service = _testBackupService(platform);
     await service.initialize(
@@ -914,7 +975,7 @@ void main() {
     final List<({String kind, Map<String, Object?> extra})> events =
         <({String kind, Map<String, Object?> extra})>[];
     final LanBackupService service = LanBackupService(
-      channel: channel,
+      platform: _TestChannelBackupPlatform(channel),
       logEvent: (String kind, Map<String, Object?> extra) async {
         events.add((kind: kind, extra: extra));
       },
@@ -948,7 +1009,7 @@ void main() {
     expect(toggleLogs.last['enabled'], isFalse);
   });
 
-  test('批量注册录像只刷新一次快照并保留每条入队日志', () async {
+  test('批量注册录像只刷新一次摘要并保留每条入队日志', () async {
     final Directory root = await Directory.systemTemp.createTemp(
       'packing-proof-batch-',
     );
@@ -961,13 +1022,10 @@ void main() {
       'app.packingproof.mobile/lan_backup_batch_test_${root.path.hashCode}',
     );
     int enqueueCalls = 0;
-    int snapshotCalls = 0;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (MethodCall call) async {
           if (call.method == 'enqueue') {
             enqueueCalls++;
-          } else if (call.method == 'snapshot') {
-            snapshotCalls++;
           }
           return null;
         });
@@ -977,8 +1035,11 @@ void main() {
     });
     final List<({String kind, Map<String, Object?> extra})> events =
         <({String kind, Map<String, Object?> extra})>[];
+    final _TestChannelBackupPlatform platform = _TestChannelBackupPlatform(
+      channel,
+    );
     final LanBackupService service = LanBackupService(
-      channel: channel,
+      platform: platform,
       logEvent: (String kind, Map<String, Object?> extra) async {
         events.add((kind: kind, extra: extra));
       },
@@ -1009,7 +1070,7 @@ void main() {
     });
 
     expect(enqueueCalls, 2);
-    expect(snapshotCalls, 1);
+    expect(platform.summaryCalls, 1);
     expect(
       events.where((event) => event.kind == 'backup_enqueue'),
       hasLength(2),
@@ -1036,7 +1097,9 @@ void main() {
       () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null),
     );
-    final LanBackupService service = LanBackupService(channel: channel);
+    final LanBackupService service = LanBackupService(
+      platform: _TestChannelBackupPlatform(channel),
+    );
     addTearDown(service.dispose);
     final DateTime startedAt = DateTime.utc(2026, 7, 25, 10);
     RecordingSession session(String id) => RecordingSession(
@@ -1071,38 +1134,39 @@ void main() {
     );
     addTearDown(service.dispose);
 
-    Map<Object?, Object?> failedJob() => <Object?, Object?>{
-      'id': 'job-1',
-      'filePath': '/tmp/job-1.mp4',
-      'state': 'failed',
-      'failureKind': 'unknown',
-      'statusCode': 400,
-      'errorCode': 'invalid_session_id',
-      'errorMessage': '录像片段 ID 无效',
-    };
-    Map<Object?, Object?> pendingJob() => <Object?, Object?>{
-      'id': 'job-1',
-      'filePath': '/tmp/job-1.mp4',
-      'state': 'pending',
-    };
+    BackupJobDto failedJob() => BackupJobDto(
+      revision: 1,
+      id: 'job-1',
+      filePath: '/tmp/job-1.mp4',
+      state: 'failed',
+      uploadedBytes: 0,
+      totalBytes: 1,
+      failureKind: 'unknown',
+      errorMessage: '录像片段 ID 无效',
+      waitingCleanup: false,
+      destinationComputerId: '',
+    );
+    BackupSummaryDto summaryWithProblem(BackupJobDto? problem, int revision) =>
+        _backupSnapshot(deviceName: '手机1')
+          ..revision = revision
+          ..failedCount = problem == null ? 0 : 1
+          ..problemJob = problem;
 
-    service.debugApplyNativeSnapshotForTesting(<Object?, Object?>{
-      'jobs': <Object?>[failedJob()],
-    });
-    service.debugApplyNativeSnapshotForTesting(<Object?, Object?>{
-      'jobs': <Object?>[failedJob()],
-    });
+    service.debugApplyNativeSummaryForTesting(
+      summaryWithProblem(failedJob(), 1),
+    );
+    service.debugApplyNativeSummaryForTesting(
+      summaryWithProblem(failedJob(), 1),
+    );
     expect(
       events.where((event) => event.kind == 'backup_job_failed'),
       hasLength(1),
     );
 
-    service.debugApplyNativeSnapshotForTesting(<Object?, Object?>{
-      'jobs': <Object?>[pendingJob()],
-    });
-    service.debugApplyNativeSnapshotForTesting(<Object?, Object?>{
-      'jobs': <Object?>[failedJob()],
-    });
+    service.debugApplyNativeSummaryForTesting(summaryWithProblem(null, 2));
+    service.debugApplyNativeSummaryForTesting(
+      summaryWithProblem(failedJob(), 3),
+    );
 
     final List<Map<String, Object?>> failures = events
         .where((event) => event.kind == 'backup_job_failed')
@@ -1110,8 +1174,37 @@ void main() {
         .toList();
     expect(failures, hasLength(2));
     expect(failures.last['jobId'], 'job-1');
-    expect(failures.last['statusCode'], 400);
-    expect(failures.last['errorCode'], 'invalid_session_id');
+    expect(failures.last['errorMessage'], '录像片段 ID 无效');
+  });
+
+  test('等待续传不会记录为备份失败', () async {
+    final List<({String kind, Map<String, Object?> extra})> events =
+        <({String kind, Map<String, Object?> extra})>[];
+    final LanBackupService service = LanBackupService(
+      logEvent: (String kind, Map<String, Object?> extra) async {
+        events.add((kind: kind, extra: extra));
+      },
+    );
+    addTearDown(service.dispose);
+
+    final BackupJobDto pausedJob = BackupJobDto(
+      revision: 1,
+      id: 'job-paused',
+      filePath: '/tmp/job-paused.mp4',
+      state: 'paused',
+      uploadedBytes: 0,
+      totalBytes: 1,
+      waitingCleanup: false,
+      destinationComputerId: '',
+    );
+    service.debugApplyNativeSummaryForTesting(
+      _backupSnapshot(deviceName: '手机1')
+        ..revision = pausedJob.revision
+        ..pausedCount = 1
+        ..problemJob = pausedJob,
+    );
+
+    expect(events.where((event) => event.kind == 'backup_job_failed'), isEmpty);
   });
 
   test('空录像不会创建无法完成的备份任务', () async {
@@ -1134,7 +1227,9 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
     });
-    final LanBackupService service = LanBackupService(channel: channel);
+    final LanBackupService service = LanBackupService(
+      platform: _TestChannelBackupPlatform(channel),
+    );
     addTearDown(service.dispose);
     final DateTime startedAt = DateTime.utc(2026, 7, 24, 10);
 
@@ -1168,7 +1263,9 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
     });
-    final LanBackupService service = LanBackupService(channel: channel);
+    final LanBackupService service = LanBackupService(
+      platform: _TestChannelBackupPlatform(channel),
+    );
     addTearDown(service.dispose);
 
     final NetworkDiagnostics? diagnostics = await service
@@ -1195,7 +1292,9 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
     });
-    final LanBackupService service = LanBackupService(channel: channel);
+    final LanBackupService service = LanBackupService(
+      platform: _TestChannelBackupPlatform(channel),
+    );
     addTearDown(service.dispose);
 
     final NetworkDiagnostics? diagnostics = await service
@@ -1229,7 +1328,7 @@ void main() {
           _enrollment('computer-1', '仓库电脑', 'a' * 64, deviceName: '手机3'),
         ]);
     final LanBackupService service = LanBackupService(
-      channel: channel,
+      platform: _TestChannelBackupPlatform(channel),
       httpClient: httpClient,
       wifiConnected: () async => true,
     );
@@ -1268,7 +1367,9 @@ void main() {
       () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null),
     );
-    final LanBackupService service = LanBackupService(channel: channel);
+    final LanBackupService service = LanBackupService(
+      platform: _TestChannelBackupPlatform(channel),
+    );
     addTearDown(service.dispose);
     service.debugSetSnapshotForTesting(
       LanBackupSnapshot(
@@ -1305,7 +1406,7 @@ void main() {
           .setMockMethodCallHandler(channel, null),
     );
     final LanBackupService service = LanBackupService(
-      channel: channel,
+      platform: _TestChannelBackupPlatform(channel),
       httpClient: _SequenceHttpClient(<_StreamHttpResponse>[
         _nodeInfo('computer-1', '仓库电脑'),
         _StreamHttpResponse(
@@ -1332,6 +1433,7 @@ void main() {
 
   test('重新申请被拒绝时保留原电脑和待备份任务', () async {
     final LanBackupService service = LanBackupService(
+      platform: _TrackingBackupPlatform(),
       httpClient: _SequenceHttpClient(<_StreamHttpResponse>[
         _nodeInfo('computer-1', '仓库电脑'),
         _StreamHttpResponse(
@@ -1350,8 +1452,11 @@ void main() {
           computerId: 'computer-1',
           computerName: '仓库电脑',
         ),
-        jobs: const <LanBackupJob>[
-          LanBackupJob(
+        summary: const LanBackupSummary(
+          totalCount: 1,
+          pendingCount: 1,
+          unfinishedTotalBytes: 100,
+          activeJob: LanBackupJob(
             id: 'pending-job',
             filePath: 'pending.mp4',
             state: LanBackupJobState.pending,
@@ -1359,7 +1464,7 @@ void main() {
             totalBytes: 100,
             destinationComputerId: 'computer-1',
           ),
-        ],
+        ),
         connectionStatus: LanConnectionStatus.rePair,
       ),
     );
@@ -1370,7 +1475,7 @@ void main() {
     );
 
     expect(service.snapshot.endpoint?.computerId, 'computer-1');
-    expect(service.snapshot.jobs.single.id, 'pending-job');
+    expect(service.snapshot.summary.activeJob?.id, 'pending-job');
     expect(
       service.snapshot.connectionStatus,
       LanConnectionStatus.approvalDenied,
@@ -1458,7 +1563,7 @@ void main() {
     final List<Duration> delays = <Duration>[];
     late final LanBackupService service;
     service = LanBackupService(
-      channel: channel,
+      platform: _TestChannelBackupPlatform(channel),
       httpClient: _SequenceHttpClient(<_StreamHttpResponse>[
         _nodeInfo('computer-1', '仓库电脑'),
         _StreamHttpResponse(
@@ -1529,7 +1634,7 @@ void main() {
           .setMockMethodCallHandler(channel, null),
     );
     final LanBackupService service = LanBackupService(
-      channel: channel,
+      platform: _TestChannelBackupPlatform(channel),
       httpClient: _SequenceHttpClient(<_StreamHttpResponse>[
         _nodeInfo('computer-1', '仓库电脑'),
         _StreamHttpResponse(
@@ -1569,7 +1674,10 @@ void main() {
   });
 
   test('当前主机存在时更换主机要先确认且确认前不申请令牌', () async {
+    final _TrackingBackupPlatform platform = _TrackingBackupPlatform()
+      ..hasPendingOutside = true;
     final LanBackupService service = LanBackupService(
+      platform: platform,
       httpClient: _SequenceHttpClient(<_StreamHttpResponse>[
         _nodeInfo('computer-2', '新电脑'),
       ]),
@@ -1584,16 +1692,11 @@ void main() {
           computerId: 'computer-1',
           computerName: '原电脑',
         ),
-        jobs: <LanBackupJob>[
-          LanBackupJob(
-            id: 'pending',
-            filePath: 'pending.mp4',
-            state: LanBackupJobState.pending,
-            uploadedBytes: 0,
-            totalBytes: 10,
-            destinationComputerId: 'computer-1',
-          ),
-        ],
+        summary: const LanBackupSummary(
+          totalCount: 1,
+          pendingCount: 1,
+          unfinishedTotalBytes: 10,
+        ),
       ),
     );
 
@@ -1620,7 +1723,7 @@ void main() {
           .setMockMethodCallHandler(channel, null),
     );
     final LanBackupService service = LanBackupService(
-      channel: channel,
+      platform: _TestChannelBackupPlatform(channel),
       httpClient: _SequenceHttpClient(<_StreamHttpResponse>[
         _nodeInfo('computer-2', '新电脑'),
         _enrollment('computer-2', '新电脑', 'a' * 64),
@@ -1628,20 +1731,7 @@ void main() {
       wifiConnected: () async => true,
     );
     addTearDown(service.dispose);
-    service.debugSetSnapshotForTesting(
-      LanBackupSnapshot(
-        jobs: <LanBackupJob>[
-          LanBackupJob(
-            id: 'pending',
-            filePath: 'pending.mp4',
-            state: LanBackupJobState.pending,
-            uploadedBytes: 0,
-            totalBytes: 10,
-            destinationComputerId: 'computer-1',
-          ),
-        ],
-      ),
-    );
+    service.debugSetSnapshotForTesting(const LanBackupSnapshot());
 
     await service.connectToHost(Uri.parse('http://192.168.1.30:5280'));
 
@@ -1664,39 +1754,148 @@ LanBackupService _testBackupService(_TrackingBackupPlatform platform) {
   );
 }
 
-Map<Object?, Object?> _backupSnapshot({required String deviceName}) {
-  return <Object?, Object?>{
-    'deviceId': 'snapshot-device',
-    'deviceName': deviceName,
-    'connection': null,
-    'jobs': <Object?>[],
-    'migrationHost': null,
-  };
+BackupSummaryDto _backupSnapshot({
+  required String deviceName,
+  int schemaVersion = 1,
+  int revision = 0,
+  String? baseUrl,
+  String? computerId,
+}) => BackupSummaryDto(
+  schemaVersion: schemaVersion,
+  revision: revision,
+  completedRevision: 0,
+  cleanupHighWatermark: 0,
+  deviceId: 'snapshot-device',
+  deviceName: deviceName,
+  baseUrl: baseUrl,
+  computerId: computerId,
+  computerName: computerId == null ? null : '测试电脑',
+  totalCount: 0,
+  pendingCount: 0,
+  uploadingCount: 0,
+  pausedCount: 0,
+  completedCount: 0,
+  failedCount: 0,
+  waitingCleanupCount: 0,
+  localDeletedCount: 0,
+  unfinishedUploadedBytes: 0,
+  unfinishedTotalBytes: 0,
+);
+
+class _TestChannelBackupPlatform implements BackupNativePlatform {
+  _TestChannelBackupPlatform(this._channel, {BackupSummaryDto? summary})
+    : _summary = summary ?? _backupSnapshot(deviceName: '');
+
+  final MethodChannel _channel;
+  final BackupSummaryDto _summary;
+  int summaryCalls = 0;
+
+  @override
+  void setSummaryListener(void Function(BackupSummaryDto summary)? listener) {}
+
+  @override
+  Future<BackupSummaryDto> summary() async {
+    summaryCalls++;
+    return _summary;
+  }
+
+  @override
+  Future<BackupSummaryDto> initialize(Map<Object?, Object?> request) async =>
+      _summary;
+
+  @override
+  Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths) async =>
+      BackupJobsByPathsDto(
+        revision: _summary.revision,
+        jobs: <BackupJobDto>[],
+        missingPaths: paths,
+      );
+
+  @override
+  Future<BackupCleanupPageDto> cleanupEvents({
+    required int afterRevision,
+    required int limit,
+  }) async => BackupCleanupPageDto(
+    latestRevision: afterRevision,
+    nextAfterRevision: afterRevision,
+    hasMore: false,
+    events: <BackupCleanupEventDto>[],
+  );
+
+  @override
+  Future<void> acknowledgeCleanupEvents(int throughRevision) async {}
+
+  @override
+  Future<bool> hasPendingJobsOutsideDestination(String computerId) async =>
+      false;
+
+  @override
+  Future<String?> loadAccessKey() =>
+      _channel.invokeMethod<String>('loadAccessKey');
+
+  @override
+  Future<bool> isWifiConnected() async =>
+      await _channel.invokeMethod<bool>('isWifiConnected') ?? false;
+
+  @override
+  Future<void> saveConnection(Map<Object?, Object?> connection) =>
+      _channel.invokeMethod<void>('saveConnection', connection);
+
+  @override
+  Future<void> disconnect() => _channel.invokeMethod<void>('disconnect');
+
+  @override
+  Future<void> enqueueJob(Map<Object?, Object?> request) =>
+      _channel.invokeMethod<void>('enqueue', request);
+
+  @override
+  Future<void> requeueJob(String jobId) =>
+      _channel.invokeMethod<void>('retry', <String, Object>{'id': jobId});
+
+  @override
+  Future<void> cancelJob(String jobId) =>
+      _channel.invokeMethod<void>('cancel', <String, Object>{'id': jobId});
+
+  @override
+  Future<void> updateRetentionSchedule(Map<Object?, Object?> request) =>
+      _channel.invokeMethod<void>('setRetentionPolicies', request);
+
+  @override
+  Future<Map<Object?, Object?>?> reclaimStorageIfNeeded() =>
+      _channel.invokeMapMethod<Object?, Object?>('checkAndReclaimStorage');
+
+  @override
+  Future<Map<Object?, Object?>?> getNetworkDiagnostics() =>
+      _channel.invokeMapMethod<Object?, Object?>('getNetworkDiagnostics');
+
+  @override
+  Future<void> dispose() async {}
 }
 
 class _TrackingBackupPlatform extends Fake implements BackupNativePlatform {
-  void Function(Map<Object?, Object?> snapshot)? _listener;
-  final List<Completer<Map<Object?, Object?>?>> snapshotResults =
-      <Completer<Map<Object?, Object?>?>>[];
+  void Function(BackupSummaryDto summary)? _listener;
+  final List<Completer<BackupSummaryDto>> snapshotResults =
+      <Completer<BackupSummaryDto>>[];
+  final List<Completer<BackupJobsByPathsDto>> jobResults =
+      <Completer<BackupJobsByPathsDto>>[];
+  final List<List<String>> requestedJobPaths = <List<String>>[];
   int snapshotCalls = 0;
   int reclaimCalls = 0;
   int disposeCalls = 0;
+  bool hasPendingOutside = false;
 
   @override
-  void setSnapshotListener(
-    void Function(Map<Object?, Object?> snapshot)? listener,
-  ) {
+  void setSummaryListener(void Function(BackupSummaryDto summary)? listener) {
     _listener = listener;
   }
 
-  void emitSnapshot(Map<Object?, Object?> snapshot) =>
-      _listener?.call(snapshot);
+  void emitSnapshot(BackupSummaryDto summary) => _listener?.call(summary);
 
   @override
-  Future<Map<Object?, Object?>?> snapshot() {
+  Future<BackupSummaryDto> summary() {
     snapshotCalls++;
     if (snapshotResults.isEmpty) {
-      return Future<Map<Object?, Object?>?>.value(
+      return Future<BackupSummaryDto>.value(
         _backupSnapshot(deviceName: '显式刷新'),
       );
     }
@@ -1704,9 +1903,38 @@ class _TrackingBackupPlatform extends Fake implements BackupNativePlatform {
   }
 
   @override
-  Future<Map<Object?, Object?>?> initialize(
-    Map<Object?, Object?> request,
-  ) async => _backupSnapshot(deviceName: '初始化');
+  Future<BackupSummaryDto> initialize(Map<Object?, Object?> request) async =>
+      _backupSnapshot(deviceName: '初始化');
+
+  @override
+  Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths) async {
+    requestedJobPaths.add(List<String>.of(paths));
+    return jobResults.isEmpty
+        ? BackupJobsByPathsDto(
+            revision: 0,
+            jobs: <BackupJobDto>[],
+            missingPaths: paths,
+          )
+        : jobResults.removeAt(0).future;
+  }
+
+  @override
+  Future<BackupCleanupPageDto> cleanupEvents({
+    required int afterRevision,
+    required int limit,
+  }) async => BackupCleanupPageDto(
+    latestRevision: afterRevision,
+    nextAfterRevision: afterRevision,
+    hasMore: false,
+    events: <BackupCleanupEventDto>[],
+  );
+
+  @override
+  Future<void> acknowledgeCleanupEvents(int throughRevision) async {}
+
+  @override
+  Future<bool> hasPendingJobsOutsideDestination(String computerId) async =>
+      hasPendingOutside;
 
   @override
   Future<String?> loadAccessKey() async => null;

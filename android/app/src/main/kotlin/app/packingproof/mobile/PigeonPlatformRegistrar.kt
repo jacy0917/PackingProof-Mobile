@@ -86,10 +86,8 @@ internal fun registerPigeonPlatformApis(
         messenger,
         PigeonBackupHostApi(lanBackupPlugin),
     )
-    lanBackupPlugin.addSnapshotListener { snapshot ->
-        backupEventApi.snapshotChanged(
-            snapshot.entries.associate { (it.key as String?) to it.value },
-        ) { }
+    lanBackupPlugin.addSummaryListener { summary ->
+        backupEventApi.summaryChanged(summary) { }
     }
 }
 

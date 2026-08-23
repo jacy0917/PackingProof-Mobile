@@ -1,11 +1,22 @@
+import '../generated/platform_api.g.dart';
+
 abstract interface class BackupNativePlatform {
-  void setSnapshotListener(
-    void Function(Map<Object?, Object?> snapshot)? listener,
-  );
+  void setSummaryListener(void Function(BackupSummaryDto summary)? listener);
 
-  Future<Map<Object?, Object?>?> snapshot();
+  Future<BackupSummaryDto> summary();
 
-  Future<Map<Object?, Object?>?> initialize(Map<Object?, Object?> request);
+  Future<BackupSummaryDto> initialize(Map<Object?, Object?> request);
+
+  Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths);
+
+  Future<BackupCleanupPageDto> cleanupEvents({
+    required int afterRevision,
+    required int limit,
+  });
+
+  Future<void> acknowledgeCleanupEvents(int throughRevision);
+
+  Future<bool> hasPendingJobsOutsideDestination(String computerId);
 
   Future<String?> loadAccessKey();
 

@@ -118,7 +118,7 @@ void main() {
     expect(firstRunIds, hasLength(100));
 
     final SessionRepository verifier = SessionRepository(rootDirectory: root);
-    expect(await verifier.loadBackupRegistrationCursor(), isNull);
+    expect(await verifier.loadBackupRegistrationCursor(), isNotNull);
     await verifier.dispose();
 
     final SessionRepository secondRepository = SessionRepository(
@@ -136,10 +136,113 @@ void main() {
     ) async {
       secondRunIds.addAll(page.map((session) => session.id));
     });
-    expect(secondRunIds, hasLength(101));
+    expect(secondRunIds, hasLength(1));
     expect(await secondRepository.loadBackupRegistrationCursor(), isNotNull);
     await secondController.shutdown();
     secondController.dispose();
+  });
+
+  test('清理事件游标在原生确认失败后持久化并于下次启动补确认', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-cleanup-cursor-interrupted-',
+    );
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final String filePath = '${root.path}/cleaned.mp4';
+    final SessionRepository firstRepository = SessionRepository(
+      rootDirectory: root,
+    );
+    final DateTime deletedAt = DateTime.utc(2026, 8, 23, 12);
+    await firstRepository.addSession(
+      RecordingSession(
+        id: 'cleanup-session',
+        filePath: filePath,
+        startedAt: deletedAt.subtract(const Duration(seconds: 2)),
+        endedAt: deletedAt.subtract(const Duration(seconds: 1)),
+        markers: const <Never>[],
+      ),
+    );
+    final _RecordingLanBackupSink firstBackup = _RecordingLanBackupSink()
+      ..cleanupPages.add(
+        LanBackupCleanupPage(
+          latestRevision: 7,
+          nextAfterRevision: 7,
+          hasMore: false,
+          events: <LanBackupCleanupEvent>[
+            LanBackupCleanupEvent(
+              revision: 7,
+              eventId: 'cleanup-event-7',
+              jobId: 'job-7',
+              filePath: filePath,
+              fileSizeBytes: 1024,
+              deletedAt: deletedAt,
+              reason: '已备份录像保留策略清理',
+            ),
+          ],
+        ),
+      )
+      ..failNextCleanupAcknowledgement = true;
+    final PackingSessionController firstController = PackingSessionController(
+      repository: firstRepository,
+      speechService: _NoopSpeechSink(),
+      lanBackupService: firstBackup,
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+
+    await firstController.drainCleanupEventsForTesting();
+    expect(await firstRepository.loadBackupCleanupCursor(), 7);
+    expect(await firstRepository.loadDeleteLogs(), hasLength(1));
+    await firstController.shutdown();
+    firstController.dispose();
+
+    final SessionRepository secondRepository = SessionRepository(
+      rootDirectory: root,
+    );
+    final _RecordingLanBackupSink secondBackup = _RecordingLanBackupSink();
+    final PackingSessionController secondController = PackingSessionController(
+      repository: secondRepository,
+      speechService: _NoopSpeechSink(),
+      lanBackupService: secondBackup,
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+
+    await secondController.drainCleanupEventsForTesting();
+    expect(secondBackup.acknowledgedCleanupRevisions, <int>[7]);
+    expect(await secondRepository.loadDeleteLogs(), hasLength(1));
+    await secondController.shutdown();
+    secondController.dispose();
+
+    final SessionRepository thirdRepository = SessionRepository(
+      rootDirectory: root,
+    );
+    final _RecordingLanBackupSink thirdBackup = _RecordingLanBackupSink();
+    final PackingSessionController thirdController = PackingSessionController(
+      repository: thirdRepository,
+      speechService: _NoopSpeechSink(),
+      lanBackupService: thirdBackup,
+      capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+      runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+    );
+    await thirdController.drainCleanupEventsForTesting();
+    expect(thirdBackup.acknowledgedCleanupRevisions, <int>[7]);
+    expect(await thirdRepository.loadDeleteLogs(), hasLength(1));
+    await thirdController.shutdown();
+    thirdController.dispose();
+  });
+
+  test('清理事件在录像数据库提交前失败时不推进游标并可重放', () async {
+    await _verifyCleanupReplayAroundRepositoryFailure(
+      failBeforeRecordingCommit: true,
+    );
+  });
+
+  test('清理事件在录像数据库提交后游标提交前失败时幂等重放', () async {
+    await _verifyCleanupReplayAroundRepositoryFailure(
+      failBeforeCursorCommit: true,
+    );
   });
 
   test('水印最终失败保持失败状态并立即备份保留文件', () async {
@@ -226,11 +329,136 @@ void main() {
   });
 }
 
+Future<void> _verifyCleanupReplayAroundRepositoryFailure({
+  bool failBeforeRecordingCommit = false,
+  bool failBeforeCursorCommit = false,
+}) async {
+  final Directory root = await Directory.systemTemp.createTemp(
+    'packing-proof-cleanup-replay-',
+  );
+  addTearDown(() async {
+    if (await root.exists()) await root.delete(recursive: true);
+  });
+  final String filePath = '${root.path}/cleaned.mp4';
+  final DateTime deletedAt = DateTime.utc(2026, 8, 23, 13);
+  final _InterruptingCleanupRepository firstRepository =
+      _InterruptingCleanupRepository(
+        rootDirectory: root,
+        failBeforeRecordingCommit: failBeforeRecordingCommit,
+        failBeforeCursorCommit: failBeforeCursorCommit,
+      );
+  await firstRepository.addSession(
+    RecordingSession(
+      id: 'cleanup-replay-session',
+      filePath: filePath,
+      startedAt: deletedAt.subtract(const Duration(seconds: 2)),
+      endedAt: deletedAt.subtract(const Duration(seconds: 1)),
+      markers: const <Never>[],
+    ),
+  );
+  final LanBackupCleanupPage page = LanBackupCleanupPage(
+    latestRevision: 9,
+    nextAfterRevision: 9,
+    hasMore: false,
+    events: <LanBackupCleanupEvent>[
+      LanBackupCleanupEvent(
+        revision: 9,
+        eventId: 'cleanup-replay-event',
+        jobId: 'cleanup-replay-job',
+        filePath: filePath,
+        fileSizeBytes: 2048,
+        deletedAt: deletedAt,
+        reason: '已备份录像保留策略清理',
+      ),
+    ],
+  );
+  final _RecordingLanBackupSink firstBackup = _RecordingLanBackupSink()
+    ..cleanupPages.add(page);
+  final PackingSessionController firstController = PackingSessionController(
+    repository: firstRepository,
+    speechService: _NoopSpeechSink(),
+    lanBackupService: firstBackup,
+    capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+    runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+  );
+
+  await firstController.drainCleanupEventsForTesting();
+  expect(await firstRepository.loadBackupCleanupCursor(), 0);
+  expect(firstBackup.acknowledgedCleanupRevisions, isEmpty);
+  expect(
+    await firstRepository.loadDeleteLogs(),
+    hasLength(failBeforeRecordingCommit ? 0 : 1),
+  );
+  await firstController.shutdown();
+  firstController.dispose();
+
+  final SessionRepository secondRepository = SessionRepository(
+    rootDirectory: root,
+  );
+  final _RecordingLanBackupSink secondBackup = _RecordingLanBackupSink()
+    ..cleanupPages.add(page);
+  final PackingSessionController secondController = PackingSessionController(
+    repository: secondRepository,
+    speechService: _NoopSpeechSink(),
+    lanBackupService: secondBackup,
+    capabilities: const PlatformCapabilities(<PlatformCapability>{}),
+    runtimeLog: DiagnosticsLogService(rootProvider: () async => root),
+  );
+
+  await secondController.drainCleanupEventsForTesting();
+  expect(await secondRepository.loadBackupCleanupCursor(), 9);
+  expect(secondBackup.acknowledgedCleanupRevisions, <int>[9]);
+  expect(await secondRepository.loadDeleteLogs(), hasLength(1));
+  await secondController.shutdown();
+  secondController.dispose();
+}
+
 class _BackupCall {
   const _BackupCall({required this.sessionIds, required this.forceRestart});
 
   final List<String> sessionIds;
   final bool forceRestart;
+}
+
+class _InterruptingCleanupRepository extends SessionRepository {
+  _InterruptingCleanupRepository({
+    required super.rootDirectory,
+    required this.failBeforeRecordingCommit,
+    required this.failBeforeCursorCommit,
+  });
+
+  bool failBeforeRecordingCommit;
+  bool failBeforeCursorCommit;
+
+  @override
+  Future<void> recordAutomaticCleanup({
+    required String eventId,
+    required String filePath,
+    required int fileSizeBytes,
+    required DateTime deletedAt,
+    required String reason,
+  }) async {
+    if (failBeforeRecordingCommit) {
+      failBeforeRecordingCommit = false;
+      throw StateError('模拟录像数据库提交前中断');
+    }
+    await super.recordAutomaticCleanup(
+      eventId: eventId,
+      filePath: filePath,
+      fileSizeBytes: fileSizeBytes,
+      deletedAt: deletedAt,
+      reason: reason,
+    );
+  }
+
+  @override
+  Future<void> saveBackupCleanupCursor(int revision) async {
+    if (failBeforeCursorCommit) {
+      failBeforeCursorCommit = false;
+      throw StateError('模拟清理游标提交前中断');
+    }
+    await super.saveBackupCleanupCursor(revision);
+  }
 }
 
 class _RecordingLanBackupSink extends ChangeNotifier implements LanBackupSink {
@@ -239,6 +467,9 @@ class _RecordingLanBackupSink extends ChangeNotifier implements LanBackupSink {
   final List<String> enqueuedPaths = <String>[];
   final List<List<RecordingSession>> enqueuedSessions =
       <List<RecordingSession>>[];
+  final List<LanBackupCleanupPage> cleanupPages = <LanBackupCleanupPage>[];
+  final List<int> acknowledgedCleanupRevisions = <int>[];
+  bool failNextCleanupAcknowledgement = false;
   int initializeCalls = 0;
   bool retryConnectionResult = false;
   StorageSpaceResult storageResult = const StorageSpaceResult(
@@ -328,6 +559,36 @@ class _RecordingLanBackupSink extends ChangeNotifier implements LanBackupSink {
 
   @override
   Future<void> cancel(String jobId) async {}
+
+  @override
+  Future<LanBackupJobsByPaths> jobsForPaths(Iterable<String> paths) async =>
+      LanBackupJobsByPaths(
+        revision: _snapshot.summary.revision,
+        jobs: const <LanBackupJob>[],
+        missingPaths: paths.toSet(),
+      );
+
+  @override
+  Future<LanBackupCleanupPage> cleanupEvents({
+    required int afterRevision,
+    int limit = 100,
+  }) async => cleanupPages.isEmpty
+      ? LanBackupCleanupPage(
+          latestRevision: afterRevision,
+          nextAfterRevision: afterRevision,
+          hasMore: false,
+          events: const <LanBackupCleanupEvent>[],
+        )
+      : cleanupPages.removeAt(0);
+
+  @override
+  Future<void> acknowledgeCleanupEvents(int throughRevision) async {
+    acknowledgedCleanupRevisions.add(throughRevision);
+    if (failNextCleanupAcknowledgement) {
+      failNextCleanupAcknowledgement = false;
+      throw StateError('模拟确认中断');
+    }
+  }
 
   @override
   Future<StorageSpaceResult> checkAndReclaimStorage() async => storageResult;

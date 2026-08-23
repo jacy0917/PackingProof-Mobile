@@ -131,6 +131,78 @@ class BarcodeCandidateDto {
   int detectedAtMs;
 }
 
+class BackupJobDto {
+  int revision;
+  String id;
+  String filePath;
+  String state;
+  int uploadedBytes;
+  int totalBytes;
+  int? lastModifiedMs;
+  String? contentSha256;
+  String? errorMessage;
+  String? failureKind;
+  int? fileCreatedAtMs;
+  int? backupCompletedAtMs;
+  int? scheduledCleanupAtMs;
+  int? localDeletedAtMs;
+  bool waitingCleanup;
+  int? remoteRecordId;
+  String destinationComputerId;
+  String? cleanupReason;
+}
+
+class BackupSummaryDto {
+  int schemaVersion;
+  int revision;
+  int completedRevision;
+  int cleanupHighWatermark;
+  String deviceId;
+  String deviceName;
+  String? baseUrl;
+  String? computerId;
+  String? computerName;
+  int? lastConnectedAtMs;
+  String? preferredHostId;
+  String? preferredHostName;
+  int totalCount;
+  int pendingCount;
+  int uploadingCount;
+  int pausedCount;
+  int completedCount;
+  int failedCount;
+  int waitingCleanupCount;
+  int localDeletedCount;
+  int unfinishedUploadedBytes;
+  int unfinishedTotalBytes;
+  String? dominantFailureKind;
+  BackupJobDto? activeJob;
+  BackupJobDto? problemJob;
+}
+
+class BackupJobsByPathsDto {
+  int revision;
+  List<BackupJobDto> jobs;
+  List<String> missingPaths;
+}
+
+class BackupCleanupEventDto {
+  int revision;
+  String eventId;
+  String jobId;
+  String filePath;
+  int fileSizeBytes;
+  int deletedAtMs;
+  String reason;
+}
+
+class BackupCleanupPageDto {
+  int latestRevision;
+  int nextAfterRevision;
+  bool hasMore;
+  List<BackupCleanupEventDto> events;
+}
+
 class CameraSessionStartedDto {
   String sessionId;
   int startedAtMs;
@@ -267,32 +339,56 @@ abstract class CameraEventApi {
 @HostApi()
 abstract class BackupNativeHostApi {
   @async
-  Map<String?, Object?>? snapshot();
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  BackupSummaryDto summary();
   @async
-  Map<String?, Object?>? initialize(Map<String?, Object?> request);
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  BackupSummaryDto initialize(Map<String?, Object?> request);
   @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  BackupJobsByPathsDto jobsForPaths(List<String> paths);
+  @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  BackupCleanupPageDto cleanupEvents(int afterRevision, int limit);
+  @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  void acknowledgeCleanupEvents(int throughRevision);
+  @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  bool hasPendingJobsOutsideDestination(String computerId);
+  @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   String? loadAccessKey();
   @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   bool isWifiConnected();
   @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   void saveConnection(Map<String?, Object?> connection);
   @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   void disconnect();
   @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   void enqueueJob(Map<String?, Object?> request);
   @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   void requeueJob(String jobId);
   @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   void cancelJob(String jobId);
   @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   void updateRetentionSchedule(Map<String?, Object?> request);
   @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   Map<String?, Object?> reclaimStorageIfNeeded();
   @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   Map<String?, Object?>? getNetworkDiagnostics();
 }
 
 @FlutterApi()
 abstract class BackupNativeEventApi {
-  void snapshotChanged(Map<String?, Object?> snapshot);
+  void summaryChanged(BackupSummaryDto summary);
 }

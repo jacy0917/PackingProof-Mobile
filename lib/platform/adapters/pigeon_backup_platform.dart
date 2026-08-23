@@ -10,23 +10,37 @@ class PigeonBackupNativePlatform implements BackupNativePlatform {
 
   final BackupNativeHostApi _hostApi;
   late final _BackupNativeEventSink _eventSink;
-  void Function(Map<Object?, Object?> snapshot)? _snapshotListener;
+  void Function(BackupSummaryDto summary)? _summaryListener;
 
   @override
-  void setSnapshotListener(
-    void Function(Map<Object?, Object?> snapshot)? listener,
-  ) {
-    _snapshotListener = listener;
+  void setSummaryListener(void Function(BackupSummaryDto summary)? listener) {
+    _summaryListener = listener;
   }
 
   @override
-  Future<Map<Object?, Object?>?> snapshot() async =>
-      _map(await _hostApi.snapshot());
+  Future<BackupSummaryDto> summary() => _hostApi.summary();
 
   @override
-  Future<Map<Object?, Object?>?> initialize(
-    Map<Object?, Object?> request,
-  ) async => _map(await _hostApi.initialize(_wireMap(request)));
+  Future<BackupSummaryDto> initialize(Map<Object?, Object?> request) =>
+      _hostApi.initialize(_wireMap(request));
+
+  @override
+  Future<BackupJobsByPathsDto> jobsForPaths(List<String> paths) =>
+      _hostApi.jobsForPaths(paths);
+
+  @override
+  Future<BackupCleanupPageDto> cleanupEvents({
+    required int afterRevision,
+    required int limit,
+  }) => _hostApi.cleanupEvents(afterRevision, limit);
+
+  @override
+  Future<void> acknowledgeCleanupEvents(int throughRevision) =>
+      _hostApi.acknowledgeCleanupEvents(throughRevision);
+
+  @override
+  Future<bool> hasPendingJobsOutsideDestination(String computerId) =>
+      _hostApi.hasPendingJobsOutsideDestination(computerId);
 
   @override
   Future<String?> loadAccessKey() => _hostApi.loadAccessKey();
@@ -66,7 +80,7 @@ class PigeonBackupNativePlatform implements BackupNativePlatform {
   @override
   Future<void> dispose() async {
     BackupNativeEventApi.setUp(null);
-    _snapshotListener = null;
+    _summaryListener = null;
   }
 }
 
@@ -76,8 +90,8 @@ class _BackupNativeEventSink extends BackupNativeEventApi {
   final PigeonBackupNativePlatform _platform;
 
   @override
-  void snapshotChanged(Map<String?, Object?> snapshot) {
-    _platform._snapshotListener?.call(Map<Object?, Object?>.from(snapshot));
+  void summaryChanged(BackupSummaryDto summary) {
+    _platform._summaryListener?.call(summary);
   }
 }
 

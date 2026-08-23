@@ -35,6 +35,7 @@ class RecordingStorageManagerTest {
 
     @After
     fun tearDown() {
+        store.close()
         source.delete()
         context.deleteDatabase("lan_backup.db")
     }

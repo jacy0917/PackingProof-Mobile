@@ -4,6 +4,7 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
   late LanBackupSnapshot _backupSnapshot;
   Map<String, List<LanBackupJob>> _backupJobsByPath =
       <String, List<LanBackupJob>>{};
+  int _backupJobsRequestGeneration = 0;
   late final LanBackupHostDiscovery _backupHostDiscovery;
   late final bool _ownsBackupHostDiscovery;
   LanBackupDiscoverySnapshot _backupDiscoverySnapshot =
@@ -25,6 +26,7 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
   int get _remoteRequestGeneration;
   set _remoteRequestGeneration(int value);
   set _historyPage(int value);
+  Iterable<String> get _backupLookupPaths;
 
   void _refreshLocalRecordingStats();
 
@@ -36,7 +38,6 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
 
   void _initializeBackupCoordinator() {
     _backupSnapshot = widget.backupSnapshot;
-    _backupJobsByPath = _buildBackupJobsByPath(_backupSnapshot);
     _ownsBackupHostDiscovery = widget.backupHostDiscovery == null;
     _backupHostDiscovery =
         widget.backupHostDiscovery ?? LanBackupHostDiscoveryService();
@@ -195,18 +196,14 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
         message: _backupSnapshot.message,
       );
     }
-    final Set<String> previousCompleted = _completedBackupSignatures(
-      _backupSnapshot,
-    );
-    final Set<String> nextCompleted = _completedBackupSignatures(next);
-    final bool completedChanged = nextCompleted
-        .difference(previousCompleted)
-        .isNotEmpty;
-    final Set<String> previousDeleted = _deletedLocalPaths(_backupSnapshot);
-    final Set<String> nextDeleted = _deletedLocalPaths(next);
-    final bool localCleanupChanged = nextDeleted
-        .difference(previousDeleted)
-        .isNotEmpty;
+    final bool completedChanged =
+        next.summary.completedRevision !=
+        _backupSnapshot.summary.completedRevision;
+    final bool localCleanupChanged =
+        next.summary.cleanupHighWatermark !=
+        _backupSnapshot.summary.cleanupHighWatermark;
+    final bool jobsChanged =
+        next.summary.revision != _backupSnapshot.summary.revision;
     final bool reconnected =
         _backupSnapshot.connectionStatus != LanConnectionStatus.connected &&
         next.connectionStatus == LanConnectionStatus.connected;
@@ -217,7 +214,6 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
     if (localCleanupChanged) {
       _refreshLocalRecordingStats();
     }
-    _backupJobsByPath = _buildBackupJobsByPath(next);
     setState(() {
       _backupSnapshot = next;
       if (completedChanged) _remoteCacheDirty = true;
@@ -226,6 +222,7 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
         _loadingRemote = false;
       }
       if (endpointChanged) {
+        _backupJobsByPath.clear();
         _remoteRecordings.clear();
         _remotePages.clear();
         _remoteTotal = 0;
@@ -233,6 +230,11 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
         _historyPage = 0;
       }
     });
+    if ((jobsChanged || endpointChanged) &&
+        widget.active &&
+        widget.mode == RecordingsScreenMode.history) {
+      unawaited(_refreshBackupJobsForPaths());
+    }
     if (reconnected) {
       unawaited(_loadRemote(reset: true, pageNumber: 1, prefetchNext: true));
     } else if (completedChanged) {
@@ -251,38 +253,46 @@ mixin _RecordingsBackupCoordinator on State<RecordingsScreen> {
     return left.computerId == right.computerId && left.baseUri == right.baseUri;
   }
 
-  Map<String, List<LanBackupJob>> _buildBackupJobsByPath(
-    LanBackupSnapshot snapshot,
-  ) {
-    final Map<String, List<LanBackupJob>> jobs = <String, List<LanBackupJob>>{};
-    for (final LanBackupJob job in snapshot.jobs) {
-      jobs
-          .putIfAbsent(
-            lanBackupFileIdentity(job.filePath),
-            () => <LanBackupJob>[],
-          )
-          .add(job);
+  Future<void> _refreshBackupJobsForPaths() async {
+    final callback = widget.onLoadBackupJobsForPaths;
+    final Iterable<String> lookupPaths = _backupLookupPaths;
+    if (callback == null || !widget.active || lookupPaths.isEmpty) {
+      return;
     }
-    return jobs;
+    final int generation = ++_backupJobsRequestGeneration;
+    final LanBackupEndpoint? requestEndpoint = _backupSnapshot.endpoint;
+    final int requestRevision = _backupSnapshot.summary.revision;
+    final Map<String, String> requestedByIdentity = <String, String>{};
+    for (final String path in lookupPaths) {
+      requestedByIdentity.putIfAbsent(lanBackupFileIdentity(path), () => path);
+    }
+    final Set<String> requested = requestedByIdentity.values.toSet();
+    try {
+      final LanBackupJobsByPaths result = await callback(requested);
+      if (!mounted ||
+          !widget.active ||
+          widget.mode != RecordingsScreenMode.history ||
+          generation != _backupJobsRequestGeneration ||
+          !_sameBackupEndpoint(requestEndpoint, _backupSnapshot.endpoint) ||
+          _backupSnapshot.summary.revision < requestRevision ||
+          result.revision < _backupSnapshot.summary.revision) {
+        return;
+      }
+      final Map<String, List<LanBackupJob>> next =
+          <String, List<LanBackupJob>>{};
+      for (final LanBackupJob job in result.jobs) {
+        next
+            .putIfAbsent(
+              lanBackupFileIdentity(job.filePath),
+              () => <LanBackupJob>[],
+            )
+            .add(job);
+      }
+      setState(() => _backupJobsByPath = next);
+    } on Object {
+      // Keep the last bounded page cache visible; the next summary retries it.
+    }
   }
-
-  Set<String> _completedBackupSignatures(LanBackupSnapshot snapshot) => snapshot
-      .jobs
-      .where(
-        (LanBackupJob job) =>
-            job.state == LanBackupJobState.completed &&
-            job.remoteRecordId != null,
-      )
-      .map(
-        (LanBackupJob job) =>
-            '${job.id}:${job.destinationComputerId}:${job.remoteRecordId}',
-      )
-      .toSet();
-
-  Set<String> _deletedLocalPaths(LanBackupSnapshot snapshot) => snapshot.jobs
-      .where((LanBackupJob job) => job.localDeletedAt != null)
-      .map((LanBackupJob job) => lanBackupFileIdentity(job.filePath))
-      .toSet();
 
   void _reloadRemoteAfterBackup({bool force = false}) {
     if ((!_remoteCacheDirty && !force) ||
