@@ -205,6 +205,7 @@ void main() {
           child: NativeCameraPreviewCover(
             textureId: 7,
             sourceSize: Size(1080, 1920),
+            quarterTurns: 1,
           ),
         ),
       ),
@@ -214,6 +215,9 @@ void main() {
       find.byKey(const Key('native-camera-preview-natural-size')),
     );
     expect(naturalSize.aspectRatio, closeTo(9 / 16, 0.001));
+    final Size textureSize = tester.getSize(find.byType(Texture));
+    expect(textureSize.aspectRatio, closeTo(16 / 9, 0.001));
+    expect(tester.widget<RotatedBox>(find.byType(RotatedBox)).quarterTurns, 1);
     expect(
       tester.widget<Texture>(find.byType(Texture)).filterQuality,
       FilterQuality.low,

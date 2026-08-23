@@ -551,6 +551,8 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
                   cameraController: _controller.cameraController,
                   nativeTextureId: _controller.nativeTextureId,
                   nativePreviewSize: _controller.nativePreviewSize,
+                  nativePreviewQuarterTurns:
+                      _controller.nativePreviewQuarterTurns,
                   phase: _controller.phase,
                   elapsed: _controller.elapsed,
                   elapsedListenable: _controller.elapsedListenable,
@@ -773,6 +775,7 @@ class PackingHomeView extends StatelessWidget {
     this.cameraController,
     this.nativeTextureId,
     this.nativePreviewSize,
+    this.nativePreviewQuarterTurns = 0,
     this.lastMarker,
     this.candidateCode = '',
     this.currentCode = '',
@@ -813,6 +816,7 @@ class PackingHomeView extends StatelessWidget {
   final CameraController? cameraController;
   final int? nativeTextureId;
   final Size? nativePreviewSize;
+  final int nativePreviewQuarterTurns;
   final PackingSessionPhase phase;
   final Duration elapsed;
   final BarcodeMarker? lastMarker;
@@ -955,6 +959,7 @@ class _CameraArea extends StatelessWidget {
       preview = NativeCameraPreviewCover(
         textureId: view.nativeTextureId!,
         sourceSize: view.nativePreviewSize!,
+        quarterTurns: view.nativePreviewQuarterTurns,
       );
     } else if (camera?.value.isInitialized == true) {
       preview = CameraPreviewCover(
@@ -1617,11 +1622,13 @@ class NativeCameraPreviewCover extends StatelessWidget {
   const NativeCameraPreviewCover({
     required this.textureId,
     required this.sourceSize,
+    this.quarterTurns = 0,
     super.key,
   });
 
   final int textureId;
   final Size sourceSize;
+  final int quarterTurns;
 
   @override
   Widget build(BuildContext context) {
@@ -1629,7 +1636,13 @@ class NativeCameraPreviewCover extends StatelessWidget {
       child: _PreviewCoverViewport(
         sourceSize: sourceSize,
         previewKey: const Key('native-camera-preview-natural-size'),
-        child: Texture(textureId: textureId, filterQuality: FilterQuality.low),
+        child: RotatedBox(
+          quarterTurns: quarterTurns,
+          child: Texture(
+            textureId: textureId,
+            filterQuality: FilterQuality.low,
+          ),
+        ),
       ),
     );
     return Transform(

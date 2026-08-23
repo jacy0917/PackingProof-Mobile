@@ -66,6 +66,7 @@ void main() {
     expect(initialization.canSwitchCamera, isTrue);
     expect(initialization.flashAvailable, isFalse);
     expect(initialization.portraitPreviewSize, const Size(1080, 1920));
+    expect(initialization.previewQuarterTurns, 3);
     expect(initialization.cameraId, isNull);
     expect(initialization.zoomRatio, 1.0);
   });
