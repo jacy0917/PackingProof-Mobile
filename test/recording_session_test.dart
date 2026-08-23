@@ -799,7 +799,12 @@ void main() {
       jsonEncode(legacy.map((RecordingSession item) => item.toJson()).toList()),
     );
 
-    final SessionRepository repository = testRepository(root);
+    final SessionRepository repository = SessionRepository(
+      rootDirectory: root,
+      availableRecordingStorageBytes: () async => 3 * 1024 * 1024 * 1024,
+    );
+    addTearDown(repository.dispose);
+    await repository.resumeSharedFileMigration();
     List<RecordingSession> migrated = await repository.loadSessions();
     for (
       var attempt = 0;
