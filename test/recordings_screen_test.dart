@@ -2134,6 +2134,65 @@ void main() {
     expect(approvalCount, 1);
   });
 
+  testWidgets('正常上传时历史令牌错误不覆盖当前状态', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingsScreen(
+          sessions: const [],
+          workMode: WorkMode.continuousScan,
+          speechEnabled: true,
+          maxVolumeEnabled: true,
+          backupSnapshot: LanBackupSnapshot(
+            endpoint: LanBackupEndpoint(
+              baseUri: Uri.parse('http://192.168.1.20:5280'),
+              accessKey: '',
+              computerId: 'computer-1',
+              computerName: '仓库电脑',
+            ),
+            summary: const LanBackupSummary(
+              totalCount: 2,
+              uploadingCount: 1,
+              pausedCount: 1,
+              dominantFailureKind: LanBackupFailureKind.credentialInvalid,
+              activeJob: LanBackupJob(
+                id: 'active-job',
+                filePath: 'active.mp4',
+                state: LanBackupJobState.uploading,
+                uploadedBytes: 512,
+                totalBytes: 1024,
+              ),
+              problemJob: LanBackupJob(
+                id: 'historical-job',
+                filePath: 'old.mp4',
+                state: LanBackupJobState.paused,
+                uploadedBytes: 0,
+                totalBytes: 1024,
+                errorMessage: '设备连接已失效',
+                failureKind: LanBackupFailureKind.credentialInvalid,
+              ),
+            ),
+            connectionStatus: LanConnectionStatus.rePair,
+          ),
+          onAutoBackupChanged: (_) async {},
+          onBackupNow: () async {},
+          onDisconnectBackup: () async {},
+          onWorkModeChanged: (_) async {},
+          onSpeechEnabledChanged: (_) async {},
+          onMaxVolumeEnabledChanged: (_) async {},
+          onSpeechPreview: () async {},
+          onSessionUpdated: (_) async {},
+          onDeleteSessions: (_) async {},
+        ),
+      ),
+    );
+
+    expect(find.text('在线'), findsOneWidget);
+    expect(find.text('正在备份 · 50%'), findsOneWidget);
+    expect(find.byKey(const Key('backup-progress-slot')), findsOneWidget);
+    expect(find.text('重新申请'), findsNothing);
+    expect(find.text('检查电脑后重试'), findsNothing);
+  });
+
   testWidgets('电脑不是备份主机时显示重新申请并覆盖旧版本失败提示', (WidgetTester tester) async {
     await tester.pumpWidget(
       MaterialApp(

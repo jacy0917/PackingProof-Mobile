@@ -59,14 +59,17 @@ class _ComputerBackupSettings extends StatelessWidget {
         summary.problemJob?.state == LanBackupJobState.paused
         ? summary.problemJob
         : null;
-    final LanBackupJob? classifiedFailure = summary.problemJob;
+    final LanBackupJob? classifiedFailure = failed;
     final LanBackupFailureKind? failureKind =
-        snapshot.connectionStatus == LanConnectionStatus.notBackupHost ||
-            summary.dominantFailureKind == LanBackupFailureKind.notBackupHost
+        active == null &&
+            (snapshot.connectionStatus == LanConnectionStatus.notBackupHost ||
+                summary.dominantFailureKind ==
+                    LanBackupFailureKind.notBackupHost)
         ? LanBackupFailureKind.notBackupHost
-        : snapshot.connectionStatus == LanConnectionStatus.rePair ||
-              summary.dominantFailureKind ==
-                  LanBackupFailureKind.credentialInvalid
+        : active == null &&
+              (snapshot.connectionStatus == LanConnectionStatus.rePair ||
+                  summary.dominantFailureKind ==
+                      LanBackupFailureKind.credentialInvalid)
         ? LanBackupFailureKind.credentialInvalid
         : classifiedFailure?.failureKind;
     final int pending = snapshot.pendingCount;
@@ -76,12 +79,14 @@ class _ComputerBackupSettings extends StatelessWidget {
         ? '全部完成'
         : '$remainingBackupCount 个未备份';
     final bool online =
+        active != null ||
         snapshot.connectionStatus == LanConnectionStatus.connected;
     final bool needsRepair =
-        snapshot.connectionStatus == LanConnectionStatus.rePair ||
-        snapshot.connectionStatus == LanConnectionStatus.notBackupHost ||
-        failureKind == LanBackupFailureKind.credentialInvalid ||
-        failureKind == LanBackupFailureKind.notBackupHost;
+        active == null &&
+        (snapshot.connectionStatus == LanConnectionStatus.rePair ||
+            snapshot.connectionStatus == LanConnectionStatus.notBackupHost ||
+            failureKind == LanBackupFailureKind.credentialInvalid ||
+            failureKind == LanBackupFailureKind.notBackupHost);
     final bool connecting =
         snapshot.connectionStatus == LanConnectionStatus.connecting;
     final bool awaitingApproval =
