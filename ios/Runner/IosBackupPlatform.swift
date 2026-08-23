@@ -55,6 +55,83 @@ struct IosBackupFileSnapshot: Equatable {
   }
 }
 
+private struct IosBackupOpenFileIdentity: Equatable {
+  let device: UInt64
+  let inode: UInt64
+  let byteCount: Int64
+  let modifiedAtMilliseconds: Int64
+}
+
+private final class IosBackupCleanupFileProof {
+  let identity: IosBackupOpenFileIdentity
+  let sha256: String
+  private let descriptor: Int32
+
+  init(url: URL) throws {
+    descriptor = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    guard descriptor >= 0 else {
+      throw BackupSourceError(message: "无法安全打开待清理录像")
+    }
+    do {
+      let before = try Self.identity(descriptor: descriptor)
+      guard before.byteCount > 0 else {
+        throw BackupSourceError(message: "待清理录像为空")
+      }
+      var hasher = SHA256()
+      var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
+      while true {
+        let count = Darwin.read(descriptor, &buffer, buffer.count)
+        if count == 0 { break }
+        guard count > 0 else {
+          throw BackupSourceError(message: "读取待清理录像失败")
+        }
+        hasher.update(data: Data(buffer[0..<count]))
+      }
+      let after = try Self.identity(descriptor: descriptor)
+      guard before == after else {
+        throw BackupSourceError(message: "待清理录像在校验期间发生变化")
+      }
+      identity = before
+      sha256 = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    } catch {
+      Darwin.close(descriptor)
+      throw error
+    }
+  }
+
+  deinit { Darwin.close(descriptor) }
+
+  func pathStillReferencesOpenedFile(_ path: String) -> Bool {
+    guard let current = try? Self.identity(path: path) else { return false }
+    return current == identity
+  }
+
+  static func identity(path: String) throws -> IosBackupOpenFileIdentity {
+    var value = stat()
+    guard lstat(path, &value) == 0, (value.st_mode & S_IFMT) == S_IFREG else {
+      throw BackupSourceError(message: "待清理录像路径已变化")
+    }
+    return identity(value)
+  }
+
+  private static func identity(descriptor: Int32) throws -> IosBackupOpenFileIdentity {
+    var value = stat()
+    guard fstat(descriptor, &value) == 0, (value.st_mode & S_IFMT) == S_IFREG else {
+      throw BackupSourceError(message: "无法确认待清理录像身份")
+    }
+    return identity(value)
+  }
+
+  private static func identity(_ value: stat) -> IosBackupOpenFileIdentity {
+    IosBackupOpenFileIdentity(
+      device: UInt64(value.st_dev), inode: UInt64(value.st_ino),
+      byteCount: Int64(value.st_size),
+      modifiedAtMilliseconds: Int64(value.st_mtimespec.tv_sec) * 1000
+        + Int64(value.st_mtimespec.tv_nsec) / 1_000_000
+    )
+  }
+}
+
 /// 用 FileHandle 保持上传内存有界，并在每次读块前确认源文件没有被替换。
 final class IosBackupFileReader {
   let snapshot: IosBackupFileSnapshot
@@ -336,6 +413,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private let storageReclaimOperationOverride:
     (() async throws -> [String?: Any?])?
   private let cleanupOperationOverride: (() async throws -> Void)?
+  private let beforeCleanupIntentClaimForTesting: (([String: Any]) -> Void)?
+  private let beforeCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)?
+  private let afterCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)?
+  private let afterCleanupCommitForTesting: ((IosBackupCleanupIntent) throws -> Void)?
   private let networkMonitor = NWPathMonitor()
   private let networkQueue = DispatchQueue(label: "ios.backup.network")
   private var lastLanReachable = false
@@ -382,10 +463,11 @@ final class IosBackupHostApi: BackupNativeHostApi {
     case unreachable
   }
 
-  private enum FileCleanupResult {
-    case deleted
-    case missing
+  private enum AtomicCleanupResult {
+    case deleted(bytes: Int64)
+    case reconciledMissing
     case stale
+    case busy
     case failed
   }
 
@@ -405,7 +487,11 @@ final class IosBackupHostApi: BackupNativeHostApi {
       (([String: Any], IosBackupUploadIdentity) async -> Void)? = nil,
     storageReclaimOperationOverride:
       (() async throws -> [String?: Any?])? = nil,
-    cleanupOperationOverride: (() async throws -> Void)? = nil
+    cleanupOperationOverride: (() async throws -> Void)? = nil,
+    beforeCleanupIntentClaimForTesting: (([String: Any]) -> Void)? = nil,
+    beforeCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil,
+    afterCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil,
+    afterCleanupCommitForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil
   ) {
     self.eventApi = eventApi
     self.defaults = defaults
@@ -420,6 +506,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
     self.uploadOperationOverride = uploadOperationOverride
     self.storageReclaimOperationOverride = storageReclaimOperationOverride
     self.cleanupOperationOverride = cleanupOperationOverride
+    self.beforeCleanupIntentClaimForTesting = beforeCleanupIntentClaimForTesting
+    self.beforeCleanupRenameForTesting = beforeCleanupRenameForTesting
+    self.afterCleanupRenameForTesting = afterCleanupRenameForTesting
+    self.afterCleanupCommitForTesting = afterCleanupCommitForTesting
     networkMonitor.pathUpdateHandler = { [weak self] path in
       self?.lastLanReachable =
         path.status == .satisfied && !path.usesInterfaceType(.cellular)
@@ -729,6 +819,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func performStorageReclaimUncoordinated() async throws -> [String?: Any?] {
+    try recoverCleanupIntents()
     let minimumBytes: Int64 = 2 * 1024 * 1024 * 1024
     let targetBytes: Int64 = 3 * 1024 * 1024 * 1024
     let before = availableStorageBytes()
@@ -764,45 +855,35 @@ final class IosBackupHostApi: BackupNativeHostApi {
         else {
           continue
         }
-        let file = URL(fileURLWithPath: path)
         if !FileManager.default.fileExists(atPath: path) {
-          guard let id = job["id"] as? String,
-                let generation = job["generation"] as? String
-          else { continue }
-          let reconciled = try jobStore.get().updateJob(
-            id: id, expectedGeneration: generation
-          ) { current in
-            guard current["localDeletedAt"] as? String == nil else { return }
-            current["localDeletedAt"] = Self.isoFormatter.string(from: Date())
-            current["cleanupReason"] = "存储空间不足提前清理"
-            current["waitingCleanup"] = false
-          }
-          jobsChanged = jobsChanged || reconciled
-          continue
-        }
-        guard sha256(file: file) == expectedSha256 else {
-          var updated = job
-          let message = "录像文件已被替换，已取消空间清理"
-          if updated["errorMessage"] as? String != message {
-            updated["errorMessage"] = message
-            try upsert(updated)
+          switch try performAtomicCleanup(
+            job: job, allowedStates: ["completed"],
+            reason: "存储空间不足提前清理"
+          ) {
+          case .reconciledMissing:
             jobsChanged = true
+          case .deleted(let bytes):
+            deletedCount += 1
+            freedBytes += bytes
+            jobsChanged = true
+          case .stale, .busy, .failed:
+            break
           }
           continue
         }
-
         let attestation = await storageAttestation(
           job,
           contentSha256: expectedSha256,
           totalBytes: totalBytes
         )
         guard let receiptSignature = attestation else {
-          var updated = job
           let message = "暂时无法向电脑确认备份，已保留本地录像"
-          if updated["errorMessage"] as? String != message {
-            updated["errorMessage"] = message
-            try upsert(updated)
-            jobsChanged = true
+          if job["errorMessage"] as? String != message,
+             let id = job["id"] as? String,
+             let generation = job["generation"] as? String {
+            jobsChanged = try jobStore.get().updateJob(
+              id: id, expectedGeneration: generation
+            ) { $0["errorMessage"] = message } || jobsChanged
           }
           continue
         }
@@ -819,41 +900,49 @@ final class IosBackupHostApi: BackupNativeHostApi {
           currentJob["contentSha256"] as? String == expectedSha256
         else { continue }
 
-        currentJob["verificationReceipt"] = receiptSignature
-        currentJob["lastAttestedAt"] = Self.isoFormatter.string(from: Date())
-        switch deleteExpected(
-          file: file,
-          expectedBytes: totalBytes,
-          expectedLastModified: currentJob["lastModified"] as? Int64 ?? -1,
-          expectedSha256: expectedSha256
+        guard let generation = currentJob["generation"] as? String,
+              try jobStore.get().updateJob(
+                id: currentJob["id"] as? String ?? "",
+                expectedGeneration: generation,
+                mutate: { stored in
+                stored["verificationReceipt"] = receiptSignature
+                stored["lastAttestedAt"] = Self.isoFormatter.string(from: Date())
+              }),
+              let refreshed = try readJobById(currentJob["id"] as? String ?? "")
+        else { continue }
+        currentJob = refreshed
+        switch try performAtomicCleanup(
+          job: currentJob, allowedStates: ["completed"],
+          reason: "存储空间不足提前清理"
         ) {
-        case .deleted:
+        case .deleted(let bytes):
           deletedCount += 1
-          freedBytes += totalBytes
-          currentJob["localDeletedAt"] = Self.isoFormatter.string(from: Date())
-          currentJob["cleanupReason"] = "存储空间不足提前清理"
-        case .missing:
-          continue
+          freedBytes += bytes
+          jobsChanged = true
+          current = availableStorageBytes()
+        case .reconciledMissing:
+          jobsChanged = true
         case .stale:
           let message = "录像文件已被替换，已取消空间清理"
           if currentJob["errorMessage"] as? String != message {
-            currentJob["errorMessage"] = message
-            try upsert(currentJob)
-            jobsChanged = true
+            jobsChanged = try jobStore.get().updateJob(
+              id: currentJob["id"] as? String ?? "",
+              expectedGeneration: generation
+            ) { $0["errorMessage"] = message } || jobsChanged
           }
+          continue
+        case .busy:
           continue
         case .failed:
           let message = "空间清理失败，已保留本机录像"
           if currentJob["errorMessage"] as? String != message {
-            currentJob["errorMessage"] = message
-            try upsert(currentJob)
-            jobsChanged = true
+            jobsChanged = try jobStore.get().updateJob(
+              id: currentJob["id"] as? String ?? "",
+              expectedGeneration: generation
+            ) { $0["errorMessage"] = message } || jobsChanged
           }
           continue
         }
-        try upsert(currentJob)
-        jobsChanged = true
-        current = availableStorageBytes()
         }
         afterCreatedAtKey = page.nextCreatedAtKey
         afterId = page.nextId
@@ -909,16 +998,216 @@ final class IosBackupHostApi: BackupNativeHostApi {
     return receiptSignature
   }
 
-  private func sha256(file: URL) -> String? {
-    guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
-    defer { try? handle.close() }
-    var hasher = SHA256()
+  private func recoverCleanupIntents() throws {
+    var afterToken: String?
     while true {
-      let data = handle.readData(ofLength: 1024 * 1024)
-      if data.isEmpty { break }
-      hasher.update(data: data)
+      let intents = try jobStore.get().cleanupIntents(
+        afterToken: afterToken, limit: 100, recoverableOnly: true
+      )
+      if intents.isEmpty { return }
+      for intent in intents {
+        _ = try resumeCleanupIntent(intent)
+      }
+      guard intents.count == 100 else { return }
+      afterToken = intents.last?.token
     }
-    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+  }
+
+  @discardableResult
+  private func resumeCleanupIntent(_ originalIntent: IosBackupCleanupIntent) throws -> Bool {
+    var intent = originalIntent
+    let originalExists = FileManager.default.fileExists(atPath: intent.originalPath)
+    let tombstoneExists = FileManager.default.fileExists(atPath: intent.tombstonePath)
+    // 原路径重新出现意味着可能已有新录像占用。无论 tombstone 是否为旧目标，
+    // 都不能继续提交或删除任一路径，留待显式冲突处理。
+    if intent.phase != "committed" && originalExists && tombstoneExists {
+      _ = try jobStore.get().updateCleanupIntentPhase(
+        token: intent.token, from: intent.phase, to: "conflict"
+      )
+      return true
+    }
+
+    if intent.phase == "claimed" {
+      guard let activated = try jobStore.get().activateCleanupIntent(
+        token: intent.token
+      ) else {
+        try jobStore.get().abandonCleanupIntent(token: intent.token)
+        return true
+      }
+      intent = activated
+    }
+
+    if intent.phase == "moving" {
+      if tombstoneExists {
+        guard cleanupPathMatchesIntent(intent.tombstonePath, intent: intent) else {
+          return false
+        }
+        _ = try jobStore.get().updateCleanupIntentPhase(
+          token: intent.token, from: "moving", to: "renamed"
+        )
+        intent = replacingPhase(intent, "renamed")
+      } else if !originalExists {
+        _ = try jobStore.get().updateCleanupIntentPhase(
+          token: intent.token, from: "moving", to: "renamed"
+        )
+        intent = replacingPhase(intent, "renamed")
+      } else {
+        guard cleanupPathMatchesIntent(intent.originalPath, intent: intent) else {
+          _ = try jobStore.get().updateCleanupIntentPhase(
+            token: intent.token, from: "moving", to: "conflict"
+          )
+          return true
+        }
+        guard Darwin.rename(intent.originalPath, intent.tombstonePath) == 0 else {
+          return false
+        }
+        _ = try jobStore.get().updateCleanupIntentPhase(
+          token: intent.token, from: "moving", to: "renamed"
+        )
+        intent = replacingPhase(intent, "renamed")
+      }
+    }
+
+    if intent.phase == "renamed" {
+      if FileManager.default.fileExists(atPath: intent.originalPath) {
+        _ = try jobStore.get().updateCleanupIntentPhase(
+          token: intent.token, from: "renamed", to: "conflict"
+        )
+        return true
+      }
+      guard try jobStore.get().commitCleanupIntent(token: intent.token) else {
+        return false
+      }
+      intent = replacingPhase(intent, "committed")
+    }
+
+    guard intent.phase == "committed" else { return false }
+    if FileManager.default.fileExists(atPath: intent.tombstonePath) {
+      guard cleanupPathMatchesIntent(intent.tombstonePath, intent: intent) else {
+        return false
+      }
+      guard unlink(intent.tombstonePath) == 0 || errno == ENOENT else { return false }
+    }
+    try jobStore.get().finishCleanupIntent(token: intent.token)
+    return true
+  }
+
+  private func replacingPhase(
+    _ intent: IosBackupCleanupIntent, _ phase: String
+  ) -> IosBackupCleanupIntent {
+    IosBackupCleanupIntent(
+      token: intent.token, jobId: intent.jobId, generation: intent.generation,
+      originalPath: intent.originalPath, tombstonePath: intent.tombstonePath,
+      expectedBytes: intent.expectedBytes,
+      expectedModifiedAtMilliseconds: intent.expectedModifiedAtMilliseconds,
+      expectedDevice: intent.expectedDevice, expectedInode: intent.expectedInode,
+      expectedSha256: intent.expectedSha256, reason: intent.reason,
+      completedState: intent.completedState,
+      completedErrorMessage: intent.completedErrorMessage,
+      allowedStates: intent.allowedStates, phase: phase
+    )
+  }
+
+  private func cleanupPathMatchesIntent(
+    _ path: String, intent: IosBackupCleanupIntent
+  ) -> Bool {
+    guard let proof = try? IosBackupCleanupFileProof(
+      url: URL(fileURLWithPath: path)
+    ) else {
+      return false
+    }
+    return proof.identity.device == intent.expectedDevice
+      && proof.identity.inode == intent.expectedInode
+      && proof.identity.byteCount == intent.expectedBytes
+      && proof.identity.modifiedAtMilliseconds == intent.expectedModifiedAtMilliseconds
+      && (intent.expectedSha256?.isEmpty != false
+        || proof.sha256 == intent.expectedSha256)
+  }
+
+  private func performAtomicCleanup(
+    job: [String: Any], allowedStates: Set<String>, reason: String,
+    completedState: String? = nil, completedErrorMessage: String? = nil
+  ) throws -> AtomicCleanupResult {
+    guard let id = job["id"] as? String,
+          let generation = job["generation"] as? String,
+          let path = job["filePath"] as? String
+    else { return .failed }
+    let file = URL(fileURLWithPath: path)
+    let tombstone = file.deletingLastPathComponent().appendingPathComponent(
+      ".\(file.lastPathComponent).packingproof-cleanup-\(UUID().uuidString)"
+    )
+    let proof: IosBackupCleanupFileProof?
+    if FileManager.default.fileExists(atPath: path) {
+      do {
+        proof = try IosBackupCleanupFileProof(url: file)
+      } catch {
+        return .failed
+      }
+      guard let proof,
+            proof.identity.byteCount == int64(job["totalBytes"]),
+            proof.identity.modifiedAtMilliseconds == int64(job["lastModified"]),
+            (job["contentSha256"] as? String).map({ $0.isEmpty || $0 == proof.sha256 }) ?? true
+      else { return .stale }
+    } else {
+      proof = nil
+    }
+
+    beforeCleanupIntentClaimForTesting?(job)
+    if let proof, !proof.pathStillReferencesOpenedFile(path) { return .stale }
+    let intent = try jobStore.get().beginCleanupIntent(
+      jobId: id, expectedGeneration: generation, allowedStates: allowedStates,
+      originalPath: path, tombstonePath: tombstone.path,
+      expectedBytes: proof?.identity.byteCount ?? int64(job["totalBytes"]),
+      expectedModifiedAtMilliseconds: proof?.identity.modifiedAtMilliseconds
+        ?? int64(job["lastModified"]),
+      expectedDevice: proof?.identity.device ?? 0,
+      expectedInode: proof?.identity.inode ?? 0,
+      expectedSha256: proof?.sha256 ?? job["contentSha256"] as? String,
+      reason: reason,
+      completedState: completedState, completedErrorMessage: completedErrorMessage
+    )
+    guard let intent else { return .busy }
+    guard let movingIntent = try jobStore.get().activateCleanupIntent(
+      token: intent.token
+    ) else {
+      try jobStore.get().abandonCleanupIntent(token: intent.token)
+      return .busy
+    }
+    try beforeCleanupRenameForTesting?(movingIntent)
+
+    if let proof {
+      guard proof.pathStillReferencesOpenedFile(path),
+            !FileManager.default.fileExists(atPath: tombstone.path)
+      else {
+        _ = try jobStore.get().updateCleanupIntentPhase(
+          token: movingIntent.token, from: "moving", to: "conflict"
+        )
+        return .stale
+      }
+      guard Darwin.rename(path, tombstone.path) == 0 else {
+        return .failed
+      }
+      guard proof.pathStillReferencesOpenedFile(tombstone.path) else {
+        if !FileManager.default.fileExists(atPath: path) {
+          _ = Darwin.rename(tombstone.path, path)
+        }
+        return .failed
+      }
+    }
+    _ = try jobStore.get().updateCleanupIntentPhase(
+      token: movingIntent.token, from: "moving", to: "renamed"
+    )
+    try afterCleanupRenameForTesting?(movingIntent)
+    guard !FileManager.default.fileExists(atPath: path) else { return .failed }
+    guard try jobStore.get().commitCleanupIntent(token: movingIntent.token) else {
+      return .busy
+    }
+    try afterCleanupCommitForTesting?(replacingPhase(movingIntent, "committed"))
+    if proof != nil {
+      guard unlink(tombstone.path) == 0 || errno == ENOENT else { return .failed }
+    }
+    try jobStore.get().finishCleanupIntent(token: movingIntent.token)
+    return proof == nil ? .reconciledMissing : .deleted(bytes: proof!.identity.byteCount)
   }
 
   func getNetworkDiagnostics(
@@ -1243,6 +1532,13 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func runUploadDispatcher() async {
+    do {
+      try await withMaintenanceSlot { try recoverCleanupIntents() }
+    } catch {
+      NSLog("PackingProof cleanup recovery failed before upload: %@", error.localizedDescription)
+      withUploadsLock { uploadDispatcherTask = nil }
+      return
+    }
     while !Task.isCancelled {
       withUploadsLock { uploadDispatchRequested = false }
 
@@ -1973,8 +2269,27 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func performCleanupUncoordinated() async throws {
+    try recoverCleanupIntents()
     let root = recordingsDirectory().path + "/"
     let now = Date()
+    func persistCleanupStatus(
+      id: String, generation: String, proposed: [String: Any]
+    ) throws -> Bool {
+      try jobStore.get().updateJob(
+        id: id, expectedGeneration: generation
+      ) { stored in
+        for key in [
+          "waitingCleanup", "errorMessage", "lastAttestedAt",
+          "verificationReceipt",
+        ] {
+          if let value = proposed[key] {
+            stored[key] = value
+          } else {
+            stored.removeValue(forKey: key)
+          }
+        }
+      }
+    }
     var changed = false
     var afterId: String?
     var storedPage: [[String: Any]]
@@ -2005,8 +2320,11 @@ final class IosBackupHostApi: BackupNativeHostApi {
         if !hasEvidence {
           baseJob["waitingCleanup"] = true
           baseJob["errorMessage"] = "备份记录缺少安全校验信息，需重新备份后才能自动清理"
-          try upsert(baseJob)
-          changed = true
+          if let generation = job["generation"] as? String {
+            changed = try persistCleanupStatus(
+              id: id, generation: generation, proposed: baseJob
+            ) || changed
+          }
           continue
         }
 
@@ -2039,64 +2357,79 @@ final class IosBackupHostApi: BackupNativeHostApi {
         case .missing:
           baseJob["waitingCleanup"] = false
           baseJob["errorMessage"] = "远端缺失，待重新备份"
-          try upsert(baseJob)
-          changed = true
+          changed = try persistCleanupStatus(
+            id: id, generation: job["generation"] as? String ?? "",
+            proposed: baseJob
+          ) || changed
           continue
         case .unauthorized:
           baseJob["waitingCleanup"] = false
           baseJob["errorMessage"] = "需要重新扫码授权"
-          try upsert(baseJob)
-          changed = true
+          changed = try persistCleanupStatus(
+            id: id, generation: job["generation"] as? String ?? "",
+            proposed: baseJob
+          ) || changed
           continue
         case .notReady:
           baseJob["waitingCleanup"] = true
           baseJob["errorMessage"] = "电脑端尚未完成校验"
-          try upsert(baseJob)
-          changed = true
+          changed = try persistCleanupStatus(
+            id: id, generation: job["generation"] as? String ?? "",
+            proposed: baseJob
+          ) || changed
           continue
         case .unreachable:
           baseJob["waitingCleanup"] = true
           baseJob["errorMessage"] = "暂时无法向电脑确认备份，已保留本地录像"
-          try upsert(baseJob)
-          changed = true
+          changed = try persistCleanupStatus(
+            id: id, generation: job["generation"] as? String ?? "",
+            proposed: baseJob
+          ) || changed
           continue
         }
       }
 
-      let file = URL(fileURLWithPath: path)
-      switch deleteExpected(
-        file: file,
-        expectedBytes: baseJob["totalBytes"] as? Int64 ?? -1,
-        expectedLastModified: baseJob["lastModified"] as? Int64 ?? -1,
-        expectedSha256: baseJob["contentSha256"] as? String
+      guard let generation = baseJob["generation"] as? String,
+            let currentState = baseJob["state"] as? String
+      else { continue }
+      if completedAt != nil {
+        guard try jobStore.get().updateJob(
+          id: id, expectedGeneration: generation,
+          mutate: { stored in
+          stored["lastAttestedAt"] = baseJob["lastAttestedAt"]
+          stored["verificationReceipt"] = baseJob["verificationReceipt"]
+        }), let refreshed = try readJobById(id)
+        else { continue }
+        baseJob = refreshed
+      }
+      let reason = completedAt == nil
+        ? "未备份录像保留策略清理" : "已备份录像保留策略清理"
+      switch try performAtomicCleanup(
+        job: baseJob, allowedStates: [currentState], reason: reason,
+        completedState: completedAt == nil ? "expired" : nil,
+        completedErrorMessage: completedAt == nil
+          ? "未备份录像已按保留策略清理" : nil
       ) {
       case .stale:
         baseJob["waitingCleanup"] = false
         baseJob["errorMessage"] = "录像文件已被替换，已取消本次自动清理"
-        try upsert(baseJob)
-        changed = true
+        changed = try jobStore.get().updateJob(
+          id: id, expectedGeneration: generation
+        ) { stored in
+          stored["waitingCleanup"] = false
+          stored["errorMessage"] = "录像文件已被替换，已取消本次自动清理"
+        } || changed
         continue
       case .failed:
-        baseJob["waitingCleanup"] = true
-        try upsert(baseJob)
-        changed = true
+        changed = try jobStore.get().updateJob(
+          id: id, expectedGeneration: generation
+        ) { $0["waitingCleanup"] = true } || changed
         continue
-      case .deleted, .missing:
-        break
+      case .busy:
+        continue
+      case .deleted(_), .reconciledMissing:
+        changed = true
       }
-
-      baseJob["localDeletedAt"] = Self.isoFormatter.string(from: now)
-      baseJob["scheduledCleanupAt"] = nil
-      baseJob["waitingCleanup"] = false
-      if completedAt == nil {
-        baseJob["cleanupReason"] = "未备份录像保留策略清理"
-        baseJob["state"] = "expired"
-        baseJob["errorMessage"] = "未备份录像已按保留策略清理"
-      } else {
-        baseJob["cleanupReason"] = "已备份录像保留策略清理"
-      }
-      try upsert(baseJob)
-      changed = true
       }
       afterId = storedPage.last?["id"] as? String
     } while storedPage.count == 100
@@ -2242,31 +2575,6 @@ final class IosBackupHostApi: BackupNativeHostApi {
     return result == 0
   }
 
-  private func deleteExpected(
-    file: URL,
-    expectedBytes: Int64,
-    expectedLastModified: Int64,
-    expectedSha256: String?
-  ) -> FileCleanupResult {
-    guard FileManager.default.fileExists(atPath: file.path) else { return .missing }
-    let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
-    let size = (attributes?[.size] as? NSNumber)?.int64Value ?? -1
-    let modified = attributes?[.modificationDate] as? Date
-    let modifiedMs = modified.map { Int64($0.timeIntervalSince1970 * 1000) } ?? -1
-    if expectedBytes > 0 && size != expectedBytes { return .stale }
-    if expectedLastModified > 0 && modifiedMs != expectedLastModified {
-      return .stale
-    }
-    if let expectedSha256, !expectedSha256.isEmpty, sha256(file: file) != expectedSha256 {
-      return .stale
-    }
-    do {
-      try FileManager.default.removeItem(at: file)
-      return .deleted
-    } catch {
-      return .failed
-    }
-  }
 }
 
 /// iOS 后台上传无法依赖 Dart isolate，因此在原生侧按稳定 NodeId 重新定位主机。

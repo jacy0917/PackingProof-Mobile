@@ -989,6 +989,94 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(storageCount, 2_500)
   }
 
+  func testCleanupIntentPaginationIsBoundedAndKeysetBased() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    for index in 0..<101 {
+      let id = String(format: "intent-%03d", index)
+      var job = makeBackupJob(id: id)
+      job["state"] = "paused"
+      try store.upsert(job)
+      XCTAssertNotNil(try store.beginCleanupIntent(
+        jobId: id, expectedGeneration: "generation-\(id)",
+        allowedStates: ["paused"], originalPath: "/recordings/\(id).mp4",
+        tombstonePath: "/recordings/.\(id).tombstone", expectedBytes: 1024,
+        expectedModifiedAtMilliseconds: 1_800_000_000_000,
+        expectedDevice: 0, expectedInode: 0, expectedSha256: nil,
+        reason: "测试清理", completedState: nil, completedErrorMessage: nil
+      ))
+    }
+
+    let first = try store.cleanupIntents(limit: 100)
+    let second = try store.cleanupIntents(afterToken: first.last?.token, limit: 100)
+    XCTAssertEqual(first.count, 100)
+    XCTAssertEqual(second.count, 1)
+    XCTAssertThrowsError(try store.cleanupIntents(limit: 101))
+  }
+
+  func testActiveCleanupIntentBlocksDifferentJobUsingSamePath() throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL, defaults: fixture.defaults
+    )
+    let sharedPath = "/recordings/shared-cleanup.mp4"
+    var cleanupJob = makeBackupJob(id: "cleanup-owner")
+    cleanupJob["state"] = "failed"
+    cleanupJob["filePath"] = sharedPath
+    cleanupJob["failureKind"] = "incompatible_version"
+    cleanupJob["destinationComputerId"] = "cleanup-computer"
+    var queuedJob = makeBackupJob(id: "same-path-queued")
+    queuedJob["filePath"] = sharedPath
+    var movableJob = makeBackupJob(id: "move-onto-cleanup-path")
+    movableJob["state"] = "paused"
+    try store.upsert(cleanupJob)
+    try store.upsert(queuedJob)
+    try store.upsert(movableJob)
+    let claimed = try XCTUnwrap(store.beginCleanupIntent(
+      jobId: "cleanup-owner", expectedGeneration: "generation-cleanup-owner",
+      allowedStates: ["failed"], originalPath: sharedPath,
+      tombstonePath: "/recordings/.shared-cleanup.tombstone",
+      expectedBytes: 1024,
+      expectedModifiedAtMilliseconds: 1_800_000_000_000,
+      expectedDevice: 0, expectedInode: 0, expectedSha256: nil,
+      reason: "测试同路径屏障", completedState: nil,
+      completedErrorMessage: nil
+    ))
+    XCTAssertNotNil(try store.activateCleanupIntent(token: claimed.token))
+    XCTAssertEqual(
+      try store.recoverIncompatibleFailures(
+        destinationComputerId: "cleanup-computer"
+      ),
+      0
+    )
+    XCTAssertEqual(
+      try store.readJob(id: "cleanup-owner")?["state"] as? String,
+      "failed"
+    )
+
+    var newJob = makeBackupJob(id: "same-path-new")
+    newJob["filePath"] = sharedPath
+    XCTAssertThrowsError(try store.upsert(newJob)) { error in
+      XCTAssertEqual((error as? IosBackupStoreError)?.code, SQLITE_BUSY)
+    }
+    XCTAssertThrowsError(
+      try store.updateJob(id: "move-onto-cleanup-path") {
+        $0["filePath"] = sharedPath
+      }
+    ) { error in
+      XCTAssertEqual((error as? IosBackupStoreError)?.code, SQLITE_BUSY)
+    }
+    XCTAssertNil(try store.claimNextUploadJob())
+    XCTAssertEqual(
+      try store.readJob(id: "same-path-queued")?["state"] as? String,
+      "pending"
+    )
+  }
+
   func testBackupJobStoreRejectsUnopenableAndCorruptDatabases() throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
@@ -1386,6 +1474,303 @@ class RunnerTests: XCTestCase {
     let events = try fixture.store.cleanupEvents(afterRevision: 0, limit: 10).events
     XCTAssertEqual(events.count, 1)
     XCTAssertEqual(events.first?["jobId"] as? String, updated["id"] as? String)
+  }
+
+  func testRetentionCleanupRejectsRetryThatWinsBeforeIntentClaim() async throws {
+    var fixture: RetentionCleanupFixture!
+    fixture = try makeRetentionCleanupFixture(
+      id: "cleanup-retry-before-claim",
+      beforeCleanupIntentClaimForTesting: { job in
+        _ = try? fixture.store.updateJob(id: job["id"] as? String ?? "") { current in
+          current["generation"] = "retry-generation"
+          current["state"] = "pending"
+        }
+      }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    try fixture.store.upsert(fixture.job)
+
+    try await fixture.api.performCleanup()
+
+    XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
+    let current = try XCTUnwrap(fixture.store.readJob(id: "cleanup-retry-before-claim"))
+    XCTAssertEqual(current["generation"] as? String, "retry-generation")
+    XCTAssertEqual(current["state"] as? String, "pending")
+    XCTAssertNil(current["localDeletedAt"])
+  }
+
+  func testRetentionCleanupNeverClaimsUploadingJob() async throws {
+    let fixture = try makeRetentionCleanupFixture(id: "cleanup-uploading")
+    defer { removeRetentionCleanupFixture(fixture) }
+    var job = fixture.job
+    job["state"] = "uploading"
+    try fixture.store.upsert(job)
+
+    try await fixture.api.performCleanup()
+
+    XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
+    XCTAssertNil(try fixture.store.readJob(id: "cleanup-uploading")?["localDeletedAt"])
+  }
+
+  func testRetentionCleanupRejectsSameSizeAndMtimePathReplacement() async throws {
+    var fixture: RetentionCleanupFixture!
+    fixture = try makeRetentionCleanupFixture(
+      id: "cleanup-same-stat-replacement",
+      beforeCleanupIntentClaimForTesting: { _ in
+        let original = try? Data(contentsOf: fixture.file)
+        let attributes = try? FileManager.default.attributesOfItem(
+          atPath: fixture.file.path
+        )
+        let modified = attributes?[.modificationDate] as? Date
+        var replacement = original ?? Data()
+        if !replacement.isEmpty { replacement[0] ^= 0xff }
+        try? FileManager.default.removeItem(at: fixture.file)
+        try? replacement.write(to: fixture.file)
+        if let modified {
+          try? FileManager.default.setAttributes(
+            [.modificationDate: modified], ofItemAtPath: fixture.file.path
+          )
+        }
+        let replacedSnapshot = try? IosBackupFileSnapshot.read(from: fixture.file)
+        XCTAssertEqual(replacedSnapshot?.byteCount, fixture.job["totalBytes"] as? Int64)
+        XCTAssertEqual(
+          replacedSnapshot?.modifiedAtMilliseconds,
+          fixture.job["lastModified"] as? Int64
+        )
+        XCTAssertNotEqual(replacement, original)
+      }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    try fixture.store.upsert(fixture.job)
+
+    try await fixture.api.performCleanup()
+
+    XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
+    XCTAssertEqual(
+      try Data(contentsOf: fixture.file).count,
+      (fixture.job["totalBytes"] as? Int64).map(Int.init)
+    )
+    XCTAssertNil(
+      try fixture.store.readJob(id: "cleanup-same-stat-replacement")?["localDeletedAt"]
+    )
+  }
+
+  func testRetentionCleanupRejectsInPlaceMutationAfterHash() async throws {
+    var fixture: RetentionCleanupFixture!
+    fixture = try makeRetentionCleanupFixture(
+      id: "cleanup-in-place-mutation",
+      beforeCleanupIntentClaimForTesting: { _ in
+        if let handle = try? FileHandle(forWritingTo: fixture.file) {
+          _ = try? handle.seekToEnd()
+          try? handle.write(contentsOf: Data("changed-after-hash".utf8))
+          try? handle.close()
+        }
+      }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    try fixture.store.upsert(fixture.job)
+
+    try await fixture.api.performCleanup()
+
+    XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
+    XCTAssertGreaterThan(
+      try Data(contentsOf: fixture.file).count,
+      Int(fixture.job["totalBytes"] as? Int64 ?? 0)
+    )
+    XCTAssertNil(
+      try fixture.store.readJob(id: "cleanup-in-place-mutation")?["localDeletedAt"]
+    )
+  }
+
+  func testCleanupRecoversRenameCrashAndEmitsExactlyOneEvent() async throws {
+    let fixture = try makeRetentionCleanupFixture(
+      id: "cleanup-rename-crash",
+      afterCleanupRenameForTesting: { _ in throw MaintenanceTestError.expected }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    try fixture.store.upsert(fixture.job)
+
+    do {
+      try await fixture.api.performCleanup()
+      XCTFail("rename 后注入崩溃必须中断提交")
+    } catch {
+      XCTAssertTrue(error is MaintenanceTestError)
+    }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.file.path))
+    XCTAssertNil(try fixture.store.readJob(id: "cleanup-rename-crash")?["localDeletedAt"])
+
+    let recoveredApi = makeBackupApi(
+      defaults: fixture.defaults, store: fixture.store,
+      recordingsRoot: fixture.root.appendingPathComponent("recordings")
+    )
+    try await recoveredApi.performCleanup()
+    try await recoveredApi.performCleanup()
+
+    XCTAssertNotNil(try fixture.store.readJob(id: "cleanup-rename-crash")?["localDeletedAt"])
+    let events = try fixture.store.cleanupEvents(afterRevision: 0, limit: 10).events
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events.first?["jobId"] as? String, "cleanup-rename-crash")
+  }
+
+  func testCleanupRecoveryPreservesBothPathsConflict() async throws {
+    var fixture: RetentionCleanupFixture!
+    fixture = try makeRetentionCleanupFixture(
+      id: "cleanup-both-paths",
+      afterCleanupRenameForTesting: { intent in
+        try Data("new-recording-must-survive".utf8).write(
+          to: URL(fileURLWithPath: intent.originalPath)
+        )
+        throw MaintenanceTestError.expected
+      }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    try fixture.store.upsert(fixture.job)
+    try? await fixture.api.performCleanup()
+
+    let recoveredApi = makeBackupApi(
+      defaults: fixture.defaults, store: fixture.store,
+      recordingsRoot: fixture.root.appendingPathComponent("recordings")
+    )
+    try await recoveredApi.performCleanup()
+
+    XCTAssertEqual(
+      try Data(contentsOf: fixture.file), Data("new-recording-must-survive".utf8)
+    )
+    XCTAssertNil(try fixture.store.readJob(id: "cleanup-both-paths")?["localDeletedAt"])
+    let intent = try XCTUnwrap(fixture.store.cleanupIntents().first)
+    XCTAssertEqual(intent.phase, "conflict")
+  }
+
+  func testRenamedRecoveryNeverCommitsWhenOriginalPathReappears() async throws {
+    var fixture: RetentionCleanupFixture!
+    fixture = try makeRetentionCleanupFixture(
+      id: "cleanup-renamed-original-only",
+      afterCleanupRenameForTesting: { intent in
+        try FileManager.default.removeItem(
+          at: URL(fileURLWithPath: intent.tombstonePath)
+        )
+        try Data("replacement-recording".utf8).write(
+          to: URL(fileURLWithPath: intent.originalPath)
+        )
+        throw MaintenanceTestError.expected
+      }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    try fixture.store.upsert(fixture.job)
+    try? await fixture.api.performCleanup()
+
+    let recoveredApi = makeBackupApi(
+      defaults: fixture.defaults, store: fixture.store,
+      recordingsRoot: fixture.root.appendingPathComponent("recordings")
+    )
+    try await recoveredApi.performCleanup()
+
+    XCTAssertEqual(
+      try Data(contentsOf: fixture.file), Data("replacement-recording".utf8)
+    )
+    XCTAssertNil(
+      try fixture.store.readJob(id: "cleanup-renamed-original-only")?["localDeletedAt"]
+    )
+    XCTAssertEqual(try fixture.store.cleanupIntents().first?.phase, "conflict")
+  }
+
+  func testMovingIntentRejectsGenerationChange() async throws {
+    var fixture: RetentionCleanupFixture!
+    var rejected = false
+    var enqueueError: Error?
+    fixture = try makeRetentionCleanupFixture(
+      id: "cleanup-moving-generation",
+      beforeCleanupRenameForTesting: { _ in
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
+        do {
+          _ = try fixture.store.updateJob(id: "cleanup-moving-generation") {
+            $0["generation"] = "must-not-win"
+            $0["state"] = "pending"
+          }
+        } catch {
+          rejected = true
+        }
+        fixture.api.enqueueJob(
+          request: [
+            "id": "different-job-same-path",
+            "filePath": fixture.file.path,
+            "sessions": [["id": "different-session"]],
+            "startUpload": false,
+          ]
+        ) { result in
+          if case .failure(let error) = result { enqueueError = error }
+        }
+        throw MaintenanceTestError.expected
+      }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    try fixture.store.upsert(fixture.job)
+
+    try? await fixture.api.performCleanup()
+
+    XCTAssertTrue(rejected)
+    XCTAssertEqual((enqueueError as? IosBackupStoreError)?.code, SQLITE_BUSY)
+    XCTAssertNil(try fixture.store.readJob(id: "different-job-same-path"))
+    XCTAssertEqual(
+      try fixture.store.readJob(id: "cleanup-moving-generation")?["generation"] as? String,
+      fixture.job["generation"] as? String
+    )
+    XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
+    let recoveredApi = makeBackupApi(
+      defaults: fixture.defaults, store: fixture.store,
+      recordingsRoot: fixture.root.appendingPathComponent("recordings")
+    )
+    try await recoveredApi.performCleanup()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.file.path))
+  }
+
+  func testCleanupRecoversCommitBeforeTombstoneUnlinkExactlyOnce() async throws {
+    let fixture = try makeRetentionCleanupFixture(
+      id: "cleanup-commit-crash",
+      afterCleanupCommitForTesting: { _ in throw MaintenanceTestError.expected }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    try fixture.store.upsert(fixture.job)
+    try? await fixture.api.performCleanup()
+
+    XCTAssertNotNil(try fixture.store.readJob(id: "cleanup-commit-crash")?["localDeletedAt"])
+    XCTAssertEqual(try fixture.store.cleanupEvents(afterRevision: 0, limit: 10).events.count, 1)
+    XCTAssertEqual(try fixture.store.cleanupIntents().first?.phase, "committed")
+
+    let recoveredApi = makeBackupApi(
+      defaults: fixture.defaults, store: fixture.store,
+      recordingsRoot: fixture.root.appendingPathComponent("recordings")
+    )
+    try await recoveredApi.performCleanup()
+    try await recoveredApi.performCleanup()
+
+    XCTAssertTrue(try fixture.store.cleanupIntents().isEmpty)
+    XCTAssertEqual(try fixture.store.cleanupEvents(afterRevision: 0, limit: 10).events.count, 1)
+  }
+
+  func testStorageReclaimRejectsRetryBeforeIntentClaim() async throws {
+    var fixture: RetentionCleanupFixture!
+    fixture = try makeRetentionCleanupFixture(
+      id: "storage-retry-before-claim",
+      availableStorageBytesOverride: { 0 },
+      storageAttestationOverride: { _, _, _ in "fresh-signed-receipt" },
+      beforeCleanupIntentClaimForTesting: { job in
+        _ = try? fixture.store.updateJob(id: job["id"] as? String ?? "") { current in
+          current["generation"] = "storage-retry-generation"
+          current["state"] = "pending"
+        }
+      }
+    )
+    defer { removeRetentionCleanupFixture(fixture) }
+    try fixture.store.upsert(makeVerifiedStorageReclaimJob(fixture.job))
+
+    let result = try await awaitStorageReclaim(fixture.api)
+
+    XCTAssertEqual(result["deletedCount"] as? Int, 0)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.file.path))
+    let current = try XCTUnwrap(fixture.store.readJob(id: "storage-retry-before-claim"))
+    XCTAssertEqual(current["state"] as? String, "pending")
+    XCTAssertNil(current["localDeletedAt"])
   }
 
   func testMaintenanceCoordinatorSerializesOneThousandMixedOperations()
@@ -2303,7 +2688,8 @@ class RunnerTests: XCTestCase {
       (([String: Any], IosBackupUploadIdentity) async -> Void)? = nil,
     storageReclaimOperationOverride:
       (() async throws -> [String?: Any?])? = nil,
-    cleanupOperationOverride: (() async throws -> Void)? = nil
+    cleanupOperationOverride: (() async throws -> Void)? = nil,
+    recordingsRoot: URL? = nil
   ) -> IosBackupHostApi {
     IosBackupHostApi(
       eventApi: FakeBackupNativeEventApi(),
@@ -2315,7 +2701,7 @@ class RunnerTests: XCTestCase {
         account: "access-key"
       ),
       jobStore: .success(store),
-      recordingsRoot: FileManager.default.temporaryDirectory,
+      recordingsRoot: recordingsRoot ?? FileManager.default.temporaryDirectory,
       uploadFailureUpdateOverride: uploadFailureUpdateOverride,
       uploadPersistenceFailureReporter: uploadPersistenceFailureReporter,
       uploadOperationOverride: uploadOperationOverride,
@@ -2334,7 +2720,11 @@ class RunnerTests: XCTestCase {
     availableStorageBytesOverride: (() -> Int64)? = nil,
     storageAttestationOverride:
       (([String: Any], String, Int64) async -> String?)? = nil,
-    onSnapshot: ((BackupSummaryDto) -> Void)? = nil
+    onSnapshot: ((BackupSummaryDto) -> Void)? = nil,
+    beforeCleanupIntentClaimForTesting: (([String: Any]) -> Void)? = nil,
+    beforeCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil,
+    afterCleanupRenameForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil,
+    afterCleanupCommitForTesting: ((IosBackupCleanupIntent) throws -> Void)? = nil
   ) throws -> RetentionCleanupFixture {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent(
@@ -2367,7 +2757,11 @@ class RunnerTests: XCTestCase {
       jobStore: .success(store),
       recordingsRoot: recordings,
       availableStorageBytesOverride: availableStorageBytesOverride,
-      storageAttestationOverride: storageAttestationOverride
+      storageAttestationOverride: storageAttestationOverride,
+      beforeCleanupIntentClaimForTesting: beforeCleanupIntentClaimForTesting,
+      beforeCleanupRenameForTesting: beforeCleanupRenameForTesting,
+      afterCleanupRenameForTesting: afterCleanupRenameForTesting,
+      afterCleanupCommitForTesting: afterCleanupCommitForTesting
     )
     var job = makeBackupJob(id: id)
     job["filePath"] = file.path

@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import SQLite3
+import Darwin
 
 /// 备份任务的 SQLite 存储：与 Android 端 `backup_jobs` 表保持同一 schema 与字段语义，
 /// 替代旧版把全部任务塞进一个 UserDefaults 数组、每次写入全量重写的方式。
@@ -21,6 +22,24 @@ struct IosBackupCredentialError: Error, LocalizedError {
   var errorDescription: String? {
     "iOS 备份凭据\(operation)失败（Keychain \(status)）"
   }
+}
+
+struct IosBackupCleanupIntent: Equatable {
+  let token: String
+  let jobId: String
+  let generation: String
+  let originalPath: String
+  let tombstonePath: String
+  let expectedBytes: Int64
+  let expectedModifiedAtMilliseconds: Int64
+  let expectedDevice: UInt64
+  let expectedInode: UInt64
+  let expectedSha256: String?
+  let reason: String
+  let completedState: String?
+  let completedErrorMessage: String?
+  let allowedStates: Set<String>
+  let phase: String
 }
 
 protocol IosKeychainClient {
@@ -256,6 +275,15 @@ final class IosBackupJobStore {
     lock.lock()
     defer { lock.unlock() }
     try writeTransactionUnlocked(operation: "保存任务") {
+      if let id = rawJob["id"] as? String,
+         try prepareJobMutationUnlocked(
+           jobId: id, filePath: rawJob["filePath"] as? String
+         ) == false {
+        throw IosBackupStoreError(
+          operation: "保存任务", code: SQLITE_BUSY,
+          message: "录像正在完成原子清理，请稍后重试"
+        )
+      }
       try writeJobUnlocked(rawJob)
     }
   }
@@ -266,7 +294,23 @@ final class IosBackupJobStore {
     var updated = false
     try writeTransactionUnlocked(operation: "更新任务") {
       guard var job = try readJobUnlocked(id) else { return }
+      guard try prepareJobMutationUnlocked(
+        jobId: id, filePath: job["filePath"] as? String
+      ) else {
+        throw IosBackupStoreError(
+          operation: "更新任务", code: SQLITE_BUSY,
+          message: "录像正在完成原子清理，请稍后重试"
+        )
+      }
       mutate(&job)
+      guard try prepareJobMutationUnlocked(
+        jobId: id, filePath: job["filePath"] as? String
+      ) else {
+        throw IosBackupStoreError(
+          operation: "更新任务路径", code: SQLITE_BUSY,
+          message: "录像路径正在完成原子清理，请稍后重试"
+        )
+      }
       try writeJobUnlocked(job)
       updated = true
     }
@@ -281,7 +325,12 @@ final class IosBackupJobStore {
     try execute("BEGIN IMMEDIATE", operation: "开始恢复兼容任务")
     do {
       let selection =
-        "destination_computer_id = ? AND state = 'failed' AND failure_kind = 'incompatible_version'"
+        "destination_computer_id = ? AND state = 'failed' "
+        + "AND failure_kind = 'incompatible_version' "
+        + "AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i "
+        + "WHERE (i.job_id = backup_jobs.id "
+        + "OR i.original_path = backup_jobs.file_path) "
+        + "AND i.phase IN ('moving','renamed'))"
       func failureCount() throws -> Int {
         var statement: OpaquePointer?
         try prepare(
@@ -351,12 +400,24 @@ final class IosBackupJobStore {
         try execute("ROLLBACK", operation: "取消过期任务更新")
         return false
       }
+      guard try prepareJobMutationUnlocked(
+        jobId: id, filePath: job["filePath"] as? String
+      ) else {
+        try execute("ROLLBACK", operation: "取消清理中的任务更新")
+        return false
+      }
       mutate(&job)
       guard job["generation"] as? String == expectedGeneration else {
         throw IosBackupStoreError(
           operation: "校验任务代次", code: SQLITE_CONSTRAINT,
           message: "按代次更新不得修改 generation"
         )
+      }
+      guard try prepareJobMutationUnlocked(
+        jobId: id, filePath: job["filePath"] as? String
+      ) else {
+        try execute("ROLLBACK", operation: "取消清理路径中的任务更新")
+        return false
       }
       try writeJobUnlocked(job)
       try execute("COMMIT", operation: "提交按代次任务更新")
@@ -371,7 +432,16 @@ final class IosBackupJobStore {
     lock.lock()
     defer { lock.unlock() }
     try writeTransactionUnlocked(operation: "删除任务") {
-      guard let current = try readJobUnlocked(id) else { return }
+      let current = try readJobUnlocked(id)
+      guard try prepareJobMutationUnlocked(
+        jobId: id, filePath: current?["filePath"] as? String
+      ) else {
+        throw IosBackupStoreError(
+          operation: "删除任务", code: SQLITE_BUSY,
+          message: "录像正在完成原子清理，请稍后重试"
+        )
+      }
+      guard let current else { return }
       _ = try nextRevisionUnlocked()
       try deleteUnlocked(id)
       try adjustSummaryCountersUnlocked(previous: current, current: nil)
@@ -403,11 +473,11 @@ final class IosBackupJobStore {
     try execute("BEGIN IMMEDIATE", operation: "开始领取上传任务")
     do {
       let uploading = try firstJobUnlocked(
-        whereClause: "state = 'uploading' AND local_deleted_at IS NULL",
+        whereClause: "state = 'uploading' AND local_deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i WHERE (i.job_id = backup_jobs.id OR i.original_path = backup_jobs.file_path) AND i.phase IN ('moving','renamed'))",
         orderBy: "revision ASC, id ASC"
       )
       guard var job = try uploading ?? firstJobUnlocked(
-        whereClause: "state = 'pending' AND local_deleted_at IS NULL",
+        whereClause: "state = 'pending' AND local_deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i WHERE (i.job_id = backup_jobs.id OR i.original_path = backup_jobs.file_path) AND i.phase IN ('moving','renamed'))",
         orderBy: "revision ASC, id ASC"
       ) else {
         try execute("COMMIT", operation: "提交空上传队列领取")
@@ -438,6 +508,7 @@ final class IosBackupJobStore {
     let cursorClause = afterId == nil ? "" : " AND id > ?"
     let sql = "SELECT * FROM backup_jobs WHERE local_deleted_at IS NULL "
       + "AND state NOT IN ('pending', 'uploading')\(cursorClause) "
+      + "AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i WHERE (i.job_id = backup_jobs.id OR i.original_path = backup_jobs.file_path) AND i.phase IN ('claimed','moving','renamed')) "
       + "ORDER BY id ASC LIMIT \(limit)"
     var stmt: OpaquePointer?
     try prepare(sql, statement: &stmt, operation: "分页查询清理候选")
@@ -453,6 +524,238 @@ final class IosBackupJobStore {
       jobs.append(try jobFromRow(stmt))
     }
     return jobs
+  }
+
+  func beginCleanupIntent(
+    jobId: String, expectedGeneration: String, allowedStates: Set<String>,
+    originalPath: String, tombstonePath: String, expectedBytes: Int64,
+    expectedModifiedAtMilliseconds: Int64, expectedDevice: UInt64,
+    expectedInode: UInt64, expectedSha256: String?, reason: String,
+    completedState: String?, completedErrorMessage: String?
+  ) throws -> IosBackupCleanupIntent? {
+    lock.lock()
+    defer { lock.unlock() }
+    try execute("BEGIN IMMEDIATE", operation: "开始领取清理任务")
+    do {
+      guard let job = try readJobUnlocked(jobId),
+            job["generation"] as? String == expectedGeneration,
+            let state = job["state"] as? String,
+            allowedStates.contains(state), job["localDeletedAt"] as? String == nil,
+            job["filePath"] as? String == originalPath,
+            job["totalBytes"] as? Int64 == expectedBytes,
+            job["lastModified"] as? Int64 == expectedModifiedAtMilliseconds,
+            job["contentSha256"] == nil
+              || job["contentSha256"] as? String == expectedSha256,
+            try prepareJobMutationUnlocked(jobId: jobId, filePath: originalPath)
+      else {
+        try execute("ROLLBACK", operation: "取消过期清理领取")
+        return nil
+      }
+      if expectedDevice != 0 || expectedInode != 0 {
+        var fileInfo = stat()
+        guard lstat(originalPath, &fileInfo) == 0,
+              UInt64(fileInfo.st_dev) == expectedDevice,
+              UInt64(fileInfo.st_ino) == expectedInode,
+              Int64(fileInfo.st_size) == expectedBytes,
+              Int64(fileInfo.st_mtimespec.tv_sec) * 1000
+                + Int64(fileInfo.st_mtimespec.tv_nsec) / 1_000_000
+                == expectedModifiedAtMilliseconds
+        else {
+          try execute("ROLLBACK", operation: "取消已替换文件清理领取")
+          return nil
+        }
+      } else if FileManager.default.fileExists(atPath: originalPath) {
+        try execute("ROLLBACK", operation: "取消重新出现文件清理领取")
+        return nil
+      }
+      let intent = IosBackupCleanupIntent(
+        token: UUID().uuidString, jobId: jobId, generation: expectedGeneration,
+        originalPath: originalPath, tombstonePath: tombstonePath,
+        expectedBytes: expectedBytes,
+        expectedModifiedAtMilliseconds: expectedModifiedAtMilliseconds,
+        expectedDevice: expectedDevice, expectedInode: expectedInode,
+        expectedSha256: expectedSha256, reason: reason,
+        completedState: completedState,
+        completedErrorMessage: completedErrorMessage,
+        allowedStates: allowedStates, phase: "claimed"
+      )
+      try insertCleanupIntentUnlocked(intent)
+      try execute("COMMIT", operation: "提交清理任务领取")
+      return intent
+    } catch {
+      try? execute("ROLLBACK", operation: "回滚清理任务领取")
+      throw error
+    }
+  }
+
+  func activateCleanupIntent(token: String) throws -> IosBackupCleanupIntent? {
+    lock.lock()
+    defer { lock.unlock() }
+    try execute("BEGIN IMMEDIATE", operation: "开始激活清理意图")
+    do {
+      guard let intent = try cleanupIntentUnlocked(token: token),
+            intent.phase == "claimed",
+            let job = try readJobUnlocked(intent.jobId),
+            job["generation"] as? String == intent.generation,
+            intent.allowedStates.contains(job["state"] as? String ?? ""),
+            job["localDeletedAt"] as? String == nil,
+            job["filePath"] as? String == intent.originalPath,
+            job["totalBytes"] as? Int64 == intent.expectedBytes,
+            job["lastModified"] as? Int64 == intent.expectedModifiedAtMilliseconds,
+            job["contentSha256"] == nil
+              || job["contentSha256"] as? String == intent.expectedSha256
+      else {
+        try execute("ROLLBACK", operation: "取消过期清理激活")
+        return nil
+      }
+      if intent.expectedDevice != 0 || intent.expectedInode != 0 {
+        var fileInfo = stat()
+        guard lstat(intent.originalPath, &fileInfo) == 0,
+              UInt64(fileInfo.st_dev) == intent.expectedDevice,
+              UInt64(fileInfo.st_ino) == intent.expectedInode,
+              Int64(fileInfo.st_size) == intent.expectedBytes,
+              Int64(fileInfo.st_mtimespec.tv_sec) * 1000
+                + Int64(fileInfo.st_mtimespec.tv_nsec) / 1_000_000
+                == intent.expectedModifiedAtMilliseconds
+        else {
+          try execute("ROLLBACK", operation: "取消已替换文件清理激活")
+          return nil
+        }
+      } else if FileManager.default.fileExists(atPath: intent.originalPath) {
+        try execute("ROLLBACK", operation: "取消重新出现文件清理激活")
+        return nil
+      }
+      var statement: OpaquePointer?
+      try prepare(
+        "UPDATE backup_cleanup_intents SET phase = 'moving' WHERE token = ? AND phase = 'claimed'",
+        statement: &statement, operation: "激活清理意图"
+      )
+      defer { sqlite3_finalize(statement) }
+      try bindText(statement, 1, token)
+      guard sqlite3_step(statement) == SQLITE_DONE, sqlite3_changes(db) == 1 else {
+        throw databaseError(operation: "激活清理意图", code: sqlite3_errcode(db))
+      }
+      try execute("COMMIT", operation: "提交清理意图激活")
+      return IosBackupCleanupIntent(
+        token: intent.token, jobId: intent.jobId, generation: intent.generation,
+        originalPath: intent.originalPath, tombstonePath: intent.tombstonePath,
+        expectedBytes: intent.expectedBytes,
+        expectedModifiedAtMilliseconds: intent.expectedModifiedAtMilliseconds,
+        expectedDevice: intent.expectedDevice, expectedInode: intent.expectedInode,
+        expectedSha256: intent.expectedSha256, reason: intent.reason,
+        completedState: intent.completedState,
+        completedErrorMessage: intent.completedErrorMessage,
+        allowedStates: intent.allowedStates, phase: "moving"
+      )
+    } catch {
+      try? execute("ROLLBACK", operation: "回滚清理意图激活")
+      throw error
+    }
+  }
+
+  func updateCleanupIntentPhase(token: String, from: String, to: String) throws -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    var statement: OpaquePointer?
+    try prepare(
+      "UPDATE backup_cleanup_intents SET phase = ? WHERE token = ? AND phase = ?",
+      statement: &statement, operation: "更新清理阶段"
+    )
+    defer { sqlite3_finalize(statement) }
+    try bindText(statement, 1, to)
+    try bindText(statement, 2, token)
+    try bindText(statement, 3, from)
+    guard sqlite3_step(statement) == SQLITE_DONE else {
+      throw databaseError(operation: "更新清理阶段", code: sqlite3_errcode(db))
+    }
+    return sqlite3_changes(db) == 1
+  }
+
+  func cleanupIntents(
+    afterToken: String? = nil, limit: Int = 100,
+    recoverableOnly: Bool = false
+  ) throws -> [IosBackupCleanupIntent] {
+    lock.lock()
+    defer { lock.unlock() }
+    guard (1...100).contains(limit) else {
+      throw IosBackupStoreError(
+        operation: "校验清理意图分页", code: SQLITE_RANGE,
+        message: "单页数量必须为 1 到 100"
+      )
+    }
+    var statement: OpaquePointer?
+    let phaseClause = recoverableOnly
+      ? "phase IN ('claimed','moving','renamed','committed')" : "1 = 1"
+    try prepare(
+      "SELECT token,job_id,generation,original_path,tombstone_path,expected_bytes,expected_modified_ms,expected_device,expected_inode,expected_sha256,reason,completed_state,completed_error_message,allowed_states,phase FROM backup_cleanup_intents WHERE \(phaseClause) AND (? IS NULL OR token > ?) ORDER BY token LIMIT \(limit)",
+      statement: &statement, operation: "读取清理意图"
+    )
+    defer { sqlite3_finalize(statement) }
+    try bindText(statement, 1, afterToken)
+    try bindText(statement, 2, afterToken)
+    var intents: [IosBackupCleanupIntent] = []
+    while sqlite3_step(statement) == SQLITE_ROW {
+      intents.append(cleanupIntentFromRow(statement))
+    }
+    return intents
+  }
+
+  func abandonCleanupIntent(token: String) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try deleteCleanupIntentUnlocked(token: token)
+  }
+
+  func commitCleanupIntent(token: String, deletedAt: Date = Date()) throws -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    try execute("BEGIN IMMEDIATE", operation: "开始提交清理结果")
+    do {
+      guard let intent = try cleanupIntentUnlocked(token: token) else {
+        try execute("COMMIT", operation: "提交已完成清理结果")
+        return false
+      }
+      guard intent.phase == "renamed" || intent.phase == "committed",
+            var job = try readJobUnlocked(intent.jobId),
+            job["generation"] as? String == intent.generation,
+            intent.allowedStates.contains(job["state"] as? String ?? ""),
+            job["filePath"] as? String == intent.originalPath,
+            job["localDeletedAt"] as? String == nil
+      else {
+        try execute("ROLLBACK", operation: "取消过期清理结果")
+        return false
+      }
+      if job["localDeletedAt"] as? String == nil {
+        job["localDeletedAt"] = Self.isoFormatter.string(from: deletedAt)
+        job["scheduledCleanupAt"] = nil
+        job["waitingCleanup"] = false
+        job["cleanupReason"] = intent.reason
+        if let state = intent.completedState { job["state"] = state }
+        if let message = intent.completedErrorMessage { job["errorMessage"] = message }
+        try writeJobUnlocked(job)
+      }
+      var statement: OpaquePointer?
+      try prepare(
+        "UPDATE backup_cleanup_intents SET phase = 'committed' WHERE token = ?",
+        statement: &statement, operation: "提交清理意图"
+      )
+      defer { sqlite3_finalize(statement) }
+      try bindText(statement, 1, token)
+      guard sqlite3_step(statement) == SQLITE_DONE else {
+        throw databaseError(operation: "提交清理意图", code: sqlite3_errcode(db))
+      }
+      try execute("COMMIT", operation: "提交清理结果")
+      return true
+    } catch {
+      try? execute("ROLLBACK", operation: "回滚清理结果")
+      throw error
+    }
+  }
+
+  func finishCleanupIntent(token: String) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try deleteCleanupIntentUnlocked(token: token)
   }
 
   func storageRecoveryJobsPage(
@@ -477,6 +780,7 @@ final class IosBackupJobStore {
       + "AND backup_completed_at IS NOT NULL AND content_sha256 IS NOT NULL "
       + "AND verification_version >= ? AND last_attested_at IS NOT NULL "
       + "AND local_deleted_at IS NULL\(cursorClause) "
+      + "AND NOT EXISTS (SELECT 1 FROM backup_cleanup_intents i WHERE (i.job_id = backup_jobs.id OR i.original_path = backup_jobs.file_path) AND i.phase IN ('claimed','moving','renamed')) "
       + "ORDER BY \(createdAtExpression) ASC, id ASC LIMIT \(limit)"
     var stmt: OpaquePointer?
     try prepare(sql, statement: &stmt, operation: "分页查询空间回收候选")
@@ -635,12 +939,32 @@ final class IosBackupJobStore {
         deleted_at_ms INTEGER NOT NULL,
         reason TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS backup_cleanup_intents (
+        token TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        original_path TEXT NOT NULL,
+        tombstone_path TEXT NOT NULL UNIQUE,
+        expected_bytes INTEGER NOT NULL,
+        expected_modified_ms INTEGER NOT NULL,
+        expected_device INTEGER NOT NULL,
+        expected_inode INTEGER NOT NULL,
+        expected_sha256 TEXT,
+        reason TEXT NOT NULL,
+        completed_state TEXT,
+        completed_error_message TEXT,
+        allowed_states TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL
+      );
     """
     try execute(sql, operation: "建表")
     if try !columnExistsUnlocked(table: "backup_jobs", column: "revision") {
       try execute("ALTER TABLE backup_jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0", operation: "升级任务修订号")
     }
     try execute("DROP INDEX IF EXISTS idx_backup_jobs_resumable_scan; CREATE INDEX IF NOT EXISTS idx_backup_jobs_file_path ON backup_jobs(file_path); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state ON backup_jobs(state); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state_id ON backup_jobs(state, id); CREATE INDEX IF NOT EXISTS idx_backup_jobs_state_local_revision ON backup_jobs(state, local_deleted_at, revision DESC); CREATE INDEX IF NOT EXISTS idx_backup_jobs_failure_revision ON backup_jobs(state, failure_kind, revision DESC); CREATE INDEX IF NOT EXISTS idx_backup_jobs_storage_recovery ON backup_jobs(state, local_deleted_at, COALESCE(file_created_at, '9999-12-31T23:59:59Z'), id); CREATE INDEX IF NOT EXISTS idx_backup_jobs_revision ON backup_jobs(revision); CREATE INDEX IF NOT EXISTS idx_backup_jobs_cleanup ON backup_jobs(local_deleted_at, state, scheduled_cleanup_at);", operation: "创建备份索引")
+    try execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_cleanup_intents_active_job ON backup_cleanup_intents(job_id) WHERE phase IN ('claimed','moving','renamed')", operation: "创建清理意图索引")
+    try execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_cleanup_intents_active_path ON backup_cleanup_intents(original_path) WHERE phase IN ('claimed','moving','renamed')", operation: "创建清理路径索引")
     for key in ["global_revision", "completed_revision", "cleanup_high_watermark", "cleanup_ack_revision"] {
       try execute("INSERT OR IGNORE INTO backup_meta(key,int_value) VALUES ('\(key)',0)", operation: "初始化备份修订号")
     }
@@ -696,6 +1020,100 @@ final class IosBackupJobStore {
       throw databaseError(operation: "读取任务", code: stepCode)
     }
     return try jobFromRow(stmt)
+  }
+
+  private func prepareJobMutationUnlocked(
+    jobId: String, filePath: String?
+  ) throws -> Bool {
+    var cancellation: OpaquePointer?
+    try prepare(
+      "DELETE FROM backup_cleanup_intents WHERE (job_id = ? OR (? IS NOT NULL AND original_path = ?)) AND phase = 'claimed'",
+      statement: &cancellation, operation: "取消未激活清理意图"
+    )
+    try bindText(cancellation, 1, jobId)
+    try bindText(cancellation, 2, filePath)
+    try bindText(cancellation, 3, filePath)
+    guard sqlite3_step(cancellation) == SQLITE_DONE else {
+      sqlite3_finalize(cancellation)
+      throw databaseError(operation: "取消未激活清理意图", code: sqlite3_errcode(db))
+    }
+    sqlite3_finalize(cancellation)
+    var statement: OpaquePointer?
+    try prepare(
+      "SELECT EXISTS(SELECT 1 FROM backup_cleanup_intents WHERE (job_id = ? OR (? IS NOT NULL AND original_path = ?)) AND phase IN ('moving','renamed') LIMIT 1)",
+      statement: &statement, operation: "检查清理意图"
+    )
+    defer { sqlite3_finalize(statement) }
+    try bindText(statement, 1, jobId)
+    try bindText(statement, 2, filePath)
+    try bindText(statement, 3, filePath)
+    return !(sqlite3_step(statement) == SQLITE_ROW && integer(statement, 0) != 0)
+  }
+
+  private func insertCleanupIntentUnlocked(_ intent: IosBackupCleanupIntent) throws {
+    let sql = "INSERT INTO backup_cleanup_intents(token,job_id,generation,original_path,tombstone_path,expected_bytes,expected_modified_ms,expected_device,expected_inode,expected_sha256,reason,completed_state,completed_error_message,allowed_states,phase,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    var statement: OpaquePointer?
+    try prepare(sql, statement: &statement, operation: "保存清理意图")
+    defer { sqlite3_finalize(statement) }
+    try bindText(statement, 1, intent.token)
+    try bindText(statement, 2, intent.jobId)
+    try bindText(statement, 3, intent.generation)
+    try bindText(statement, 4, intent.originalPath)
+    try bindText(statement, 5, intent.tombstonePath)
+    try bindInt(statement, 6, intent.expectedBytes)
+    try bindInt(statement, 7, intent.expectedModifiedAtMilliseconds)
+    try bindInt(statement, 8, Int64(bitPattern: intent.expectedDevice))
+    try bindInt(statement, 9, Int64(bitPattern: intent.expectedInode))
+    try bindText(statement, 10, intent.expectedSha256)
+    try bindText(statement, 11, intent.reason)
+    try bindText(statement, 12, intent.completedState)
+    try bindText(statement, 13, intent.completedErrorMessage)
+    try bindText(statement, 14, intent.allowedStates.sorted().joined(separator: ","))
+    try bindText(statement, 15, intent.phase)
+    try bindInt(statement, 16, Int64(Date().timeIntervalSince1970 * 1000))
+    guard sqlite3_step(statement) == SQLITE_DONE else {
+      throw databaseError(operation: "保存清理意图", code: sqlite3_errcode(db))
+    }
+  }
+
+  private func cleanupIntentUnlocked(token: String) throws -> IosBackupCleanupIntent? {
+    var statement: OpaquePointer?
+    try prepare(
+      "SELECT token,job_id,generation,original_path,tombstone_path,expected_bytes,expected_modified_ms,expected_device,expected_inode,expected_sha256,reason,completed_state,completed_error_message,allowed_states,phase FROM backup_cleanup_intents WHERE token = ? LIMIT 1",
+      statement: &statement, operation: "读取清理意图"
+    )
+    defer { sqlite3_finalize(statement) }
+    try bindText(statement, 1, token)
+    guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+    return cleanupIntentFromRow(statement)
+  }
+
+  private func cleanupIntentFromRow(_ statement: OpaquePointer?) -> IosBackupCleanupIntent {
+    IosBackupCleanupIntent(
+      token: text(statement, 0) ?? "", jobId: text(statement, 1) ?? "",
+      generation: text(statement, 2) ?? "", originalPath: text(statement, 3) ?? "",
+      tombstonePath: text(statement, 4) ?? "", expectedBytes: integer(statement, 5),
+      expectedModifiedAtMilliseconds: integer(statement, 6),
+      expectedDevice: UInt64(bitPattern: integer(statement, 7)),
+      expectedInode: UInt64(bitPattern: integer(statement, 8)),
+      expectedSha256: text(statement, 9), reason: text(statement, 10) ?? "",
+      completedState: text(statement, 11), completedErrorMessage: text(statement, 12),
+      allowedStates: Set((text(statement, 13) ?? "").split(separator: ",").map(String.init)),
+      phase: text(statement, 14) ?? ""
+    )
+  }
+
+  private func deleteCleanupIntentUnlocked(token: String) throws {
+    var statement: OpaquePointer?
+    try prepare(
+      "DELETE FROM backup_cleanup_intents WHERE token = ?",
+      statement: &statement, operation: "删除清理意图"
+    )
+    defer { sqlite3_finalize(statement) }
+    try bindText(statement, 1, token)
+    guard sqlite3_step(statement) == SQLITE_DONE else {
+      throw databaseError(operation: "删除清理意图", code: sqlite3_errcode(db))
+    }
   }
 
   private func firstJobUnlocked(
