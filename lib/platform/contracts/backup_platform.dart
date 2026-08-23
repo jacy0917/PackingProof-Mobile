@@ -28,6 +28,8 @@ abstract interface class BackupNativePlatform {
 
   Future<void> enqueueJob(Map<Object?, Object?> request);
 
+  Future<void> enqueueJobs(List<Map<Object?, Object?>> requests);
+
   Future<void> requeueJob(String jobId);
 
   Future<void> cancelJob(String jobId);

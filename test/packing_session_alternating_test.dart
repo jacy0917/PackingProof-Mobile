@@ -343,6 +343,9 @@ class _FakeBackupPlatform implements BackupNativePlatform {
   Future<void> enqueueJob(Map<Object?, Object?> request) async {}
 
   @override
+  Future<void> enqueueJobs(List<Map<Object?, Object?>> requests) async {}
+
+  @override
   Future<void> requeueJob(String jobId) async {}
 
   @override

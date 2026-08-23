@@ -374,6 +374,9 @@ abstract class BackupNativeHostApi {
   void enqueueJob(Map<String?, Object?> request);
   @async
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
+  void enqueueJobs(List<Map<String?, Object?>> requests);
+  @async
+  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   void requeueJob(String jobId);
   @async
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)

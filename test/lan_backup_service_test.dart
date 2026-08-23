@@ -994,13 +994,14 @@ void main() {
     ]);
 
     final List<Map<String, Object?>> enqueueLogs = events
-        .where((event) => event.kind == 'backup_enqueue')
+        .where((event) => event.kind == 'backup_enqueue_batch')
         .map((event) => event.extra)
         .toList();
     expect(enqueueLogs, isNotEmpty);
     expect(enqueueLogs.last['startUpload'], isFalse);
     expect(enqueueLogs.last['forceRestart'], isFalse);
-    expect(enqueueLogs.last['sessionId'], 'session-log');
+    expect(enqueueLogs.last['requestedCount'], 1);
+    expect(enqueueLogs.last['enqueuedCount'], 1);
     final List<Map<String, Object?>> toggleLogs = events
         .where((event) => event.kind == 'backup_auto_toggle')
         .map((event) => event.extra)
@@ -1009,7 +1010,7 @@ void main() {
     expect(toggleLogs.last['enabled'], isFalse);
   });
 
-  test('批量注册录像只刷新一次摘要并保留每条入队日志', () async {
+  test('批量注册录像只刷新一次摘要并记录批次数量', () async {
     final Directory root = await Directory.systemTemp.createTemp(
       'packing-proof-batch-',
     );
@@ -1072,9 +1073,47 @@ void main() {
     expect(enqueueCalls, 2);
     expect(platform.summaryCalls, 1);
     expect(
-      events.where((event) => event.kind == 'backup_enqueue'),
-      hasLength(2),
+      events.where((event) => event.kind == 'backup_enqueue_batch'),
+      hasLength(1),
     );
+    final Map<String, Object?> batchLog = events
+        .lastWhere((event) => event.kind == 'backup_enqueue_batch')
+        .extra;
+    expect(batchLog['requestedCount'], 2);
+    expect(batchLog['enqueuedCount'], 2);
+  });
+
+  test('原生入队每次最多提交 100 条', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'packing-proof-native-batch-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final DateTime startedAt = DateTime.utc(2026, 8, 23, 10);
+    final List<RecordingSession> sessions = <RecordingSession>[];
+    for (var index = 0; index < 205; index++) {
+      final File video = File('${root.path}/$index.mp4');
+      await video.writeAsBytes(<int>[index & 0xff]);
+      sessions.add(
+        RecordingSession(
+          id: 'batch-$index',
+          filePath: video.path,
+          startedAt: startedAt,
+          endedAt: startedAt.add(const Duration(seconds: 1)),
+          markers: const <BarcodeMarker>[],
+        ),
+      );
+    }
+    final _TrackingBackupPlatform platform = _TrackingBackupPlatform();
+    final LanBackupService service = LanBackupService(platform: platform);
+    addTearDown(service.dispose);
+
+    await service.backupAll(sessions);
+
+    expect(platform.enqueuedBatches.map((batch) => batch.length), <int>[
+      100,
+      100,
+      5,
+    ]);
   });
 
   test('入队边界拒绝空或多条录像记录', () async {
@@ -1948,6 +1987,13 @@ class _TestChannelBackupPlatform implements BackupNativePlatform {
       _channel.invokeMethod<void>('enqueue', request);
 
   @override
+  Future<void> enqueueJobs(List<Map<Object?, Object?>> requests) async {
+    for (final Map<Object?, Object?> request in requests) {
+      await enqueueJob(request);
+    }
+  }
+
+  @override
   Future<void> requeueJob(String jobId) =>
       _channel.invokeMethod<void>('retry', <String, Object>{'id': jobId});
 
@@ -1984,6 +2030,13 @@ class _TrackingBackupPlatform extends Fake implements BackupNativePlatform {
   bool hasPendingOutside = false;
   final List<Map<Object?, Object?>> savedConnections =
       <Map<Object?, Object?>>[];
+  final List<List<Map<Object?, Object?>>> enqueuedBatches =
+      <List<Map<Object?, Object?>>>[];
+
+  @override
+  Future<void> enqueueJobs(List<Map<Object?, Object?>> requests) async {
+    enqueuedBatches.add(requests);
+  }
 
   @override
   void setSummaryListener(void Function(BackupSummaryDto summary)? listener) {

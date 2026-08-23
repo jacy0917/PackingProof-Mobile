@@ -758,13 +758,50 @@ final class IosBackupHostApi: BackupNativeHostApi {
     request: [String?: Any?],
     completion: @escaping (Result<Void, Error>) -> Void
   ) {
+    enqueueJobs(requests: [request], completion: completion)
+  }
+
+  func enqueueJobs(
+    requests: [[String?: Any?]],
+    completion: @escaping (Result<Void, Error>) -> Void
+  ) {
+    guard requests.count <= 100 else {
+      completion(.failure(pigeonError("单次最多入队 100 个备份任务", code: "backup_batch_too_large")))
+      return
+    }
+    var jobs: [[String: Any]] = []
+    var uploadJobs: [[String: Any]] = []
+    do {
+      for request in requests {
+        guard let prepared = try prepareEnqueuedJob(request) else { continue }
+        jobs.append(prepared.job)
+        if prepared.startUpload && prepared.job["state"] as? String != "completed" {
+          uploadJobs.append(prepared.job)
+        }
+      }
+      try jobStore.get().upsert(jobs)
+      uploadJobs.forEach(startUpload)
+      emitSummary()
+      completion(.success(()))
+    } catch {
+      completion(.failure(error))
+    }
+  }
+
+  private func prepareEnqueuedJob(
+    _ request: [String?: Any?]
+  ) throws -> (job: [String: Any], startUpload: Bool)? {
     let path = request["filePath"] as? String ?? ""
+    guard !path.isEmpty else {
+      throw pigeonError("缺少录像路径", code: "backup_file_path_missing")
+    }
+    guard FileManager.default.fileExists(atPath: path) else { return nil }
     let id = request["id"] as? String ?? stableId(path)
     let startUploadRequested = request["startUpload"] as? Bool != false
     let forceRestart = request["forceRestart"] as? Bool == true
-    do {
       let attributes = try FileManager.default.attributesOfItem(atPath: path)
       let fileSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+      guard fileSize > 0 else { return nil }
       let lastModified = Int64(
         ((attributes[.modificationDate] as? Date) ?? .distantPast)
           .timeIntervalSince1970 * 1000
@@ -811,15 +848,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
         job.removeValue(forKey: "errorMessage")
         job.removeValue(forKey: "failureKind")
       }
-      try upsert(job)
-      if startUploadRequested && job["state"] as? String != "completed" {
-        startUpload(job)
-      }
-      emitSummary()
-      completion(.success(()))
-    } catch {
-      completion(.failure(error))
-    }
+      return (job, startUploadRequested)
   }
 
   func requeueJob(

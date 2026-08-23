@@ -107,6 +107,23 @@ internal class LanBackupPlugin(
     }
 
     fun enqueueJob(request: Map<String?, Any?>) {
+        enqueueJobStored(request)?.let { enqueued ->
+            scheduleEnqueuedJob(enqueued)
+            Log.i(
+                TAG,
+                "Enqueue path=${enqueued.job.optString("filePath")} sessions=1 " +
+                    "state=${enqueued.job.optString("state")}",
+            )
+        }
+    }
+
+    private data class EnqueuedJob(
+        val job: JSONObject,
+        val startUpload: Boolean,
+        val replace: Boolean,
+    )
+
+    private fun enqueueJobStored(request: Map<String?, Any?>): EnqueuedJob? {
         val path = request["filePath"] as? String ?: error("缺少录像路径")
         @Suppress("UNCHECKED_CAST")
         val sessions = JSONArray(
@@ -116,7 +133,7 @@ internal class LanBackupPlugin(
         val source = File(path)
         if (LanBackupSourcePolicy.inspect(source, -1L, -1L) != LanBackupSourceStatus.AVAILABLE) {
             store.reconcileJobSource(LanBackupStateStore.stableId(source.canonicalPath))
-            return
+            return null
         }
         val upsert = store.upsertJob(path, sessions)
         var job = upsert.job
@@ -146,9 +163,25 @@ internal class LanBackupPlugin(
                 LanBackupCleanupScheduler.nullableText(job, "generation"),
             ) { current -> current.put("state", "paused"); true } ?: job
         }
-        LanBackupCleanupScheduler.reschedule(context, store, job)
-        if (startUpload) schedule(job.getString("id"), replace = forceRestart || upsert.recreated)
-        Log.i(TAG, "Enqueue path=${job.optString("filePath")} sessions=1 state=${job.optString("state")}")
+        return EnqueuedJob(
+            job = job,
+            startUpload = startUpload,
+            replace = forceRestart || upsert.recreated,
+        )
+    }
+
+    private fun scheduleEnqueuedJob(enqueued: EnqueuedJob) {
+        LanBackupCleanupScheduler.reschedule(context, store, enqueued.job)
+        if (enqueued.startUpload) {
+            schedule(enqueued.job.getString("id"), replace = enqueued.replace)
+        }
+    }
+
+    fun enqueueJobs(requests: List<Map<String?, Any?>>) {
+        require(requests.size <= 100) { "单次最多入队 100 个备份任务" }
+        val enqueued = store.writeBatch { requests.mapNotNull(::enqueueJobStored) }
+        enqueued.forEach(::scheduleEnqueuedJob)
+        Log.i(TAG, "Enqueue batch requested=${requests.size} enqueued=${enqueued.size}")
     }
 
     fun updateRetentionSchedule(request: Map<String?, Any?>) {

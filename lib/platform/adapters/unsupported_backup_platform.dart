@@ -54,6 +54,10 @@ class UnsupportedBackupNativePlatform implements BackupNativePlatform {
   Future<void> enqueueJob(Map<Object?, Object?> request) => _unsupported();
 
   @override
+  Future<void> enqueueJobs(List<Map<Object?, Object?>> requests) =>
+      _unsupported();
+
+  @override
   Future<void> requeueJob(String jobId) => _unsupported();
 
   @override

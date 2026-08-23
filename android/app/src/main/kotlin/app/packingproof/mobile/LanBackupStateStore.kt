@@ -404,6 +404,21 @@ internal class LanBackupStateStore(
         LanBackupUpsertResult(job, recreated = true)
     }
 
+    fun <T> writeBatch(action: () -> T): T = withJobLock {
+        require(!db.inTransaction()) { "备份批处理不能嵌套事务" }
+        var revision = 0L
+        db.beginTransaction()
+        try {
+            val result = action()
+            revision = metaValueUnlocked("revision")
+            db.setTransactionSuccessful()
+            result
+        } finally {
+            db.endTransaction()
+            if (revision > 0L) LanBackupRevisionNotifier.publish(revision)
+        }
+    }
+
     fun readJob(id: String): JSONObject? = withJobLock { readJobUnlocked(id) }
 
     fun writeJob(job: JSONObject) = withJobLock { writeJobUnlocked(job) }
@@ -1106,7 +1121,8 @@ internal class LanBackupStateStore(
         val previous = readJobUnlocked(job.optString("id"))
         val progressOnly = isUploadProgressOnly(previous, job)
         var revision = 0L
-        db.beginTransaction()
+        val ownsTransaction = !db.inTransaction()
+        if (ownsTransaction) db.beginTransaction()
         try {
             revision = nextRevisionUnlocked()
             job.put("revision", revision)
@@ -1125,11 +1141,13 @@ internal class LanBackupStateStore(
                 setMetaValueUnlocked("completed_revision", revision)
             }
             insertCleanupEventIfNeededUnlocked(previous, job, revision)
-            db.setTransactionSuccessful()
+            if (ownsTransaction) db.setTransactionSuccessful()
         } finally {
-            db.endTransaction()
+            if (ownsTransaction) db.endTransaction()
         }
-        LanBackupRevisionNotifier.publish(revision, immediate = !progressOnly)
+        if (ownsTransaction) {
+            LanBackupRevisionNotifier.publish(revision, immediate = !progressOnly)
+        }
     }
 
     private fun deleteJobUnlocked(id: String, expectedGeneration: String): Boolean {

@@ -957,19 +957,18 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         throw StateError('一条录像文件只能创建一个备份任务');
       }
     }
-    final List<({String filePath, List<RecordingSession> sessions})> valid =
-        <({String filePath, List<RecordingSession> sessions})>[];
+    final List<Map<Object?, Object?>> requests = <Map<Object?, Object?>>[];
     for (final ({String filePath, List<RecordingSession> sessions}) entry
         in entries) {
-      final File source = File(entry.filePath);
       try {
-        if (!source.existsSync() || source.lengthSync() <= 0) {
+        final FileStat stat = await File(entry.filePath).stat();
+        if (stat.type == FileSystemEntityType.notFound || stat.size <= 0) {
           continue;
         }
       } on FileSystemException {
         continue;
       }
-      await _platform.enqueueJob(<String, Object?>{
+      requests.add(<String, Object?>{
         'filePath': entry.filePath,
         'sessions': entry.sessions
             .map(recordingSessionBackupMap)
@@ -977,18 +976,18 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         'startUpload': startUpload,
         'forceRestart': forceRestart,
       });
-      valid.add(entry);
+    }
+    for (var offset = 0; offset < requests.length; offset += 100) {
+      final int end = min(offset + 100, requests.length);
+      await _platform.enqueueJobs(requests.sublist(offset, end));
     }
     await refresh();
-    for (final ({String filePath, List<RecordingSession> sessions}) entry
-        in valid) {
-      _log('backup_enqueue', <String, Object?>{
-        'filePath': entry.filePath,
-        'sessionId': entry.sessions.single.id,
-        'startUpload': startUpload,
-        'forceRestart': forceRestart,
-      });
-    }
+    _log('backup_enqueue_batch', <String, Object?>{
+      'requestedCount': entries.length,
+      'enqueuedCount': requests.length,
+      'startUpload': startUpload,
+      'forceRestart': forceRestart,
+    });
   }
 
   @override

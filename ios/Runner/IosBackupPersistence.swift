@@ -297,6 +297,27 @@ final class IosBackupJobStore {
     }
   }
 
+  func upsert(_ rawJobs: [[String: Any]]) throws {
+    precondition(rawJobs.count <= 100, "单次最多入队 100 个备份任务")
+    lock.lock()
+    defer { lock.unlock() }
+    try writeTransactionUnlocked(operation: "批量保存任务") {
+      for rawJob in rawJobs {
+        guard let id = rawJob["id"] as? String,
+              try prepareJobMutationUnlocked(
+                jobId: id, filePath: rawJob["filePath"] as? String
+              )
+        else {
+          throw IosBackupStoreError(
+            operation: "批量保存任务", code: SQLITE_BUSY,
+            message: "录像正在完成原子清理，请稍后重试"
+          )
+        }
+        try writeJobUnlocked(rawJob)
+      }
+    }
+  }
+
   func updateJob(id: String, mutate: (inout [String: Any]) -> Void) throws -> Bool {
     lock.lock()
     defer { lock.unlock() }

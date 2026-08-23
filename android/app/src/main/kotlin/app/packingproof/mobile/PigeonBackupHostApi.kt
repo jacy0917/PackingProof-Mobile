@@ -77,6 +77,13 @@ internal class PigeonBackupHostApi(
         plugin.submit(callback) { plugin.enqueueJob(request) }
     }
 
+    override fun enqueueJobs(
+        requests: List<Map<String?, Any?>>,
+        callback: (Result<Unit>) -> Unit,
+    ) {
+        plugin.submit(callback) { plugin.enqueueJobs(requests) }
+    }
+
     override fun requeueJob(
         jobId: String,
         callback: (Result<Unit>) -> Unit,

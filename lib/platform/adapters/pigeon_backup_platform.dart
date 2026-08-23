@@ -60,6 +60,10 @@ class PigeonBackupNativePlatform implements BackupNativePlatform {
       _hostApi.enqueueJob(_wireMap(request));
 
   @override
+  Future<void> enqueueJobs(List<Map<Object?, Object?>> requests) =>
+      _hostApi.enqueueJobs(requests.map(_wireMap).toList(growable: false));
+
+  @override
   Future<void> requeueJob(String jobId) => _hostApi.requeueJob(jobId);
 
   @override

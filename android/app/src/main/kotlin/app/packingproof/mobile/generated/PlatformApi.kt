@@ -2709,6 +2709,7 @@ interface BackupNativeHostApi {
   fun saveConnection(connection: Map<String?, Any?>, callback: (Result<Unit>) -> Unit)
   fun disconnect(callback: (Result<Unit>) -> Unit)
   fun enqueueJob(request: Map<String?, Any?>, callback: (Result<Unit>) -> Unit)
+  fun enqueueJobs(requests: List<Map<String?, Any?>>, callback: (Result<Unit>) -> Unit)
   fun requeueJob(jobId: String, callback: (Result<Unit>) -> Unit)
   fun cancelJob(jobId: String, callback: (Result<Unit>) -> Unit)
   fun updateRetentionSchedule(request: Map<String?, Any?>, callback: (Result<Unit>) -> Unit)
@@ -2923,6 +2924,25 @@ interface BackupNativeHostApi {
             val args = message as List<Any?>
             val requestArg = args[0] as Map<String?, Any?>
             api.enqueueJob(requestArg) { result: Result<Unit> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(PlatformApiPigeonUtils.wrapError(error))
+              } else {
+                reply.reply(PlatformApiPigeonUtils.wrapResult(null))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.enqueueJobs$separatedMessageChannelSuffix", codec, taskQueue)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val requestsArg = args[0] as List<Map<String?, Any?>>
+            api.enqueueJobs(requestsArg) { result: Result<Unit> ->
               val error = result.exceptionOrNull()
               if (error != null) {
                 reply.reply(PlatformApiPigeonUtils.wrapError(error))

@@ -2637,6 +2637,7 @@ protocol BackupNativeHostApi {
   func saveConnection(connection: [String?: Any?], completion: @escaping (Result<Void, Error>) -> Void)
   func disconnect(completion: @escaping (Result<Void, Error>) -> Void)
   func enqueueJob(request: [String?: Any?], completion: @escaping (Result<Void, Error>) -> Void)
+  func enqueueJobs(requests: [[String?: Any?]], completion: @escaping (Result<Void, Error>) -> Void)
   func requeueJob(jobId: String, completion: @escaping (Result<Void, Error>) -> Void)
   func cancelJob(jobId: String, completion: @escaping (Result<Void, Error>) -> Void)
   func updateRetentionSchedule(request: [String?: Any?], completion: @escaping (Result<Void, Error>) -> Void)
@@ -2857,6 +2858,25 @@ class BackupNativeHostApiSetup {
       }
     } else {
       enqueueJobChannel.setMessageHandler(nil)
+    }
+    let enqueueJobsChannel = taskQueue == nil
+      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.enqueueJobs\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.enqueueJobs\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
+    if let api = api {
+      enqueueJobsChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let requestsArg = args[0] as! [[String?: Any?]]
+        api.enqueueJobs(requests: requestsArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      enqueueJobsChannel.setMessageHandler(nil)
     }
     let requeueJobChannel = taskQueue == nil
       ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.requeueJob\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
