@@ -160,7 +160,10 @@ class PigeonCameraPlatform implements CameraPlatform {
 
   @override
   Future<void> dispose() async {
-    CameraEventApi.setUp(null);
+    // AppContainer owns this platform as a process-wide singleton. Camera
+    // services are disposed and recreated when recording settings change, so
+    // unregistering the shared event sink here would permanently disconnect
+    // barcode events until the whole Flutter engine is restarted.
     await _hostApi.dispose();
   }
 }
