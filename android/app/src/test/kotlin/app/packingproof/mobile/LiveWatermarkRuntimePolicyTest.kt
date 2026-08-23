@@ -290,6 +290,22 @@ class LiveWatermarkRuntimePolicyTest {
     }
 
     @Test
+    fun `GL output rotates landscape camera input once into portrait coordinates`() {
+        assertEquals(
+            CameraGlOutputGeometry(1080, 1920, 1),
+            CameraGlOutputGeometryPolicy.create(1920, 1080, 90),
+        )
+        assertEquals(
+            CameraGlOutputGeometry(1080, 1920, 3),
+            CameraGlOutputGeometryPolicy.create(1920, 1080, 270),
+        )
+        assertEquals(
+            CameraGlOutputGeometry(1080, 1920, 0),
+            CameraGlOutputGeometryPolicy.create(1080, 1920, 0),
+        )
+    }
+
+    @Test
     fun `landscape directions map the same final placement to opposite raw edges`() {
         val left = LiveWatermarkQuadPolicy.create(1920, 1080, 300, 100, "landscapeLeft")
         val right = LiveWatermarkQuadPolicy.create(1920, 1080, 300, 100, "landscapeRight")

@@ -328,7 +328,8 @@ class ContinuousSegmentCamera(
         muxHandler!!.post {
             try {
                 selectCameraConfiguration()
-                recordingVideoEncoder.prepare(videoSize.width, videoSize.height, muxHandler)
+                val output = cameraGlOutputGeometry(videoSize)
+                recordingVideoEncoder.prepare(output.width, output.height, muxHandler)
                 cameraHandler!!.post { openCamera() }
             } catch (error: Throwable) {
                 failInitialization("encoder_init", "视频编码器初始化失败", error)
@@ -602,10 +603,8 @@ class ContinuousSegmentCamera(
                     targetCameraId = targetCameraId,
                     targetLensFacing = targetLensFacing,
                 )
-                textureEntry?.surfaceTexture()?.setDefaultBufferSize(
-                    videoSize.width,
-                    videoSize.height,
-                )
+                val output = cameraGlOutputGeometry(videoSize)
+                textureEntry?.surfaceTexture()?.setDefaultBufferSize(output.width, output.height)
                 val restartEncoder = CameraSwitchResourcePolicy.shouldRestartEncoder(
                     previousWidth = previousVideoSize.width,
                     previousHeight = previousVideoSize.height,
@@ -620,9 +619,10 @@ class ContinuousSegmentCamera(
                             releaseCameraGlCompositor()
                             encodedWatermarkFrameTracker.reset()
                             recordingVideoEncoder.release()
+                            val nextOutput = cameraGlOutputGeometry(videoSize)
                             recordingVideoEncoder.prepare(
-                                videoSize.width,
-                                videoSize.height,
+                                nextOutput.width,
+                                nextOutput.height,
                                 muxHandler,
                             )
                             recordingVideoEncoder.setSuspended(true)
@@ -854,7 +854,8 @@ class ContinuousSegmentCamera(
 
             if (previewSurface == null) {
                 val surfaceTexture = textureEntry!!.surfaceTexture()
-                surfaceTexture.setDefaultBufferSize(videoSize.width, videoSize.height)
+                val output = cameraGlOutputGeometry(videoSize)
+                surfaceTexture.setDefaultBufferSize(output.width, output.height)
                 previewSurface = Surface(surfaceTexture)
             }
             if (analysisReader == null) {
@@ -1286,9 +1287,10 @@ class ContinuousSegmentCamera(
                 encodedWatermarkFrameTracker.reset()
                 recordingVideoEncoder.release()
                 try {
+                    val output = cameraGlOutputGeometry(videoSize)
                     recordingVideoEncoder.prepare(
-                        videoSize.width,
-                        videoSize.height,
+                        output.width,
+                        output.height,
                         muxHandler,
                     )
                     recordingVideoEncoder.setSuspended(
@@ -1335,7 +1337,8 @@ class ContinuousSegmentCamera(
 
     private fun prepareFramePipeline(size: Size) {
         val entry = textureEntry ?: return
-        entry.surfaceTexture().setDefaultBufferSize(size.width, size.height)
+        val output = cameraGlOutputGeometry(size)
+        entry.surfaceTexture().setDefaultBufferSize(output.width, output.height)
         if (previewSurface == null) {
             previewSurface = Surface(entry.surfaceTexture())
         }
@@ -1361,8 +1364,11 @@ class ContinuousSegmentCamera(
         }
         try {
             val compositor = CameraGlCompositor(
-                width = size.width,
-                height = size.height,
+                inputWidth = size.width,
+                inputHeight = size.height,
+                width = output.width,
+                height = output.height,
+                inputQuarterTurns = output.inputQuarterTurns,
                 previewOutput = preview,
                 encoderOutput = encoder,
                 recordingOrientation = recordingOrientationName,
@@ -2304,6 +2310,9 @@ class ContinuousSegmentCamera(
         else -> 0
     }
 
+    private fun cameraGlOutputGeometry(size: Size): CameraGlOutputGeometry =
+        CameraGlOutputGeometryPolicy.create(size.width, size.height, sensorOrientation)
+
     private fun recordMuxWrite(startedAtMs: Long) {
         val elapsedMs = SystemClock.elapsedRealtime() - startedAtMs
         if (elapsedMs > muxWriteMaxMs) muxWriteMaxMs = elapsedMs
@@ -2779,9 +2788,10 @@ class ContinuousSegmentCamera(
         mux.post {
             if (!disposed) {
                 try {
+                    val output = cameraGlOutputGeometry(videoSize)
                     recordingVideoEncoder.prepare(
-                        videoSize.width,
-                        videoSize.height,
+                        output.width,
+                        output.height,
                         muxHandler,
                     )
                     recordingVideoEncoder.setSuspended(true)
@@ -2794,10 +2804,8 @@ class ContinuousSegmentCamera(
                     replySuccess(result, payload)
                     return@post
                 }
-                textureEntry?.surfaceTexture()?.setDefaultBufferSize(
-                    videoSize.width,
-                    videoSize.height,
-                )
+                val output = cameraGlOutputGeometry(videoSize)
+                textureEntry?.surfaceTexture()?.setDefaultBufferSize(output.width, output.height)
                 probeRestoreCallback = { restoreError ->
                     replySuccess(
                         result,

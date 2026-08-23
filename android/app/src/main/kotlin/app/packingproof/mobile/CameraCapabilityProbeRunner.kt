@@ -291,8 +291,11 @@ internal class AndroidCameraCapabilityProbePhaseExecutor(
                     }
                     try {
                         phaseCompositor = CameraGlCompositor(
+                            inputWidth = config.videoWidth,
+                            inputHeight = config.videoHeight,
                             width = config.videoWidth,
                             height = config.videoHeight,
+                            inputQuarterTurns = 0,
                             previewOutput = preview,
                             encoderOutput = encoder,
                             onFailure = { codecFailed.set(true) },

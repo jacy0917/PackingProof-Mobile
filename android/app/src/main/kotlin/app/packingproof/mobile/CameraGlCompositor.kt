@@ -62,8 +62,11 @@ private data class CameraGlDrawResult(
  * ownership of previewOutput and encoderOutput. Barcode analysis remains a direct Camera2 output.
  */
 internal class CameraGlCompositor(
+    private val inputWidth: Int,
+    private val inputHeight: Int,
     private val width: Int,
     private val height: Int,
+    private val inputQuarterTurns: Int,
     private val previewOutput: Surface,
     private val encoderOutput: Surface,
     private val recordingOrientation: String = "portrait",
@@ -86,10 +89,18 @@ internal class CameraGlCompositor(
             attribute vec2 aPosition;
             attribute vec2 aTextureCoordinate;
             uniform mat4 uTextureTransform;
+            uniform int uInputQuarterTurns;
             varying vec2 vTextureCoordinate;
+            vec2 orientedCoordinate(vec2 coordinate) {
+              if (uInputQuarterTurns == 1) return vec2(coordinate.y, 1.0 - coordinate.x);
+              if (uInputQuarterTurns == 2) return vec2(1.0 - coordinate.x, 1.0 - coordinate.y);
+              if (uInputQuarterTurns == 3) return vec2(1.0 - coordinate.y, coordinate.x);
+              return coordinate;
+            }
             void main() {
               gl_Position = vec4(aPosition, 0.0, 1.0);
-              vTextureCoordinate = (uTextureTransform * vec4(aTextureCoordinate, 0.0, 1.0)).xy;
+              vec2 coordinate = orientedCoordinate(aTextureCoordinate);
+              vTextureCoordinate = (uTextureTransform * vec4(coordinate, 0.0, 1.0)).xy;
             }
         """
 
@@ -124,8 +135,11 @@ internal class CameraGlCompositor(
     }
 
     init {
+        require(inputWidth > 0)
+        require(inputHeight > 0)
         require(width > 0)
         require(height > 0)
+        require(inputQuarterTurns in 0..3)
     }
 
     private val started = AtomicBoolean(false)
@@ -403,7 +417,7 @@ internal class CameraGlCompositor(
             .order(ByteOrder.nativeOrder())
             .asFloatBuffer()
         cameraSurfaceTexture = SurfaceTexture(cameraTexture).apply {
-            setDefaultBufferSize(width, height)
+            setDefaultBufferSize(inputWidth, inputHeight)
             setOnFrameAvailableListener({ renderFrame() }, handler)
         }
         cameraSurface = Surface(cameraSurfaceTexture)
@@ -472,6 +486,10 @@ internal class CameraGlCompositor(
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTexture)
             GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "uCameraTexture"), 0)
+            GLES20.glUniform1i(
+                GLES20.glGetUniformLocation(program, "uInputQuarterTurns"),
+                inputQuarterTurns,
+            )
             GLES20.glUniformMatrix4fv(
                 GLES20.glGetUniformLocation(program, "uTextureTransform"),
                 1,

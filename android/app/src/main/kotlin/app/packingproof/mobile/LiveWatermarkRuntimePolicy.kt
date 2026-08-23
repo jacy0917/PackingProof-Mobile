@@ -304,3 +304,28 @@ internal object LiveWatermarkQuadPolicy {
             videoHeight
         }
 }
+
+internal data class CameraGlOutputGeometry(
+    val width: Int,
+    val height: Int,
+    val inputQuarterTurns: Int,
+)
+
+/** Keeps preview, encoder and watermark in one portrait pixel coordinate system. */
+internal object CameraGlOutputGeometryPolicy {
+    fun create(inputWidth: Int, inputHeight: Int, sensorOrientation: Int): CameraGlOutputGeometry {
+        require(inputWidth > 0 && inputHeight > 0)
+        val quarterTurns = when (((sensorOrientation % 360) + 360) % 360) {
+            90 -> 1
+            180 -> 2
+            270 -> 3
+            else -> 0
+        }
+        val swapsDimensions = quarterTurns % 2 != 0
+        return CameraGlOutputGeometry(
+            width = if (swapsDimensions) inputHeight else inputWidth,
+            height = if (swapsDimensions) inputWidth else inputHeight,
+            inputQuarterTurns = quarterTurns,
+        )
+    }
+}
