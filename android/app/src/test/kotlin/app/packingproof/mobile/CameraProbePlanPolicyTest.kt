@@ -106,6 +106,23 @@ class CameraProbePlanPolicyTest {
     }
 
     @Test
+    fun `GL 录像探针按合成输入和识别两路生成候选`() {
+        val configs = CameraProbePlanPolicy.capabilityConfigs(
+            kind = ProbePhaseKind.RECORD_FULL,
+            streamConfigPolicy = streamConfigPolicy,
+            videoCandidates = listOf(StreamSize(1920, 1080)),
+            analysisCandidates = listOf(StreamSize(960, 540), StreamSize(640, 480)),
+            alternatingAnalysisSize = StreamSize(960, 540),
+            surfacePipeline = CameraSurfacePipeline.GL_COMPOSITOR,
+        )
+
+        assertEquals(
+            listOf("2_1920x1080_960x540", "2_1920x1080_640x480"),
+            configs.map { it.candidateLabel },
+        )
+    }
+
+    @Test
     fun `轮换录像探针只保留预览和编码器尺寸`() {
         val configs = CameraProbePlanPolicy.capabilityConfigs(
             kind = ProbePhaseKind.RECORD_ALTERNATING,

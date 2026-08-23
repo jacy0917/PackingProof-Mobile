@@ -41,6 +41,8 @@ class CameraDiagnosticsSnapshotMapperTest {
         assertEquals(-1L, camera["previewFrameAgeMs"])
         assertEquals(2_000L, camera["lastCaptureCompletedAgeMs"])
         assertEquals("preview=true encoder=false analysis=true", camera["sessionSurfaces"])
+        assertEquals("direct", camera["surfacePipeline"])
+        assertEquals(null, camera["surfaceFallbackReason"])
         assertEquals(listOf(mapOf("phase" to "idle")), camera["probeResults"])
         assertEquals(100L, camera["storageAvailableBytes"])
         assertEquals(2L, camera["muxWriteStallCount"])

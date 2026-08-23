@@ -14,6 +14,7 @@ import android.media.MediaFormat
 import android.os.Handler
 import android.os.SystemClock
 import android.view.Surface
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class CameraCapabilityProbeResult(
     val status: String,
@@ -94,6 +95,7 @@ internal data class CameraCapabilityProbeEnvironment(
     val videoSize: StreamSize,
     val analysisSize: StreamSize,
     val selectedVideoMime: String,
+    val surfacePipeline: CameraSurfacePipeline,
     val cameraId: () -> String?,
     val cameraCharacteristics: () -> CameraCharacteristics?,
     val surfaceTexture: () -> SurfaceTexture?,
@@ -129,6 +131,7 @@ internal class AndroidCameraCapabilityProbePhaseExecutor(
             videoCandidates = environment.videoCandidates,
             analysisCandidates = environment.analysisCandidates,
             alternatingAnalysisSize = environment.analysisSize,
+            surfacePipeline = environment.surfacePipeline,
         )
         if (configs.isEmpty()) {
             onDone(emptyResult(label, "internal_error", "没有可用的候选组合"))
@@ -160,7 +163,9 @@ internal class AndroidCameraCapabilityProbePhaseExecutor(
             var phaseReader: ImageReader? = null
             var phaseCodec: MediaCodec? = null
             var phaseCodecSurface: Surface? = null
-            var codecFailed = false
+            var phaseCompositor: CameraGlCompositor? = null
+            var phaseFrameSurface: Surface? = null
+            val codecFailed = AtomicBoolean(false)
             var finished = false
             val startedAtMs = uptimeMillis()
             var previewFrames = 0
@@ -173,7 +178,8 @@ internal class AndroidCameraCapabilityProbePhaseExecutor(
             lateinit var configTimeout: Runnable
 
             fun cleanup() {
-                // Keep the original deterministic order: session → camera → reader → encoder → surface.
+                // Keep producer/consumer teardown deterministic: session → camera → reader →
+                // compositor → encoder → encoder surface.
                 runCatching { phaseSession?.close() }
                 phaseSession = null
                 runCatching { phaseCamera?.close() }
@@ -183,6 +189,9 @@ internal class AndroidCameraCapabilityProbePhaseExecutor(
                 phaseCamera = null
                 runCatching { phaseReader?.close() }
                 phaseReader = null
+                runCatching { phaseCompositor?.release() }
+                phaseCompositor = null
+                phaseFrameSurface = null
                 runCatching { phaseCodec?.stop() }
                 runCatching { phaseCodec?.release() }
                 phaseCodec = null
@@ -241,13 +250,16 @@ internal class AndroidCameraCapabilityProbePhaseExecutor(
                         }, environment.handler)
                     }
                 }
-                if (kind.includeEncoder) {
+                if (
+                    kind.includeEncoder ||
+                    environment.surfacePipeline == CameraSurfacePipeline.GL_COMPOSITOR
+                ) {
                     try {
                         val codecResult = createCodec(
                             config.videoWidth,
                             config.videoHeight,
                             onEncoderFrame = { encoderBuffers++ },
-                            onCodecError = { codecFailed = true },
+                            onCodecError = { codecFailed.set(true) },
                         )
                         phaseCodec = codecResult.codec
                         phaseCodecSurface = codecResult.surface
@@ -268,14 +280,47 @@ internal class AndroidCameraCapabilityProbePhaseExecutor(
                         return
                     }
                 }
-                val surfaces = buildList {
-                    if (kind.includePreview) add(preview)
-                    if (kind.includeAnalysis) phaseReader?.surface?.let(::add)
-                    if (kind.includeEncoder) phaseCodecSurface?.let(::add)
+                if (environment.surfacePipeline == CameraSurfacePipeline.GL_COMPOSITOR) {
+                    val encoder = phaseCodecSurface
+                    if (encoder == null) {
+                        finish(
+                            CameraProbeOutcome.SURFACE_MISSING.wire,
+                            "合成器探针缺少编码器表面",
+                        )
+                        return
+                    }
+                    try {
+                        phaseCompositor = CameraGlCompositor(
+                            width = config.videoWidth,
+                            height = config.videoHeight,
+                            previewOutput = preview,
+                            encoderOutput = encoder,
+                            onFailure = { codecFailed.set(true) },
+                        ).also { compositor ->
+                            phaseFrameSurface = compositor.start()
+                            compositor.setEncoderEnabled(kind.includeEncoder)
+                        }
+                    } catch (error: Throwable) {
+                        finish(
+                            CameraProbeOutcome.CODEC_CONFIG_FAILED.wire,
+                            error.message ?: "GL 合成器探针初始化失败",
+                        )
+                        return
+                    }
                 }
-                val expected = (if (kind.includePreview) 1 else 0) +
-                    (if (kind.includeAnalysis) 1 else 0) +
-                    (if (kind.includeEncoder) 1 else 0)
+                val topology = CameraSurfaceTopologyPolicy.create(
+                    pipeline = environment.surfacePipeline,
+                    includePreview = kind.includePreview,
+                    includeEncoder = kind.includeEncoder,
+                    includeAnalysis = kind.includeAnalysis,
+                )
+                val surfaces = buildList {
+                    if (topology.cameraUsesFrameSurface) phaseFrameSurface?.let(::add)
+                    if (topology.cameraUsesPreviewSurface) add(preview)
+                    if (topology.cameraUsesAnalysisSurface) phaseReader?.surface?.let(::add)
+                    if (topology.cameraUsesEncoderSurface) phaseCodecSurface?.let(::add)
+                }
+                val expected = topology.cameraSurfaceCount
                 if (surfaces.size < expected) {
                     finish(CameraProbeOutcome.SURFACE_MISSING.wire, "摄像头输出表面创建失败")
                     return@attempt
@@ -314,13 +359,16 @@ internal class AndroidCameraCapabilityProbePhaseExecutor(
                                                         CameraDevice.TEMPLATE_PREVIEW
                                                     },
                                                 ).apply {
-                                                    if (kind.includePreview) {
+                                                    if (topology.cameraUsesFrameSurface) {
+                                                        phaseFrameSurface?.let(::addTarget)
+                                                    }
+                                                    if (topology.cameraUsesPreviewSurface) {
                                                         environment.previewSurface()?.let(::addTarget)
                                                     }
-                                                    if (kind.includeAnalysis) {
+                                                    if (topology.cameraUsesAnalysisSurface) {
                                                         phaseReader?.surface?.let(::addTarget)
                                                     }
-                                                    if (kind.includeEncoder) {
+                                                    if (topology.cameraUsesEncoderSurface) {
                                                         phaseCodecSurface?.let(::addTarget)
                                                     }
                                                     environment.applyAutomaticCameraControls(
@@ -351,7 +399,7 @@ internal class AndroidCameraCapabilityProbePhaseExecutor(
                                             }
                                             val window = Runnable {
                                                 finish(
-                                                    if (codecFailed) {
+                                                    if (codecFailed.get()) {
                                                         CameraProbeOutcome.INTERNAL_ERROR.wire
                                                     } else {
                                                         CameraProbeOutcome.CONFIGURED.wire

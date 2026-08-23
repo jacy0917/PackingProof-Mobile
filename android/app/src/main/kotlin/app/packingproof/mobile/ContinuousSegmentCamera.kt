@@ -64,7 +64,7 @@ class ContinuousSegmentCamera(
         private const val PROBE_TIMEOUT_MS = 2_500L
         private const val START_STALL_FALLBACK_THRESHOLD_MS = 2_500L
         private const val CAPABILITY_PROBE_SCHEMA_VERSION = 1
-        private const val CAMERA_PIPELINE_VERSION = 1
+        private const val CAMERA_PIPELINE_VERSION = 2
         private val PROBE_TRIGGER_STAGES = setOf(
             "camera_open",
             "camera_error",
@@ -112,6 +112,10 @@ class ContinuousSegmentCamera(
 
     private var textureEntry: TextureRegistry.SurfaceTextureEntry? = null
     private var previewSurface: Surface? = null
+    private var cameraGlCompositor: CameraGlCompositor? = null
+    private var compositorInputSurface: Surface? = null
+    @Volatile private var cameraSurfacePipeline = CameraSurfacePipeline.GL_COMPOSITOR
+    @Volatile private var cameraSurfaceFallbackReason: String? = null
     private var cameraDevice: CameraDevice? = null
     @Volatile private var selectedCameraId: String? = null
     @Volatile private var selectedCameraCharacteristics: CameraCharacteristics? = null
@@ -180,6 +184,11 @@ class ContinuousSegmentCamera(
     private var splitResult: MethodChannel.Result? = null
     private var pendingStartPath: String? = null
     private var pendingSplitPath: String? = null
+    private var pendingNextTrackingNumber: String? = null
+    private var activeWatermarkTrackingNumber: String = ""
+    @Volatile private var pendingWatermarkTransitionPtsUs: Long? = null
+    @Volatile private var pendingWatermarkTransitionRendered = false
+    private val liveWatermarkSegmentState = LiveWatermarkSegmentState()
     private val recordingVideoEncoder = RecordingVideoEncoder(
         recordingSpec = { recordingSpec },
         onSample = ::handleVideoSample,
@@ -284,6 +293,8 @@ class ContinuousSegmentCamera(
         sessionHasPreview = false
         sessionHasEncoder = false
         sessionHasAnalysis = false
+        cameraSurfacePipeline = CameraSurfacePipeline.GL_COMPOSITOR
+        cameraSurfaceFallbackReason = null
         startFallbackTried = false
         recordingFallbackMode = null
         capabilityMode = CameraCapabilityMode.fromWire(capabilityModeName)
@@ -306,7 +317,12 @@ class ContinuousSegmentCamera(
         }
     }
 
-    fun startWork(path: String, recordAudio: Boolean, result: MethodChannel.Result) {
+    fun startWork(
+        path: String,
+        recordAudio: Boolean,
+        trackingNumber: String,
+        result: MethodChannel.Result,
+    ) {
         val handler = muxHandler
         if (disposed) {
             result.error("disposed", "摄像头已经关闭", null)
@@ -339,6 +355,16 @@ class ContinuousSegmentCamera(
             startResult = result
             audioOutputFormat = null
             recordingMuxPipeline.beginRecording()
+            liveWatermarkSegmentState.reset()
+            activeWatermarkTrackingNumber = trackingNumber
+            if (cameraSurfacePipeline == CameraSurfacePipeline.GL_COMPOSITOR &&
+                cameraGlCompositor != null
+            ) {
+                cameraGlCompositor?.setWatermark(trackingNumber)
+            } else {
+                liveWatermarkSegmentState.markWatermarkFailure()
+            }
+            cameraGlCompositor?.setEncoderEnabled(true)
             recordingVideoEncoder.setSuspended(false)
             if (recordAudio) {
                 recordingAudioPipeline.start(enabled = true)
@@ -389,7 +415,7 @@ class ContinuousSegmentCamera(
         }
     }
 
-    fun split(path: String, result: MethodChannel.Result) {
+    fun split(path: String, trackingNumber: String, result: MethodChannel.Result) {
         val handler = muxHandler
         if (disposed) {
             result.error("disposed", "摄像头已经关闭", null)
@@ -418,14 +444,41 @@ class ContinuousSegmentCamera(
             }
             ensureParent(path)
             pendingSplitPath = path
+            pendingNextTrackingNumber = trackingNumber
             splitResult = result
             recordingMuxPipeline.beginSplit()
-            recordingVideoEncoder.requestSyncFrame()
+            val compositor = cameraGlCompositor
+            if (cameraSurfacePipeline == CameraSurfacePipeline.GL_COMPOSITOR &&
+                compositor != null
+            ) {
+                compositor.prepareWatermarkTransition(
+                    trackingNumber,
+                    onActivated = {
+                        muxHandler?.post {
+                            if (splitResult === result &&
+                                pendingNextTrackingNumber == trackingNumber
+                            ) {
+                                recordingVideoEncoder.requestSyncFrame()
+                            }
+                        }
+                    },
+                    onFirstFrameSubmitted = { presentationTimeUs, rendered ->
+                        pendingWatermarkTransitionPtsUs = presentationTimeUs
+                        pendingWatermarkTransitionRendered = rendered
+                    },
+                )
+            } else {
+                recordingVideoEncoder.requestSyncFrame()
+            }
             handler.postDelayed({
                 if (splitResult === result) {
-                    recordingMuxPipeline.flushPendingAudio()
+                    recordingMuxPipeline.cancelSplit(pendingWatermarkTransitionPtsUs)
                     pendingSplitPath = null
+                    pendingNextTrackingNumber = null
+                    pendingWatermarkTransitionPtsUs = null
+                    pendingWatermarkTransitionRendered = false
                     splitResult = null
+                    cameraGlCompositor?.setWatermark(activeWatermarkTrackingNumber)
                     replyError(result, "split_timeout", "等待关键帧超时，当前录像仍在继续")
                 }
             }, SPLIT_TIMEOUT_MS)
@@ -458,6 +511,7 @@ class ContinuousSegmentCamera(
             stopResult = result
             recordingRequested = false
             recordingActive = false
+            cameraGlCompositor?.setEncoderEnabled(false)
             resetStallRecovery()
             Log.i(CAMERA_LOG_TAG, "stopWork")
             recreateCaptureSession()
@@ -543,6 +597,7 @@ class ContinuousSegmentCamera(
                     muxHandler?.post {
                         if (disposed) return@post
                         try {
+                            releaseCameraGlCompositor()
                             recordingVideoEncoder.release()
                             recordingVideoEncoder.prepare(
                                 videoSize.width,
@@ -710,10 +765,12 @@ class ContinuousSegmentCamera(
             splitResult = null
             pendingStartPath = null
             pendingSplitPath = null
+            pendingNextTrackingNumber = null
             recordingRequested = false
             recordingActive = false
             initialized = false
             recordingMuxPipeline.close(deleteOutput = false)
+            releaseCameraGlCompositor()
             recordingVideoEncoder.release()
             finishCleanup()
         } else finishCleanup()
@@ -736,6 +793,7 @@ class ContinuousSegmentCamera(
             cameraDevice?.close()
             cameraDevice = null
             cameraHandler?.removeCallbacks(previewStallCheck)
+            releaseCameraGlCompositor()
             previewSurface?.release()
             previewSurface = null
             mainHandler.post {
@@ -772,10 +830,12 @@ class ContinuousSegmentCamera(
             val characteristics = selectedCameraCharacteristics
                 ?: throw IllegalStateException("无法读取摄像头能力")
 
-            if (previewSurface == null || analysisReader == null) {
+            if (previewSurface == null) {
                 val surfaceTexture = textureEntry!!.surfaceTexture()
                 surfaceTexture.setDefaultBufferSize(videoSize.width, videoSize.height)
                 previewSurface = Surface(surfaceTexture)
+            }
+            if (analysisReader == null) {
                 analysisReader = ImageReader.newInstance(
                     analysisSize.width,
                     analysisSize.height,
@@ -1123,7 +1183,12 @@ class ContinuousSegmentCamera(
             onReady = {
                 sessionConfigAttempts++
                 val surfaces = sessionSurfaces(config)
-                val expected = if (config.includeEncoder) 3 else 2
+                val expected = CameraSurfaceTopologyPolicy.create(
+                    pipeline = cameraSurfacePipeline,
+                    includePreview = true,
+                    includeEncoder = config.includeEncoder,
+                    includeAnalysis = true,
+                ).cameraSurfaceCount
                 if (surfaces.size < expected) {
                     onFinalFailure("摄像头输出表面创建失败")
                     return@applyStreamConfig
@@ -1135,9 +1200,14 @@ class ContinuousSegmentCamera(
                         workingStreamConfig = config
                         sessionConfigStage = config.label
                         sessionHasPreview = true
-                        sessionHasEncoder = config.includeEncoder
+                        sessionHasEncoder = cameraSurfacePipeline ==
+                            CameraSurfacePipeline.GL_COMPOSITOR || config.includeEncoder
                         sessionHasAnalysis = true
-                        Log.i(CAMERA_LOG_TAG, "camera session configured stage=${config.label}")
+                        Log.i(
+                            CAMERA_LOG_TAG,
+                            "camera session configured stage=${config.label} " +
+                                "pipeline=${cameraSurfacePipeline.name.lowercase()}",
+                        )
                         onConfigured(session)
                     },
                     onConfigureFailed = {
@@ -1169,7 +1239,7 @@ class ContinuousSegmentCamera(
         val analysisChanged = analysis != analysisSize
         val applyCameraSide = {
             if (analysisChanged) recreateAnalysisReader(analysis)
-            resizePreviewSurface(video)
+            prepareFramePipeline(video)
             onReady()
         }
         if (encoderChanged) {
@@ -1181,6 +1251,16 @@ class ContinuousSegmentCamera(
             handler.post {
                 if (disposed) return@post
                 videoSize = video
+                if (
+                    CameraSurfaceLifecyclePolicy.shouldRebuildCompositor(
+                        pipeline = cameraSurfacePipeline,
+                        compositorReady = cameraGlCompositor != null,
+                        videoSizeChanged = true,
+                        encoderSurfaceChanged = true,
+                    )
+                ) {
+                    releaseCameraGlCompositor()
+                }
                 recordingVideoEncoder.release()
                 try {
                     recordingVideoEncoder.prepare(
@@ -1209,11 +1289,12 @@ class ContinuousSegmentCamera(
         }
     }
 
-    private fun sessionSurfaces(config: StreamConfig): List<Surface> = buildList {
-        previewSurface?.let(::add)
-        if (config.includeEncoder) recordingVideoEncoder.inputSurface?.let(::add)
-        analysisReader?.surface?.let(::add)
-    }
+    private fun sessionSurfaces(config: StreamConfig): List<Surface> =
+        cameraSurfaces(
+            includePreview = true,
+            includeEncoder = config.includeEncoder,
+            includeAnalysis = true,
+        )
 
     private fun recreateAnalysisReader(size: Size) {
         analysisReader?.close()
@@ -1229,13 +1310,169 @@ class ContinuousSegmentCamera(
         analysisReader = reader
     }
 
-    private fun resizePreviewSurface(size: Size) {
+    private fun prepareFramePipeline(size: Size) {
         val entry = textureEntry ?: return
         entry.surfaceTexture().setDefaultBufferSize(size.width, size.height)
         if (previewSurface == null) {
             previewSurface = Surface(entry.surfaceTexture())
         }
         videoSize = size
+        if (!CameraSurfaceLifecyclePolicy.shouldRebuildCompositor(
+                pipeline = cameraSurfacePipeline,
+                compositorReady = cameraGlCompositor != null,
+                videoSizeChanged = false,
+                encoderSurfaceChanged = false,
+            )
+        ) {
+            return
+        }
+        val preview = previewSurface ?: return
+        val encoder = recordingVideoEncoder.inputSurface
+        if (encoder == null) {
+            fallbackToDirectCameraPipeline(
+                stage = "encoder_surface_missing",
+                error = IllegalStateException("视频编码器输出表面不存在"),
+                recreateSession = false,
+            )
+            return
+        }
+        try {
+            val compositor = CameraGlCompositor(
+                width = size.width,
+                height = size.height,
+                previewOutput = preview,
+                encoderOutput = encoder,
+                recordingOrientation = recordingOrientationName,
+                onFailure = ::handleCameraGlFailure,
+                onEncodedWatermarkFrame = { rendered ->
+                    if (rendered) {
+                        liveWatermarkSegmentState.markWatermarkRendered()
+                    } else {
+                        liveWatermarkSegmentState.markWatermarkFailure()
+                    }
+                },
+                onWatermarkFailure = { error ->
+                    liveWatermarkSegmentState.markWatermarkFailure()
+                    Log.e(CAMERA_LOG_TAG, "live watermark overlay disabled", error)
+                },
+            )
+            val input = compositor.start()
+            val attached = attachCameraGlCompositor(compositor, input)
+            if (!attached) {
+                compositor.release()
+                return
+            }
+            compositor.setEncoderEnabled(recordingRequested || recordingActive)
+            Log.i(
+                CAMERA_LOG_TAG,
+                "camera GL compositor ready size=${size.width}x${size.height}",
+            )
+        } catch (error: Throwable) {
+            fallbackToDirectCameraPipeline(
+                stage = "compositor_init",
+                error = error,
+                recreateSession = false,
+            )
+        }
+    }
+
+    private fun cameraSurfaces(
+        includePreview: Boolean,
+        includeEncoder: Boolean,
+        includeAnalysis: Boolean,
+    ): List<Surface> {
+        val topology = CameraSurfaceTopologyPolicy.create(
+            pipeline = cameraSurfacePipeline,
+            includePreview = includePreview,
+            includeEncoder = includeEncoder,
+            includeAnalysis = includeAnalysis,
+        )
+        cameraGlCompositor?.setEncoderEnabled(topology.compositorEncoderEnabled)
+        return buildList {
+            if (topology.cameraUsesFrameSurface) compositorInputSurface?.let(::add)
+            if (topology.cameraUsesPreviewSurface) previewSurface?.let(::add)
+            if (topology.cameraUsesEncoderSurface) {
+                recordingVideoEncoder.inputSurface?.let(::add)
+            }
+            if (topology.cameraUsesAnalysisSurface) analysisReader?.surface?.let(::add)
+        }
+    }
+
+    @Synchronized
+    private fun attachCameraGlCompositor(
+        compositor: CameraGlCompositor,
+        inputSurface: Surface,
+    ): Boolean {
+        if (disposed ||
+            cameraSurfacePipeline != CameraSurfacePipeline.GL_COMPOSITOR ||
+            cameraGlCompositor != null
+        ) {
+            return false
+        }
+        cameraGlCompositor = compositor
+        compositorInputSurface = inputSurface
+        return true
+    }
+
+    @Synchronized
+    private fun releaseCameraGlCompositor() {
+        cameraGlCompositor?.release()
+        cameraGlCompositor = null
+        compositorInputSurface = null
+    }
+
+    private fun handleCameraGlFailure(failure: CameraGlFailure) {
+        cameraHandler?.post {
+            if (disposed || cameraSurfacePipeline != CameraSurfacePipeline.GL_COMPOSITOR) {
+                return@post
+            }
+            fallbackToDirectCameraPipeline(
+                stage = "compositor_${failure.output.name.lowercase()}",
+                error = failure.error,
+                recreateSession = true,
+            )
+        }
+    }
+
+    private fun fallbackToDirectCameraPipeline(
+        stage: String,
+        error: Throwable,
+        recreateSession: Boolean,
+    ) {
+        if (cameraSurfacePipeline == CameraSurfacePipeline.DIRECT) return
+        liveWatermarkSegmentState.markWatermarkFailure()
+        cameraSurfacePipeline = CameraSurfaceLifecyclePolicy.failureFallback(
+            cameraSurfacePipeline,
+        )
+        cameraSurfaceFallbackReason = "$stage:${error.javaClass.simpleName}"
+        Log.e(
+            CAMERA_LOG_TAG,
+            "camera GL compositor unavailable; falling back to direct Camera2 stage=$stage",
+            error,
+        )
+        emit(
+            "cameraPipelineFallback",
+            mapOf(
+                "pipeline" to "direct",
+                "stage" to stage,
+                "errorType" to error.javaClass.simpleName,
+            ),
+        )
+        if (recreateSession) {
+            runCatching { captureSession?.close() }
+            captureSession = null
+            sessionHasPreview = false
+            sessionHasEncoder = false
+            sessionHasAnalysis = false
+        }
+        releaseCameraGlCompositor()
+        if (recreateSession && !disposed) {
+            recreateCaptureSession(
+                onError = { message ->
+                    notifyNativeError("摄像头直连管线恢复失败：$message", error)
+                },
+            )
+        }
     }
 
     private fun analyzeImage(reader: ImageReader) {
@@ -1465,8 +1702,21 @@ class ContinuousSegmentCamera(
                 }
                 val camera = cameraDevice ?: return@post
                 val characteristics = selectedCameraCharacteristics ?: return@post
-                val encoder = recordingVideoEncoder.inputSurface ?: return@post
-                val preview = previewSurface ?: return@post
+                val surfaces = cameraSurfaces(
+                    includePreview = true,
+                    includeEncoder = true,
+                    includeAnalysis = false,
+                )
+                val expected = CameraSurfaceTopologyPolicy.create(
+                    pipeline = cameraSurfacePipeline,
+                    includePreview = true,
+                    includeEncoder = true,
+                    includeAnalysis = false,
+                ).cameraSurfaceCount
+                if (surfaces.size < expected) {
+                    onError?.invoke("摄像头轮换输出表面不存在")
+                    return@post
+                }
                 val oldSession = captureSession
                 captureSession = null
                 sessionHasPreview = false
@@ -1481,7 +1731,7 @@ class ContinuousSegmentCamera(
                 }
                 submitCaptureSession(
                     camera = camera,
-                    surfaces = listOf(preview, encoder),
+                    surfaces = surfaces,
                     onConfigured = { session ->
                         captureSession = session
                         sessionHasPreview = true
@@ -1492,7 +1742,8 @@ class ContinuousSegmentCamera(
                             applyCaptureRequest(session, camera, characteristics)
                             Log.w(
                                 CAMERA_LOG_TAG,
-                                "alternating recording session configured preview+encoder",
+                                "alternating recording session configured " +
+                                    "pipeline=${cameraSurfacePipeline.name.lowercase()}",
                             )
                             mux.post {
                                 if (startResult != null && recordingRequested) {
@@ -1540,8 +1791,23 @@ class ContinuousSegmentCamera(
                 }
                 val camera = cameraDevice ?: return@post
                 val characteristics = selectedCameraCharacteristics ?: return@post
-                val encoder = recordingVideoEncoder.inputSurface ?: return@post
-                val analysis = analysisReader?.surface ?: return@post
+                val surfaces = cameraSurfaces(
+                    includePreview = cameraSurfacePipeline ==
+                        CameraSurfacePipeline.GL_COMPOSITOR,
+                    includeEncoder = true,
+                    includeAnalysis = true,
+                )
+                val expected = CameraSurfaceTopologyPolicy.create(
+                    pipeline = cameraSurfacePipeline,
+                    includePreview = cameraSurfacePipeline ==
+                        CameraSurfacePipeline.GL_COMPOSITOR,
+                    includeEncoder = true,
+                    includeAnalysis = true,
+                ).cameraSurfaceCount
+                if (surfaces.size < expected) {
+                    onError?.invoke("摄像头降级输出表面不存在")
+                    return@post
+                }
                 val oldSession = captureSession
                 captureSession = null
                 sessionHasPreview = false
@@ -1556,19 +1822,21 @@ class ContinuousSegmentCamera(
                 }
                 submitCaptureSession(
                     camera = camera,
-                    surfaces = listOf(encoder, analysis),
+                    surfaces = surfaces,
                     onConfigured = { session ->
                         captureSession = session
                         sessionHasEncoder = true
                         sessionHasAnalysis = true
-                        sessionHasPreview = false
+                        sessionHasPreview = cameraSurfacePipeline ==
+                            CameraSurfacePipeline.GL_COMPOSITOR
                         recordingFallbackMode = "encoder_analysis"
                         sessionFallbackEncoderAnalysis = true
                         try {
                             applyCaptureRequest(session, camera, characteristics)
                             Log.w(
                                 CAMERA_LOG_TAG,
-                                "recording fallback session configured encoder+analysis",
+                                "recording fallback session configured " +
+                                    "pipeline=${cameraSurfacePipeline.name.lowercase()}",
                             )
                             emit("recordingFallback", mapOf("mode" to "encoder_analysis"))
                             mux.post {
@@ -1616,15 +1884,16 @@ class ContinuousSegmentCamera(
                 return@post
             }
             val recording = recordingRequested || recordingActive
-            val candidates = if (recording) {
+            val candidates = if (
+                recording && cameraSurfacePipeline == CameraSurfacePipeline.DIRECT
+            ) {
                 streamConfigPolicy.threeSurfaceCandidates(
                     videoCandidates.map { StreamSize(it.width, it.height) },
                     analysisCandidates.map { StreamSize(it.width, it.height) },
                 )
             } else {
-                // 停止/自愈一律回到“预览 + 识别”两路候选，绝不沿用录制时的
-                // 三路配置：部分机型（如荣耀 X70 / Android 16）三路会话录制
-                // 中会停摆，停止后再按三路重建会直接失败并拖垮摄像头。
+                // GL 管线始终只向 Camera2 提交“合成输入 + 识别”两路；直连
+                // 管线停止/自愈也回到“预览 + 识别”，避免沿用三路失败组合。
                 streamConfigPolicy.initializationCandidates(
                     videoCandidates.map { StreamSize(it.width, it.height) },
                     analysisCandidates.map { StreamSize(it.width, it.height) },
@@ -1686,14 +1955,22 @@ class ContinuousSegmentCamera(
         characteristics: CameraCharacteristics,
     ) {
         val targets = captureRequestTargetPolicy.targets(recordingRequested, recordingActive)
+        val topology = CameraSurfaceTopologyPolicy.create(
+            pipeline = cameraSurfacePipeline,
+            includePreview = sessionHasPreview,
+            includeEncoder = targets.includeEncoder && sessionHasEncoder,
+            includeAnalysis = targets.includeAnalysis && sessionHasAnalysis,
+        )
+        cameraGlCompositor?.setEncoderEnabled(topology.compositorEncoderEnabled)
         val request = camera.createCaptureRequest(
             if (targets.includeEncoder) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW,
         ).apply {
-            if (sessionHasPreview) previewSurface?.let(::addTarget)
-            if (targets.includeEncoder && sessionHasEncoder) {
+            if (topology.cameraUsesFrameSurface) compositorInputSurface?.let(::addTarget)
+            if (topology.cameraUsesPreviewSurface) previewSurface?.let(::addTarget)
+            if (topology.cameraUsesEncoderSurface) {
                 recordingVideoEncoder.inputSurface?.let(::addTarget)
             }
-            if (targets.includeAnalysis && sessionHasAnalysis) analysisReader?.surface?.let(::addTarget)
+            if (topology.cameraUsesAnalysisSurface) analysisReader?.surface?.let(::addTarget)
             applyAutomaticCameraControls(this, characteristics)
             set(
                 CaptureRequest.FLASH_MODE,
@@ -1714,7 +1991,8 @@ class ContinuousSegmentCamera(
         Log.i(
             CAMERA_LOG_TAG,
             "capture request template=$lastRequestTemplate " +
-                "analysis=${targets.includeAnalysis} encoder=${targets.includeEncoder}",
+                "analysis=${targets.includeAnalysis} encoder=${targets.includeEncoder} " +
+                "pipeline=${cameraSurfacePipeline.name.lowercase()}",
         )
     }
 
@@ -1847,9 +2125,19 @@ class ContinuousSegmentCamera(
 
         if (!recordingActive || !recordingMuxPipeline.hasActiveMuxer) return
 
-        if (splitResult != null && pendingSplitPath != null && isKeyFrame) {
-            rotateMuxerAtKeyFrame(buffer, info)
-            return
+        if (splitResult != null && pendingSplitPath != null) {
+            when (SplitVideoSamplePolicy.decide(
+                samplePtsUs = info.presentationTimeUs,
+                isKeyFrame = isKeyFrame,
+                transitionPtsUs = pendingWatermarkTransitionPtsUs,
+            )) {
+                SplitVideoSampleAction.ROTATE -> {
+                    rotateMuxerAtKeyFrame(buffer, info)
+                    return
+                }
+                SplitVideoSampleAction.DROP_TRANSITION -> return
+                SplitVideoSampleAction.WRITE_CURRENT -> Unit
+            }
         }
         recordingMuxPipeline.writeVideo(buffer, info.presentationTimeUs, info.flags)
     }
@@ -1878,26 +2166,51 @@ class ContinuousSegmentCamera(
         val nextPath = pendingSplitPath ?: return
         if (recordingMuxPipeline.currentPath == null) return
         try {
+            val transitionPtsUs = pendingWatermarkTransitionPtsUs
+            val transitionRendered = pendingWatermarkTransitionRendered
+            val transitionFailed = cameraGlCompositor?.hasWatermarkOverlayFailed() == true
             val rotation = recordingMuxPipeline.rotateAtKeyFrame(
-                nextPath,
-                buffer,
-                info.presentationTimeUs,
-                info.flags,
-                orientationHintDegrees(),
-                recordAudio,
+                nextPath = nextPath,
+                buffer = buffer,
+                sourcePtsUs = info.presentationTimeUs,
+                flags = info.flags,
+                orientationHintDegrees = orientationHintDegrees(),
+                recordAudio = recordAudio,
+                oldSegmentEndSourcePtsUs = transitionPtsUs ?: info.presentationTimeUs,
             )
             splitResult = null
             pendingSplitPath = null
+            pendingWatermarkTransitionPtsUs = null
+            pendingWatermarkTransitionRendered = false
+            val watermarkDisposition = liveWatermarkDispositionWire()
+            liveWatermarkSegmentState.reset()
+            activeWatermarkTrackingNumber = pendingNextTrackingNumber.orEmpty()
+            pendingNextTrackingNumber = null
+            if (transitionRendered && !transitionFailed) {
+                liveWatermarkSegmentState.markWatermarkRendered()
+            } else {
+                liveWatermarkSegmentState.markWatermarkFailure()
+            }
+            if (cameraSurfacePipeline != CameraSurfacePipeline.GL_COMPOSITOR ||
+                cameraGlCompositor == null
+            ) {
+                liveWatermarkSegmentState.markWatermarkFailure()
+            }
             replySuccess(result, mapOf(
                 "completedPath" to rotation.completedPath,
                 "nextPath" to rotation.nextPath,
                 "completedStartedAtMs" to rotation.completedStartedAtMs,
                 "boundaryAtMs" to rotation.boundaryAtMs,
+                "watermarkDisposition" to watermarkDisposition,
             ))
         } catch (error: Throwable) {
             recordingMuxPipeline.discardPendingAudio()
             splitResult = null
             pendingSplitPath = null
+            pendingNextTrackingNumber = null
+            pendingWatermarkTransitionPtsUs = null
+            pendingWatermarkTransitionRendered = false
+            cameraGlCompositor?.setWatermark(activeWatermarkTrackingNumber)
             replyError(result, "split_failed", "录像分段保存失败")
             notifyNativeError("录像分段保存失败", error)
         }
@@ -1918,10 +2231,20 @@ class ContinuousSegmentCamera(
         if (elapsedMs > MUX_WRITE_STALL_THRESHOLD_MS) muxWriteStallCount++
     }
 
+    private fun liveWatermarkDispositionWire(): String =
+        when (liveWatermarkSegmentState.disposition()) {
+            LiveWatermarkSegmentDisposition.COMPLETED -> "completed"
+            LiveWatermarkSegmentDisposition.FAILED_PARTIAL -> "failedPartial"
+        }
+
     private fun finishStop() {
         val result = stopResult ?: return
         try {
             val summary = recordingMuxPipeline.finishStop(System.currentTimeMillis())
+            val watermarkDisposition = liveWatermarkDispositionWire()
+            cameraGlCompositor?.setEncoderEnabled(false)
+            cameraGlCompositor?.clearWatermark()
+            activeWatermarkTrackingNumber = ""
             recordingVideoEncoder.setSuspended(true)
             stopResult = null
             pendingStartPath = null
@@ -1933,10 +2256,15 @@ class ContinuousSegmentCamera(
                     "path" to summary.path,
                     "startedAtMs" to summary.startedAtMs,
                     "endedAtMs" to max(summary.startedAtMs, summary.endedAtMs),
+                    "watermarkDisposition" to watermarkDisposition,
                 ))
             }
         } catch (error: Throwable) {
             stopResult = null
+            pendingNextTrackingNumber = null
+            cameraGlCompositor?.setEncoderEnabled(false)
+            cameraGlCompositor?.clearWatermark()
+            activeWatermarkTrackingNumber = ""
             replyError(result, "muxer_stop", "录像文件保存失败")
             notifyNativeError("录像文件保存失败", error)
         }
@@ -1950,8 +2278,14 @@ class ContinuousSegmentCamera(
         startResult = null
         pendingStartPath?.let { File(it).delete() }
         pendingStartPath = null
+        pendingNextTrackingNumber = null
+        pendingWatermarkTransitionPtsUs = null
+        pendingWatermarkTransitionRendered = false
         recordingRequested = false
         recordingActive = false
+        cameraGlCompositor?.setEncoderEnabled(false)
+        cameraGlCompositor?.clearWatermark()
+        activeWatermarkTrackingNumber = ""
         resetStallRecovery()
         recreateCaptureSession()
         recordingVideoEncoder.setSuspended(true)
@@ -1992,6 +2326,7 @@ class ContinuousSegmentCamera(
             analysisReader = null
             cameraDevice?.close()
             cameraDevice = null
+            releaseCameraGlCompositor()
             previewSurface?.release()
             previewSurface = null
             resetStallRecovery()
@@ -2277,19 +2612,20 @@ class ContinuousSegmentCamera(
             // 探针使用独立临时编码器：先释放长驻编码器，结束后确定性恢复，
             // 正式 preferredMime / selectedMime / fallbackReason
             // 均由同一确定性输入重建，与探测前一致。
+            runCatching { captureSession?.close() }
+            captureSession = null
+            sessionHasPreview = false
+            sessionHasEncoder = false
+            sessionHasAnalysis = false
+            runCatching { cameraDevice?.close() }
+            cameraDevice = null
+            releaseCameraGlCompositor()
             recordingVideoEncoder.release()
             cam.post {
                 if (disposed || generation != probeGeneration) {
                     finishCapabilityProbe(normalized, result, "error", "cancelled", emptyList())
                     return@post
                 }
-                runCatching { captureSession?.close() }
-                captureSession = null
-                sessionHasPreview = false
-                sessionHasEncoder = false
-                sessionHasAnalysis = false
-                runCatching { cameraDevice?.close() }
-                cameraDevice = null
                 val environment = CameraCapabilityProbeEnvironment(
                     handler = cam,
                     cameraManager = cameraManager,
@@ -2301,6 +2637,7 @@ class ContinuousSegmentCamera(
                     videoSize = StreamSize(videoSize.width, videoSize.height),
                     analysisSize = StreamSize(analysisSize.width, analysisSize.height),
                     selectedVideoMime = recordingVideoEncoder.selectedMime,
+                    surfacePipeline = cameraSurfacePipeline,
                     cameraId = { selectedCameraId },
                     cameraCharacteristics = { selectedCameraCharacteristics },
                     surfaceTexture = { textureEntry?.surfaceTexture() },
@@ -2450,6 +2787,7 @@ class ContinuousSegmentCamera(
                     stallRecoveryStage,
                     sessionConfigStage, sessionConfigAttempts, initFailureStage, initFailureDetail,
                     startFailureStage, startFailureDetail, recordingFallbackMode,
+                    cameraSurfacePipeline.name.lowercase(), cameraSurfaceFallbackReason,
                 ),
                 CameraCapabilityDiagnostics(
                     capabilityMode.name.lowercase(),

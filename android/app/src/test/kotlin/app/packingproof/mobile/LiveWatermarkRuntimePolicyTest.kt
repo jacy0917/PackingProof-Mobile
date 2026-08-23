@@ -1,0 +1,155 @@
+package app.packingproof.mobile
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class LiveWatermarkRuntimePolicyTest {
+    private fun assertPoint(
+        expectedX: Float,
+        expectedY: Float,
+        actual: CameraGlPoint,
+    ) {
+        assertEquals(expectedX, actual.x, 0.001f)
+        assertEquals(expectedY, actual.y, 0.001f)
+    }
+
+    @Test
+    fun `regenerates current and next textures only across second or tracking changes`() {
+        val policy = LiveWatermarkTextureCachePolicy()
+        val first = policy.update(1_234L, "SF123")
+        val sameSecond = policy.update(1_999L, "SF123")
+        val nextSecond = policy.update(2_000L, "SF123")
+        val nextTracking = policy.update(2_001L, "SF456")
+
+        assertTrue(first.changed)
+        assertEquals(1L, first.current.epochSecond)
+        assertEquals(2L, first.next.epochSecond)
+        assertFalse(sameSecond.changed)
+        assertTrue(nextSecond.changed)
+        assertEquals(2L, nextSecond.current.epochSecond)
+        assertTrue(nextTracking.changed)
+        assertEquals("SF456", nextTracking.current.trackingNumber)
+    }
+
+    @Test
+    fun `reset invalidates an otherwise reusable texture key`() {
+        val policy = LiveWatermarkTextureCachePolicy()
+        policy.update(1_234L, "SF123")
+        policy.reset()
+
+        assertTrue(policy.update(1_234L, "SF123").changed)
+    }
+
+    @Test
+    fun `watermark failure is sticky but recording remains publishable as partial`() {
+        val state = LiveWatermarkSegmentState()
+        state.markWatermarkRendered()
+        assertEquals(LiveWatermarkSegmentDisposition.COMPLETED, state.disposition())
+
+        state.markWatermarkFailure()
+        state.markWatermarkRendered()
+        assertEquals(LiveWatermarkSegmentDisposition.FAILED_PARTIAL, state.disposition())
+
+        state.reset()
+        assertEquals(LiveWatermarkSegmentDisposition.FAILED_PARTIAL, state.disposition())
+    }
+
+    @Test
+    fun `GL full recording keeps barcode direct and collapses preview encoder to one camera surface`() {
+        val topology = CameraSurfaceTopologyPolicy.create(
+            pipeline = CameraSurfacePipeline.GL_COMPOSITOR,
+            includePreview = true,
+            includeEncoder = true,
+            includeAnalysis = true,
+        )
+
+        assertTrue(topology.cameraUsesFrameSurface)
+        assertTrue(topology.cameraUsesAnalysisSurface)
+        assertTrue(topology.compositorEncoderEnabled)
+        assertFalse(topology.cameraUsesPreviewSurface)
+        assertFalse(topology.cameraUsesEncoderSurface)
+        assertEquals(2, topology.cameraSurfaceCount)
+    }
+
+    @Test
+    fun `GL alternating recording keeps preview while omitting barcode surface`() {
+        val topology = CameraSurfaceTopologyPolicy.create(
+            pipeline = CameraSurfacePipeline.GL_COMPOSITOR,
+            includePreview = true,
+            includeEncoder = true,
+            includeAnalysis = false,
+        )
+
+        assertTrue(topology.cameraUsesFrameSurface)
+        assertFalse(topology.cameraUsesAnalysisSurface)
+        assertEquals(1, topology.cameraSurfaceCount)
+    }
+
+    @Test
+    fun `direct fallback preserves original three surface recording topology`() {
+        val topology = CameraSurfaceTopologyPolicy.create(
+            pipeline = CameraSurfacePipeline.DIRECT,
+            includePreview = true,
+            includeEncoder = true,
+            includeAnalysis = true,
+        )
+
+        assertFalse(topology.cameraUsesFrameSurface)
+        assertTrue(topology.cameraUsesPreviewSurface)
+        assertTrue(topology.cameraUsesEncoderSurface)
+        assertTrue(topology.cameraUsesAnalysisSurface)
+        assertEquals(3, topology.cameraSurfaceCount)
+    }
+
+    @Test
+    fun `encoder surface replacement rebuilds GL but never rebuilds direct fallback`() {
+        assertTrue(
+            CameraSurfaceLifecyclePolicy.shouldRebuildCompositor(
+                pipeline = CameraSurfacePipeline.GL_COMPOSITOR,
+                compositorReady = true,
+                videoSizeChanged = false,
+                encoderSurfaceChanged = true,
+            ),
+        )
+        assertFalse(
+            CameraSurfaceLifecyclePolicy.shouldRebuildCompositor(
+                pipeline = CameraSurfacePipeline.DIRECT,
+                compositorReady = false,
+                videoSizeChanged = true,
+                encoderSurfaceChanged = true,
+            ),
+        )
+        assertEquals(
+            CameraSurfacePipeline.DIRECT,
+            CameraSurfaceLifecyclePolicy.failureFallback(
+                CameraSurfacePipeline.GL_COMPOSITOR,
+            ),
+        )
+        assertEquals(
+            CameraSurfacePipeline.DIRECT,
+            CameraSurfaceLifecyclePolicy.failureFallback(CameraSurfacePipeline.DIRECT),
+        )
+    }
+
+    @Test
+    fun `watermark quad is top centered in portrait final coordinates`() {
+        val quad = LiveWatermarkQuadPolicy.create(1080, 1920, 300, 100, "portrait")
+
+        assertPoint(390f, 76.8f, quad.topLeft)
+        assertPoint(690f, 76.8f, quad.topRight)
+        assertPoint(390f, 176.8f, quad.bottomLeft)
+    }
+
+    @Test
+    fun `landscape directions map the same final placement to opposite raw edges`() {
+        val left = LiveWatermarkQuadPolicy.create(1920, 1080, 300, 100, "landscapeLeft")
+        val right = LiveWatermarkQuadPolicy.create(1920, 1080, 300, 100, "landscapeRight")
+
+        assertPoint(76.8f, 690f, left.topLeft)
+        assertPoint(1843.2f, 390f, right.topLeft)
+        assertEquals(1080, LiveWatermarkQuadPolicy.outputHeight(1920, 1080, "portrait"))
+        assertEquals(1920, LiveWatermarkQuadPolicy.outputHeight(1920, 1080, "landscapeLeft"))
+    }
+}

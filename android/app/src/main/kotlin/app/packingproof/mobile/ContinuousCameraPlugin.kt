@@ -53,18 +53,20 @@ class ContinuousCameraPlugin(
             "startWork" -> {
                 val path = call.argument<String>("path")
                 val recordAudio = call.argument<Boolean>("recordAudio") ?: true
+                val trackingNumber = call.argument<String>("trackingNumber").orEmpty()
                 if (path.isNullOrBlank()) {
                     result.error("invalid_path", "录像文件路径不能为空", null)
                 } else {
-                    engine.startWork(path, recordAudio, result)
+                    engine.startWork(path, recordAudio, trackingNumber, result)
                 }
             }
             "split" -> {
                 val path = call.argument<String>("path")
+                val trackingNumber = call.argument<String>("trackingNumber").orEmpty()
                 if (path.isNullOrBlank()) {
                     result.error("invalid_path", "下一段录像路径不能为空", null)
                 } else {
-                    engine.split(path, result)
+                    engine.split(path, trackingNumber, result)
                 }
             }
             "stopWork" -> engine.stopWork(result)

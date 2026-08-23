@@ -9,6 +9,63 @@ import org.junit.Test
 
 class RecordingMuxPipelineTest {
     @Test
+    fun `厂商延迟关键帧时丢弃水印切换后的过渡帧并裁剪中间音频`() {
+        val events = mutableListOf<String>()
+        val pipeline = pipeline(events)
+        pipeline.beginRecording()
+        pipeline.openSegment("first.mp4", 1_000_000L, 10_000L, 0, true)
+        pipeline.writeVideo(
+            ByteBuffer.wrap(byteArrayOf(1)),
+            1_000_000L,
+            MediaCodec.BUFFER_FLAG_KEY_FRAME,
+        )
+        pipeline.acceptAudio(audio(100_000L), true, true, false)
+        pipeline.beginSplit()
+        pipeline.acceptAudio(audio(599_999L), true, true, true)
+        pipeline.acceptAudio(audio(600_000L), true, true, true)
+        pipeline.acceptAudio(audio(1_099_999L), true, true, true)
+        pipeline.acceptAudio(audio(1_100_000L), true, true, true)
+
+        val transitionPtsUs = 1_500_000L
+        assertEquals(
+            SplitVideoSampleAction.DROP_TRANSITION,
+            SplitVideoSamplePolicy.decide(1_500_000L, false, transitionPtsUs),
+        )
+        assertEquals(
+            SplitVideoSampleAction.DROP_TRANSITION,
+            SplitVideoSamplePolicy.decide(1_700_000L, false, transitionPtsUs),
+        )
+        assertEquals(
+            SplitVideoSampleAction.ROTATE,
+            SplitVideoSamplePolicy.decide(2_000_000L, true, transitionPtsUs),
+        )
+
+        pipeline.rotateAtKeyFrame(
+            nextPath = "second.mp4",
+            buffer = ByteBuffer.wrap(byteArrayOf(2)),
+            sourcePtsUs = 2_000_000L,
+            flags = MediaCodec.BUFFER_FLAG_KEY_FRAME,
+            orientationHintDegrees = 0,
+            recordAudio = true,
+            oldSegmentEndSourcePtsUs = transitionPtsUs,
+        )
+
+        assertEquals(
+            listOf(
+                "open:first.mp4",
+                "video:first.mp4:0:${MediaCodec.BUFFER_FLAG_KEY_FRAME}",
+                "audio:first.mp4:0",
+                "audio:first.mp4:499999",
+                "close:first.mp4:false",
+                "open:second.mp4",
+                "audio:second.mp4:0",
+                "video:second.mp4:0:${MediaCodec.BUFFER_FLAG_KEY_FRAME}",
+            ),
+            events,
+        )
+    }
+
+    @Test
     fun `分段只在关键帧边界切换并按边界分配 pending 音频`() {
         val events = mutableListOf<String>()
         val pipeline = pipeline(events)

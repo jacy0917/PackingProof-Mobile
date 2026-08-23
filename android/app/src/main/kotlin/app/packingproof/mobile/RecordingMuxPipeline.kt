@@ -26,6 +26,28 @@ internal data class MuxStopSummary(
     val endedAtMs: Long,
 )
 
+internal enum class SplitVideoSampleAction {
+    WRITE_CURRENT,
+    DROP_TRANSITION,
+    ROTATE,
+}
+
+internal object SplitVideoSamplePolicy {
+    fun decide(
+        samplePtsUs: Long,
+        isKeyFrame: Boolean,
+        transitionPtsUs: Long?,
+    ): SplitVideoSampleAction {
+        val transition = transitionPtsUs ?: return SplitVideoSampleAction.WRITE_CURRENT
+        if (samplePtsUs < transition) return SplitVideoSampleAction.WRITE_CURRENT
+        return if (isKeyFrame) {
+            SplitVideoSampleAction.ROTATE
+        } else {
+            SplitVideoSampleAction.DROP_TRANSITION
+        }
+    }
+}
+
 internal fun interface SegmentMuxerFactory {
     fun open(
         path: String,
@@ -118,6 +140,17 @@ internal class RecordingMuxPipeline(
         pendingAudio.clear()
     }
 
+    fun cancelSplit(transitionPtsUs: Long?) {
+        if (transitionPtsUs == null) {
+            flushPendingAudio()
+            return
+        }
+        pendingAudio
+            .filter { timeline.audioSourcePtsUs(it.presentationTimeUs) < transitionPtsUs }
+            .forEach(::writeAudio)
+        pendingAudio.clear()
+    }
+
     fun rotateAtKeyFrame(
         nextPath: String,
         buffer: ByteBuffer,
@@ -125,12 +158,15 @@ internal class RecordingMuxPipeline(
         flags: Int,
         orientationHintDegrees: Int,
         recordAudio: Boolean,
+        oldSegmentEndSourcePtsUs: Long = sourcePtsUs,
     ): MuxSegmentRotation {
         val completedPath = checkNotNull(currentPath)
         val completedStartedAtMs = segmentStartedAtMs
         val boundaryAtMs = timeline.boundaryAtMs(segmentStartedAtMs, sourcePtsUs)
         pendingAudio
-            .filter { timeline.audioSourcePtsUs(it.presentationTimeUs) < sourcePtsUs }
+            .filter {
+                timeline.audioSourcePtsUs(it.presentationTimeUs) < oldSegmentEndSourcePtsUs
+            }
             .forEach(::writeAudio)
         close(deleteOutput = false)
         openSegment(

@@ -69,6 +69,8 @@ internal data class CameraRecoveryDiagnostics(
     val startFailureStage: String?,
     val startFailureDetail: String?,
     val recordingFallbackMode: String?,
+    val surfacePipeline: String = "direct",
+    val surfaceFallbackReason: String? = null,
 )
 
 internal data class CameraCapabilityDiagnostics(
@@ -305,6 +307,8 @@ internal object CameraDiagnosticsSnapshotMapper {
             "startFailureStage" to recovery.startFailureStage,
             "startFailureDetail" to recovery.startFailureDetail,
             "recordingFallbackMode" to recovery.recordingFallbackMode,
+            "surfacePipeline" to recovery.surfacePipeline,
+            "surfaceFallbackReason" to recovery.surfaceFallbackReason,
             "capabilityMode" to capability.mode,
             "preferEncoderAnalysisRecording" to capability.preferEncoderAnalysisRecording,
             "sessionSurfaces" to "preview=${capability.sessionHasPreview} " +

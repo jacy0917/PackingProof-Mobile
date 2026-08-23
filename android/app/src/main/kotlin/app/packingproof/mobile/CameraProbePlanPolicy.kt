@@ -83,12 +83,18 @@ internal object CameraProbePlanPolicy {
         videoCandidates: List<StreamSize>,
         analysisCandidates: List<StreamSize>,
         alternatingAnalysisSize: StreamSize,
+        surfacePipeline: CameraSurfacePipeline = CameraSurfacePipeline.DIRECT,
     ): List<ProbeStreamConfig> {
         val candidates = when (kind) {
             ProbePhaseKind.IDLE ->
                 streamConfigPolicy.initializationCandidates(videoCandidates, analysisCandidates)
-            ProbePhaseKind.RECORD_FULL, ProbePhaseKind.RECORD_ENCODER_ANALYSIS ->
+            ProbePhaseKind.RECORD_FULL, ProbePhaseKind.RECORD_ENCODER_ANALYSIS -> if (
+                surfacePipeline == CameraSurfacePipeline.GL_COMPOSITOR
+            ) {
+                streamConfigPolicy.initializationCandidates(videoCandidates, analysisCandidates)
+            } else {
                 streamConfigPolicy.threeSurfaceCandidates(videoCandidates, analysisCandidates)
+            }
             ProbePhaseKind.RECORD_ALTERNATING -> videoCandidates.take(2).map { video ->
                 StreamConfig(
                     videoWidth = video.width,

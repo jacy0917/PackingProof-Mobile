@@ -264,7 +264,7 @@ private fun Map<*, *>.toCameraRecordingSplitDto(): CameraRecordingSplitDto =
         nextPath = this["nextPath"] as String,
         completedStartedAtMs = (this["completedStartedAtMs"] as Number).toLong(),
         boundaryAtMs = (this["boundaryAtMs"] as Number).toLong(),
-        watermarkDisposition = CameraWatermarkDisposition.POST_PROCESS_REQUIRED,
+        watermarkDisposition = this["watermarkDisposition"].toCameraWatermarkDisposition(),
     )
 
 private fun Map<*, *>.toCameraRecordingStopDto(): CameraRecordingStopDto =
@@ -272,8 +272,14 @@ private fun Map<*, *>.toCameraRecordingStopDto(): CameraRecordingStopDto =
         path = this["path"] as String,
         startedAtMs = (this["startedAtMs"] as Number).toLong(),
         endedAtMs = (this["endedAtMs"] as Number).toLong(),
-        watermarkDisposition = CameraWatermarkDisposition.POST_PROCESS_REQUIRED,
+        watermarkDisposition = this["watermarkDisposition"].toCameraWatermarkDisposition(),
     )
+
+private fun Any?.toCameraWatermarkDisposition(): CameraWatermarkDisposition = when (this) {
+    "completed" -> CameraWatermarkDisposition.COMPLETED
+    "failedPartial" -> CameraWatermarkDisposition.FAILED_PARTIAL
+    else -> throw IllegalStateException("Android 相机未返回有效的实时水印状态")
+}
 
 private fun Map<*, *>.toCameraLensDto(): CameraLensDto =
     CameraLensDto(
