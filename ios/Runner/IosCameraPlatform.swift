@@ -329,16 +329,42 @@ enum IosBarcodeVisionFallbackPolicy {
     lastCandidateAt: TimeInterval?,
     lastSubmittedAt: TimeInterval?,
     inFlight: Bool,
-    scanningEnabled: Bool
+    scanningEnabled: Bool,
+    ignoreRecentCandidate: Bool = false,
+    minimumInterval: TimeInterval = minimumInterval
   ) -> Bool {
     guard scanningEnabled, !inFlight else { return false }
-    if let lastCandidateAt, now - lastCandidateAt < recentCandidateWindow {
+    if !ignoreRecentCandidate,
+       let lastCandidateAt,
+       now - lastCandidateAt < recentCandidateWindow {
       return false
     }
     if let lastSubmittedAt, now - lastSubmittedAt < minimumInterval {
       return false
     }
     return true
+  }
+}
+
+/// 真机对照测试用的扫码引擎选择。
+///
+/// 只有同时设置 benchmark 标记和引擎名称时才会切换路径，
+/// 未设置时始终使用 automatic，避免测试开关改变线上行为。
+enum IosBarcodeScanEngine: Equatable {
+  case automatic
+  case metadata
+  case vision
+
+  init(environment: [String: String]) {
+    guard environment["PACKINGPROOF_SCAN_BENCHMARK"] == "1" else {
+      self = .automatic
+      return
+    }
+    switch environment["PACKINGPROOF_IOS_SCAN_ENGINE"]?.lowercased() {
+    case "metadata": self = .metadata
+    case "vision": self = .vision
+    default: self = .automatic
+    }
   }
 }
 
@@ -723,6 +749,11 @@ final class IosCameraHostApi:
   private var visionFrameCount: Int64 = 0
   private var visionCandidateCount: Int64 = 0
   private var visionLastError: String?
+  private var visionTotalDurationMs: Int64 = 0
+  private var visionMaxDurationMs: Int64 = 0
+  private var visionLastDurationMs: Int64 = 0
+  private let scanEngine: IosBarcodeScanEngine
+  private let scanBenchmarkEnabled: Bool
 
   /// 优先使用 1080p；不支持时由 session 选择策略降级到设备可用的预设，
   /// 录像 writer 与预览始终使用同一组尺寸，避免旧设备输出尺寸不匹配。
@@ -738,6 +769,11 @@ final class IosCameraHostApi:
     self.textures = textures
     self.audioSessionCoordinator = audioSessionCoordinator
     self.recordingActivityState = recordingActivityState
+    self.scanEngine = IosBarcodeScanEngine(
+      environment: ProcessInfo.processInfo.environment
+    )
+    self.scanBenchmarkEnabled =
+      ProcessInfo.processInfo.environment["PACKINGPROOF_SCAN_BENCHMARK"] == "1"
     super.init()
     updateTextureId(textures.register(self))
     runtimeErrorObserver = NotificationCenter.default.addObserver(
@@ -1790,6 +1826,7 @@ final class IosCameraHostApi:
   ) {
     guard !isDisposed else { return }
     guard pairingScanEnabled || workScanEnabled else { return }
+    guard scanEngine != .vision else { return }
     let detectedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
     let now = ProcessInfo.processInfo.systemUptime
     metadataCallbackCount &+= 1
@@ -1810,6 +1847,12 @@ final class IosCameraHostApi:
       ))
     }
     if !candidates.isEmpty {
+      if scanBenchmarkEnabled {
+        print(
+          "[scan_benchmark] engine=metadata uptime_ms=\(Int64(now * 1000)) " +
+            "candidate_count=\(candidates.count)"
+        )
+      }
       metadataCandidateCount += Int64(candidates.count)
       metadataLastCandidateAt = now
       markVisionCandidate(at: now)
@@ -1824,19 +1867,26 @@ final class IosCameraHostApi:
   /// 上重复做完整图像分析，也避免旧设备录像时被持续高负载拖慢。
   private func scheduleVisionFallback(for pixelBuffer: CVPixelBuffer) {
     guard !isDisposed else { return }
+    guard scanEngine != .metadata else { return }
     let scanningEnabled = metadataQueue.sync {
       pairingScanEnabled || workScanEnabled
     }
     guard scanningEnabled else { return }
     let now = ProcessInfo.processInfo.systemUptime
+    let benchmarkMinimumInterval =
+      scanEngine == .vision && scanBenchmarkEnabled
+        ? (1.0 / 30.0)
+        : IosBarcodeVisionFallbackPolicy.minimumInterval
     visionStateLock.lock()
     defer { visionStateLock.unlock() }
     guard IosBarcodeVisionFallbackPolicy.shouldSchedule(
       now: now,
-      lastCandidateAt: visionLastCandidateAt,
+      lastCandidateAt: scanEngine == .vision ? nil : visionLastCandidateAt,
       lastSubmittedAt: visionLastSubmittedAt,
       inFlight: visionScanInFlight,
-      scanningEnabled: scanningEnabled
+      scanningEnabled: scanningEnabled,
+      ignoreRecentCandidate: scanEngine == .vision,
+      minimumInterval: benchmarkMinimumInterval
     ) else {
       return
     }
@@ -1847,13 +1897,18 @@ final class IosCameraHostApi:
     let orientation: CGImagePropertyOrientation = .up
     visionQueue.async { [weak self, pixelBuffer] in
       guard let self else { return }
-      self.runVisionFallback(on: pixelBuffer, orientation: orientation)
+      self.runVisionFallback(
+        on: pixelBuffer,
+        orientation: orientation,
+        submittedAt: now
+      )
     }
   }
 
   private func runVisionFallback(
     on pixelBuffer: CVPixelBuffer,
-    orientation: CGImagePropertyOrientation
+    orientation: CGImagePropertyOrientation,
+    submittedAt: TimeInterval
   ) {
     let request = VNDetectBarcodesRequest()
     request.symbologies = Self.visionSymbologies
@@ -1883,6 +1938,13 @@ final class IosCameraHostApi:
       }
       visionStateLock.lock()
       visionFrameCount += 1
+      let frameNumber = visionFrameCount
+      let durationMs = Int64(
+        max(0, (ProcessInfo.processInfo.systemUptime - submittedAt) * 1000)
+      )
+      visionLastDurationMs = durationMs
+      visionTotalDurationMs += durationMs
+      visionMaxDurationMs = max(visionMaxDurationMs, durationMs)
       visionLastError = nil
       if !candidates.isEmpty {
         visionCandidateCount += Int64(candidates.count)
@@ -1890,6 +1952,13 @@ final class IosCameraHostApi:
       }
       visionScanInFlight = false
       visionStateLock.unlock()
+      if scanBenchmarkEnabled {
+        print(
+          "[scan_benchmark] engine=vision frame=\(frameNumber) " +
+            "uptime_ms=\(Int64(ProcessInfo.processInfo.systemUptime * 1000)) " +
+            "latency_ms=\(durationMs) candidate_count=\(candidates.count)"
+        )
+      }
       guard !candidates.isEmpty else { return }
       markVisionCandidate(at: ProcessInfo.processInfo.systemUptime)
       metadataQueue.async { [weak self] in
@@ -1906,9 +1975,23 @@ final class IosCameraHostApi:
     } catch {
       visionStateLock.lock()
       visionFrameCount += 1
+      let frameNumber = visionFrameCount
+      let durationMs = Int64(
+        max(0, (ProcessInfo.processInfo.systemUptime - submittedAt) * 1000)
+      )
+      visionLastDurationMs = durationMs
+      visionTotalDurationMs += durationMs
+      visionMaxDurationMs = max(visionMaxDurationMs, durationMs)
       visionLastError = error.localizedDescription
       visionScanInFlight = false
       visionStateLock.unlock()
+      if scanBenchmarkEnabled {
+        print(
+          "[scan_benchmark] engine=vision frame=\(frameNumber) " +
+            "uptime_ms=\(Int64(ProcessInfo.processInfo.systemUptime * 1000)) " +
+            "latency_ms=\(durationMs) candidate_count=0 error=1"
+        )
+      }
     }
   }
 

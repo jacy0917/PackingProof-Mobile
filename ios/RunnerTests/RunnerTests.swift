@@ -502,6 +502,48 @@ class RunnerTests: XCTestCase {
         scanningEnabled: true
       )
     )
+    XCTAssertTrue(
+      IosBarcodeVisionFallbackPolicy.shouldSchedule(
+        now: 10.2,
+        lastCandidateAt: 10.0,
+        lastSubmittedAt: nil,
+        inFlight: false,
+        scanningEnabled: true,
+        ignoreRecentCandidate: true
+      )
+    )
+    XCTAssertTrue(
+      IosBarcodeVisionFallbackPolicy.shouldSchedule(
+        now: 10.04,
+        lastCandidateAt: nil,
+        lastSubmittedAt: 10.0,
+        inFlight: false,
+        scanningEnabled: true,
+        ignoreRecentCandidate: true,
+        minimumInterval: 1.0 / 30.0
+      )
+    )
+  }
+
+  func testIosBarcodeScanEngineReadsDebugTestMode() {
+    XCTAssertEqual(
+      IosBarcodeScanEngine(environment: [
+        "PACKINGPROOF_IOS_SCAN_ENGINE": "vision",
+        "PACKINGPROOF_SCAN_BENCHMARK": "1",
+      ]),
+      .vision
+    )
+    XCTAssertEqual(
+      IosBarcodeScanEngine(environment: [
+        "PACKINGPROOF_IOS_SCAN_ENGINE": "metadata",
+        "PACKINGPROOF_SCAN_BENCHMARK": "1",
+      ]),
+      .metadata
+    )
+    XCTAssertEqual(
+      IosBarcodeScanEngine(environment: [:]),
+      .automatic
+    )
   }
 
   func testIosCapturePresetSelectionFallsBackWithoutChangingWriterSizeContract() {
