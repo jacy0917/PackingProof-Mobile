@@ -465,6 +465,100 @@ class RunnerTests: XCTestCase {
     }
   }
 
+  func testIosBarcodeVisionFallbackPolicyWaitsForMetadataAndThrottles() {
+    XCTAssertTrue(
+      IosBarcodeVisionFallbackPolicy.shouldSchedule(
+        now: 10,
+        lastCandidateAt: nil,
+        lastSubmittedAt: nil,
+        inFlight: false,
+        scanningEnabled: true
+      )
+    )
+    XCTAssertFalse(
+      IosBarcodeVisionFallbackPolicy.shouldSchedule(
+        now: 10.1,
+        lastCandidateAt: nil,
+        lastSubmittedAt: 10,
+        inFlight: false,
+        scanningEnabled: true
+      )
+    )
+    XCTAssertFalse(
+      IosBarcodeVisionFallbackPolicy.shouldSchedule(
+        now: 10.2,
+        lastCandidateAt: 10.0,
+        lastSubmittedAt: nil,
+        inFlight: false,
+        scanningEnabled: true
+      )
+    )
+    XCTAssertFalse(
+      IosBarcodeVisionFallbackPolicy.shouldSchedule(
+        now: 10.5,
+        lastCandidateAt: nil,
+        lastSubmittedAt: nil,
+        inFlight: true,
+        scanningEnabled: true
+      )
+    )
+  }
+
+  func testIosCapturePresetSelectionFallsBackWithoutChangingWriterSizeContract() {
+    XCTAssertEqual(
+      IosCapturePresetSelection.select(
+        supportsHd1080: true,
+        supportsHigh: true,
+        supportsMedium: true
+      ),
+      IosCapturePresetSelection(
+        name: "hd1920x1080",
+        portraitWidth: 1080,
+        portraitHeight: 1920
+      )
+    )
+    XCTAssertEqual(
+      IosCapturePresetSelection.select(
+        supportsHd1080: false,
+        supportsHigh: true,
+        supportsMedium: true
+      )?.name,
+      "high"
+    )
+    XCTAssertEqual(
+      IosCapturePresetSelection.select(
+        supportsHd1080: false,
+        supportsHigh: false,
+        supportsMedium: true
+      )?.portraitWidth,
+      360
+    )
+    XCTAssertNil(
+      IosCapturePresetSelection.select(
+        supportsHd1080: false,
+        supportsHigh: false,
+        supportsMedium: false
+      )
+    )
+  }
+
+  func testIosRecordingTransformUsesSelectedCaptureSize() {
+    let transform = iosRecordingTransform(
+      for: "landscapeLeft",
+      sourceSize: CGSize(width: 720, height: 1280)
+    )
+    XCTAssertEqual(transform.tx, 1280, accuracy: 0.001)
+    XCTAssertEqual(transform.ty, 0, accuracy: 0.001)
+  }
+
+  func testIosDeviceIdentityMapsIPhone6sAndPreservesUnknownHardwareId() {
+    XCTAssertEqual(IosDeviceIdentity.displayName(for: "iPhone8,1"), "iPhone 6s")
+    XCTAssertEqual(
+      IosDeviceIdentity.displayName(for: "iPhone99,1"),
+      "iPhone99,1"
+    )
+  }
+
   func testLanBackupVersionComparison() {
     XCTAssertEqual(compareLanBackupVersions("v0.5.11+11011", "0.5.11"), 0)
     XCTAssertGreaterThan(compareLanBackupVersions("0.5.12", "0.5.11"), 0)

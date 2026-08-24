@@ -1,5 +1,7 @@
 import AVFoundation
+import Darwin
 import Flutter
+import Vision
 import os.log
 import UIKit
 
@@ -316,6 +318,119 @@ enum IosCameraCapabilityPolicy {
   }
 }
 
+/// 为 metadata 输出提供低频的 Vision 兜底，避免旧设备的 AVFoundation
+/// 条码回调偶发停摆时完全没有识别结果。
+enum IosBarcodeVisionFallbackPolicy {
+  static let minimumInterval: TimeInterval = 0.25
+  static let recentCandidateWindow: TimeInterval = 0.8
+
+  static func shouldSchedule(
+    now: TimeInterval,
+    lastCandidateAt: TimeInterval?,
+    lastSubmittedAt: TimeInterval?,
+    inFlight: Bool,
+    scanningEnabled: Bool
+  ) -> Bool {
+    guard scanningEnabled, !inFlight else { return false }
+    if let lastCandidateAt, now - lastCandidateAt < recentCandidateWindow {
+      return false
+    }
+    if let lastSubmittedAt, now - lastSubmittedAt < minimumInterval {
+      return false
+    }
+    return true
+  }
+}
+
+struct IosCapturePresetSelection: Equatable {
+  let name: String
+  let portraitWidth: Int
+  let portraitHeight: Int
+
+  static func select(
+    supportsHd1080: Bool,
+    supportsHigh: Bool,
+    supportsMedium: Bool,
+    supportsLow: Bool = false
+  ) -> IosCapturePresetSelection? {
+    if supportsHd1080 {
+      return IosCapturePresetSelection(
+        name: "hd1920x1080",
+        portraitWidth: 1080,
+        portraitHeight: 1920
+      )
+    }
+    if supportsHigh {
+      return IosCapturePresetSelection(
+        name: "high",
+        portraitWidth: 720,
+        portraitHeight: 1280
+      )
+    }
+    if supportsMedium {
+      return IosCapturePresetSelection(
+        name: "medium",
+        portraitWidth: 360,
+        portraitHeight: 480
+      )
+    }
+    if supportsLow {
+      return IosCapturePresetSelection(
+        name: "low",
+        portraitWidth: 144,
+        portraitHeight: 192
+      )
+    }
+    return nil
+  }
+}
+
+/// 真实硬件型号来自 hw.machine；UIDevice.model 只会返回泛化的 “iPhone”。
+enum IosDeviceIdentity {
+  static func hardwareIdentifier() -> String {
+    var systemInfo = utsname()
+    uname(&systemInfo)
+    let machineSize = MemoryLayout.size(ofValue: systemInfo.machine)
+    return withUnsafePointer(to: &systemInfo.machine) { machinePointer in
+      machinePointer.withMemoryRebound(
+        to: CChar.self,
+        capacity: machineSize
+      ) { String(cString: $0) }
+    }
+  }
+
+  static func displayName(for identifier: String) -> String {
+    let names: [String: String] = [
+      "iPhone8,1": "iPhone 6s",
+      "iPhone8,2": "iPhone 6s Plus",
+      "iPhone8,4": "iPhone SE (第 1 代)",
+      "iPhone9,1": "iPhone 7",
+      "iPhone9,2": "iPhone 7 Plus",
+      "iPhone10,1": "iPhone 8",
+      "iPhone10,2": "iPhone 8 Plus",
+      "iPhone10,3": "iPhone X",
+      "iPhone11,2": "iPhone XS",
+      "iPhone11,4": "iPhone XS Max",
+      "iPhone11,6": "iPhone XS Max",
+      "iPhone11,8": "iPhone XR",
+      "iPhone12,1": "iPhone 11",
+      "iPhone12,3": "iPhone 11 Pro",
+      "iPhone12,5": "iPhone 11 Pro Max",
+      "iPhone12,8": "iPhone SE (第 2 代)",
+      "iPhone13,1": "iPhone 12 mini",
+      "iPhone13,2": "iPhone 12",
+      "iPhone13,3": "iPhone 12 Pro",
+      "iPhone13,4": "iPhone 12 Pro Max",
+      "iPhone14,4": "iPhone 13 mini",
+      "iPhone14,5": "iPhone 13",
+      "iPhone14,2": "iPhone 13 Pro",
+      "iPhone14,3": "iPhone 13 Pro Max",
+      "iPhone14,6": "iPhone SE (第 3 代)",
+    ]
+    return names[identifier] ?? identifier
+  }
+}
+
 enum IosCameraWriterFinishPolicy {
   static func result(
     status: AVAssetWriter.Status,
@@ -529,9 +644,14 @@ final class IosCameraHostApi:
   private let session = AVCaptureSession()
   private let sessionQueue = DispatchQueue(label: "packingproof.camera.session")
   private let metadataQueue = DispatchQueue(label: "packingproof.camera.metadata")
+  private let visionQueue = DispatchQueue(
+    label: "packingproof.camera.vision",
+    qos: .userInitiated
+  )
   private let bufferLock = NSLock()
   private let stateLock = NSLock()
   private let performanceLock = NSLock()
+  private let visionStateLock = NSLock()
   private let recordingLifecycle = IosCameraRecordingLifecycle()
   private var barcodeBatchGate =
     IosLatestPendingGate<[BarcodeCandidateDto]>(minimumInterval: 0.1)
@@ -544,6 +664,8 @@ final class IosCameraHostApi:
   private var videoOutput: AVCaptureVideoDataOutput?
   private var audioOutput: AVCaptureAudioDataOutput?
   private var metadataOutput: AVCaptureMetadataOutput?
+  private var sessionPresetName = "hd1920x1080"
+  private var captureSize = (width: 1080, height: 1920)
 
   private var recordingSpecName = "hd1080p30"
   private var preferredVideoCodec = "hevc"
@@ -591,8 +713,20 @@ final class IosCameraHostApi:
   private let firstWrittenFrameTiming = IosCameraFirstWrittenFrameTiming()
   private var lastOperationTiming: [String: Any]?
 
-  /// 固定 sessionPreset .hd1920x1080，竖屏预览与录像输出 1080x1920。
-  private var portraitSize: (width: Int, height: Int) { (1080, 1920) }
+  private var visionScanInFlight = false
+  private var visionLastSubmittedAt: TimeInterval?
+  private var visionLastCandidateAt: TimeInterval?
+  private var metadataCallbackCount: Int64 = 0
+  private var metadataCandidateCount: Int64 = 0
+  private var metadataLastCallbackAt: TimeInterval?
+  private var metadataLastCandidateAt: TimeInterval?
+  private var visionFrameCount: Int64 = 0
+  private var visionCandidateCount: Int64 = 0
+  private var visionLastError: String?
+
+  /// 优先使用 1080p；不支持时由 session 选择策略降级到设备可用的预设，
+  /// 录像 writer 与预览始终使用同一组尺寸，避免旧设备输出尺寸不匹配。
+  private var portraitSize: (width: Int, height: Int) { captureSize }
 
   init(
     eventApi: CameraEventApi,
@@ -1104,7 +1238,41 @@ final class IosCameraHostApi:
     let device = videoDeviceInput?.device
     let size = portraitSize
     let usesHevc = preferredVideoCodec.lowercased() == "hevc"
-    let scanState = metadataQueue.sync { (pairingScanEnabled, workScanEnabled) }
+    let now = ProcessInfo.processInfo.systemUptime
+    let metadataDiagnostics = metadataQueue.sync {
+      (
+        pairingScanEnabled,
+        workScanEnabled,
+        metadataCallbackCount,
+        metadataCandidateCount,
+        metadataLastCallbackAt,
+        metadataLastCandidateAt,
+        metadataOutput?.availableMetadataObjectTypes.map(\.rawValue) ?? [],
+        metadataOutput?.metadataObjectTypes.map(\.rawValue) ?? []
+      )
+    }
+    let visionDiagnostics: (
+      frameCount: Int64,
+      candidateCount: Int64,
+      lastCandidateAt: TimeInterval?,
+      lastError: String?
+    ) = {
+      visionStateLock.lock()
+      defer { visionStateLock.unlock() }
+      return (
+        visionFrameCount,
+        visionCandidateCount,
+        visionLastCandidateAt,
+        visionLastError
+      )
+    }()
+    let hardwareIdentifier = IosDeviceIdentity.hardwareIdentifier()
+    let activeDimensions = device.map {
+      CMVideoFormatDescriptionGetDimensions($0.activeFormat.formatDescription)
+    }
+    let fpsRangeNames = device?.activeFormat.videoSupportedFrameRateRanges.map {
+      "\($0.minFrameRate)-\($0.maxFrameRate)"
+    } ?? []
     let audioSession = AVAudioSession.sharedInstance()
     let audioOptions = audioSession.categoryOptions
     let audioOptionNames = Self.audioSessionCategoryOptionNames(audioOptions)
@@ -1114,7 +1282,8 @@ final class IosCameraHostApi:
     completion(.success([
       "device": [
         "manufacturer": "Apple",
-        "model": UIDevice.current.model,
+        "model": IosDeviceIdentity.displayName(for: hardwareIdentifier),
+        "modelIdentifier": hardwareIdentifier,
         "sdkInt": 0,
         "release": UIDevice.current.systemVersion,
       ],
@@ -1123,9 +1292,25 @@ final class IosCameraHostApi:
         "sessionRunning": session.isRunning,
         "previewActive": previewActive,
         "disposed": isDisposed,
-        "workScanEnabled": scanState.1,
-        "pairingScanEnabled": scanState.0,
+        "workScanEnabled": metadataDiagnostics.1,
+        "pairingScanEnabled": metadataDiagnostics.0,
         "metadataOutputAttached": metadataOutput != nil,
+        "metadataCallbackCount": metadataDiagnostics.2,
+        "metadataCandidateCount": metadataDiagnostics.3,
+        "metadataLastCallbackAgeMs": metadataDiagnostics.4.map {
+          Int64(max(0, (now - $0) * 1000))
+        },
+        "metadataLastCandidateAgeMs": metadataDiagnostics.5.map {
+          Int64(max(0, (now - $0) * 1000))
+        },
+        "metadataAvailableTypes": metadataDiagnostics.6,
+        "metadataConfiguredTypes": metadataDiagnostics.7,
+        "visionFallbackFrameCount": visionDiagnostics.frameCount,
+        "visionFallbackCandidateCount": visionDiagnostics.candidateCount,
+        "visionFallbackLastCandidateAgeMs": visionDiagnostics.lastCandidateAt.map {
+          Int64(max(0, (now - $0) * 1000))
+        },
+        "visionFallbackLastError": visionDiagnostics.lastError,
         "videoOutputAttached": videoOutput != nil,
         "audioOutputAttached": audioOutput != nil,
         "recordingAudioActive": recordingAudioActive,
@@ -1157,7 +1342,12 @@ final class IosCameraHostApi:
         "lastSegmentAudioTrackInspectionError": lastSegment.trackInspectionError,
         "lastCameraOperationTiming": performance.operation,
         "lastFirstWrittenVideoFrameTiming": performance.firstWrittenFrame,
-        "cameraPipelineVersion": 1,
+        "cameraPipelineVersion": 2,
+        "sessionPreset": sessionPresetName,
+        "activeFormatWidth": activeDimensions.map { Int64($0.width) },
+        "activeFormatHeight": activeDimensions.map { Int64($0.height) },
+        "fpsRanges": fpsRangeNames,
+        "cameraDeviceType": device?.deviceType.rawValue ?? "",
         "recordingSpec": recordingSpecName,
         "cameraId": device?.uniqueID ?? "",
         "videoWidth": size.width,
@@ -1542,6 +1732,7 @@ final class IosCameraHostApi:
       guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
         return
       }
+      scheduleVisionFallback(for: pixelBuffer)
       var shouldAppendVideo = true
       var transientWatermarkFailure = false
       // 支持实时水印时，预览和成片始终复用同一份已烧录像素；Flutter
@@ -1600,6 +1791,9 @@ final class IosCameraHostApi:
     guard !isDisposed else { return }
     guard pairingScanEnabled || workScanEnabled else { return }
     let detectedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+    let now = ProcessInfo.processInfo.systemUptime
+    metadataCallbackCount &+= 1
+    metadataLastCallbackAt = now
     var candidates: [BarcodeCandidateDto] = []
     for object in metadataObjects {
       guard let machineReadable = object as? AVMetadataMachineReadableCodeObject,
@@ -1616,10 +1810,125 @@ final class IosCameraHostApi:
       ))
     }
     if !candidates.isEmpty {
+      metadataCandidateCount += Int64(candidates.count)
+      metadataLastCandidateAt = now
+      markVisionCandidate(at: now)
       handleBarcodeBatchAction(barcodeBatchGate.submit(
         candidates,
         now: ProcessInfo.processInfo.systemUptime
       ), generation: barcodeGeneration)
+    }
+  }
+
+  /// metadata 输出是首选路径；Vision 只在没有近期候选时低频补偿，避免在新设备
+  /// 上重复做完整图像分析，也避免旧设备录像时被持续高负载拖慢。
+  private func scheduleVisionFallback(for pixelBuffer: CVPixelBuffer) {
+    guard !isDisposed else { return }
+    let scanningEnabled = metadataQueue.sync {
+      pairingScanEnabled || workScanEnabled
+    }
+    guard scanningEnabled else { return }
+    let now = ProcessInfo.processInfo.systemUptime
+    visionStateLock.lock()
+    defer { visionStateLock.unlock() }
+    guard IosBarcodeVisionFallbackPolicy.shouldSchedule(
+      now: now,
+      lastCandidateAt: visionLastCandidateAt,
+      lastSubmittedAt: visionLastSubmittedAt,
+      inFlight: visionScanInFlight,
+      scanningEnabled: scanningEnabled
+    ) else {
+      return
+    }
+    visionScanInFlight = true
+    visionLastSubmittedAt = now
+    // video connection 已经固定为 portrait，交给 Vision 时不要再旋转一次；
+    // 前摄镜像也由 connection 完成，因此两种镜头都使用 .up。
+    let orientation: CGImagePropertyOrientation = .up
+    visionQueue.async { [weak self, pixelBuffer] in
+      guard let self else { return }
+      self.runVisionFallback(on: pixelBuffer, orientation: orientation)
+    }
+  }
+
+  private func runVisionFallback(
+    on pixelBuffer: CVPixelBuffer,
+    orientation: CGImagePropertyOrientation
+  ) {
+    let request = VNDetectBarcodesRequest()
+    request.symbologies = Self.visionSymbologies
+    do {
+      let handler = VNImageRequestHandler(
+        cvPixelBuffer: pixelBuffer,
+        orientation: orientation,
+        options: [:]
+      )
+      try handler.perform([request])
+      let observations = request.results ?? []
+      let detectedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+      let candidates = observations.compactMap { observation -> BarcodeCandidateDto? in
+        guard let value = observation.payloadStringValue, !value.isEmpty else {
+          return nil
+        }
+        let area = Int64(max(
+          1,
+          Int(observation.boundingBox.width * observation.boundingBox.height * 1_000_000)
+        ))
+        return BarcodeCandidateDto(
+          value: value,
+          area: area,
+          format: visionSymbologyName(observation.symbology),
+          detectedAtMs: detectedAtMs
+        )
+      }
+      visionStateLock.lock()
+      visionFrameCount += 1
+      visionLastError = nil
+      if !candidates.isEmpty {
+        visionCandidateCount += Int64(candidates.count)
+        visionLastCandidateAt = ProcessInfo.processInfo.systemUptime
+      }
+      visionScanInFlight = false
+      visionStateLock.unlock()
+      guard !candidates.isEmpty else { return }
+      markVisionCandidate(at: ProcessInfo.processInfo.systemUptime)
+      metadataQueue.async { [weak self] in
+        guard let self,
+              !self.isDisposed,
+              self.pairingScanEnabled || self.workScanEnabled else {
+          return
+        }
+        self.handleBarcodeBatchAction(self.barcodeBatchGate.submit(
+          candidates,
+          now: ProcessInfo.processInfo.systemUptime
+        ), generation: self.barcodeGeneration)
+      }
+    } catch {
+      visionStateLock.lock()
+      visionFrameCount += 1
+      visionLastError = error.localizedDescription
+      visionScanInFlight = false
+      visionStateLock.unlock()
+    }
+  }
+
+  private func markVisionCandidate(at uptime: TimeInterval) {
+    visionStateLock.lock()
+    visionLastCandidateAt = uptime
+    visionStateLock.unlock()
+  }
+
+  private func visionSymbologyName(_ symbology: VNBarcodeSymbology) -> String {
+    switch symbology {
+    case .ean13: return "ean13"
+    case .ean8: return "ean8"
+    case .code128: return "code128"
+    case .code39: return "code39"
+    case .code93: return "code93"
+    case .qr: return "qr"
+    case .pdf417: return "pdf417"
+    case .upce: return "upce"
+    default: return symbology.rawValue.lowercased()
     }
   }
 
@@ -1674,7 +1983,6 @@ final class IosCameraHostApi:
     sessionQueue.async { [weak self] in
       guard let self else { return }
       self.session.beginConfiguration()
-      self.session.sessionPreset = .hd1920x1080
 
       if let videoDevice = Self.defaultVideoDevice(position: .back) {
         do {
@@ -1682,12 +1990,35 @@ final class IosCameraHostApi:
           if self.session.canAddInput(input) {
             self.session.addInput(input)
             self.videoDeviceInput = input
+            self.configureVideoDevice(videoDevice)
           }
         } catch {
           self.eventApi.nativeError(
             message: "打开摄像头失败：\(error.localizedDescription)",
             completion: { _ in }
           )
+        }
+      }
+
+      // 输入已经挂载后再协商 preset，避免 canSetSessionPreset 在旧设备上
+      // 因为空 session 的能力判断过早而误选默认规格。
+      let presetSelection = IosCapturePresetSelection.select(
+        supportsHd1080: self.session.canSetSessionPreset(.hd1920x1080),
+        supportsHigh: self.session.canSetSessionPreset(.high),
+        supportsMedium: self.session.canSetSessionPreset(.medium),
+        supportsLow: self.session.canSetSessionPreset(.low)
+      )
+      if let presetSelection {
+        self.sessionPresetName = presetSelection.name
+        self.captureSize = (
+          width: presetSelection.portraitWidth,
+          height: presetSelection.portraitHeight
+        )
+        switch presetSelection.name {
+        case "hd1920x1080": self.session.sessionPreset = .hd1920x1080
+        case "high": self.session.sessionPreset = .high
+        case "medium": self.session.sessionPreset = .medium
+        default: self.session.sessionPreset = .low
         }
       }
 
@@ -1730,6 +2061,26 @@ final class IosCameraHostApi:
 
       self.session.commitConfiguration()
       self.configureOutputDelegates()
+    }
+  }
+
+  /// 旧设备默认对焦/曝光模式可能停留在锁定状态，导致面单距离变化时
+  /// metadata 与 Vision 都拿不到可解码的清晰条纹；只在设备支持时启用连续模式。
+  private func configureVideoDevice(_ device: AVCaptureDevice) {
+    do {
+      try device.lockForConfiguration()
+      if device.isFocusModeSupported(.continuousAutoFocus) {
+        device.focusMode = .continuousAutoFocus
+      }
+      if device.isExposureModeSupported(.continuousAutoExposure) {
+        device.exposureMode = .continuousAutoExposure
+      }
+      if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+        device.whiteBalanceMode = .continuousAutoWhiteBalance
+      }
+      device.unlockForConfiguration()
+    } catch {
+      // 对焦是增强项；设备拒绝配置时继续使用系统默认采集模式。
     }
   }
 
@@ -1777,7 +2128,7 @@ final class IosCameraHostApi:
     }
     try addAudioInputIfNeeded()
     configureOutputDelegates()
-    try restoreMetadataOutputForWork()
+    restoreMetadataOutputForWork()
     guard outputsAreValidForWork() else {
       throw pigeonError(
         "摄像头输出状态异常",
@@ -1798,35 +2149,26 @@ final class IosCameraHostApi:
   /// 恢复扫码输出配置。`AVCaptureOutput.connections` 本身只包含该 output
   /// 的 connection，因此从其中取出的首个 connection 即为当前 metadata output
   /// 的有效 connection；这里不遍历 session 中其他 output 的 connection。
-  private func restoreMetadataOutputForWork() throws {
+  private func restoreMetadataOutputForWork() {
     guard let metadataOutput else {
-      throw pigeonError(
-        "摄像头输出状态异常",
-        code: "camera_outputs_invalid"
-      )
+      // 某些旧设备可以正常提供视频帧，但 metadata 输出没有可用连接；
+      // Vision 兜底仍可从同一视频帧识别条码，不应因此阻断整个工作流。
+      return
     }
     let availableTypes = metadataOutput.availableMetadataObjectTypes
     let configuredTypes = Self.supportedMetadataTypes.filter {
       availableTypes.contains($0)
     }
     guard !configuredTypes.isEmpty else {
-      throw pigeonError(
-        "当前设备不支持扫码类型",
-        code: "metadata_types_unavailable"
-      )
+      metadataOutput.metadataObjectTypes = []
+      return
     }
     metadataOutput.metadataObjectTypes = configuredTypes
     guard !metadataOutput.metadataObjectTypes.isEmpty else {
-      throw pigeonError(
-        "扫码输出配置失败",
-        code: "metadata_types_unavailable"
-      )
+      return
     }
     guard let connection = metadataOutput.connections.first else {
-      throw pigeonError(
-        "扫码输出连接不可用",
-        code: "metadata_connection_unavailable"
-      )
+      return
     }
     connection.isEnabled = true
   }
@@ -1836,14 +2178,14 @@ final class IosCameraHostApi:
     let outputs = session.outputs
     let videoValid = videoOutput.map { outputs.contains($0) } ?? false
     let audioValid = audioOutput.map { outputs.contains($0) } ?? false
-    let metadataValid = metadataOutput.map { outputs.contains($0) } ?? false
+    let metadataValid = metadataOutput.map { outputs.contains($0) } ?? true
     return videoValid && audioValid && metadataValid
   }
 
   private func outputsAreValidForWork() -> Bool {
     let outputs = session.outputs
     let videoValid = videoOutput.map { outputs.contains($0) } ?? false
-    let metadataValid = metadataOutput.map { outputs.contains($0) } ?? false
+    let metadataValid = metadataOutput.map { outputs.contains($0) } ?? true
     let audioValid = !recordAudio || (audioOutput.map { outputs.contains($0) } ?? false)
     return videoValid && metadataValid && audioValid
   }
@@ -1955,6 +2297,7 @@ final class IosCameraHostApi:
         }
         self.session.addInput(input)
         self.videoDeviceInput = input
+        self.configureVideoDevice(device)
         self.session.commitConfiguration()
         if let connection = self.videoOutput?.connection(with: .video) {
           // 切换镜头后仍保持竖屏采集，并显式固定前摄镜像语义。
@@ -2051,7 +2394,10 @@ final class IosCameraHostApi:
         outputSettings: videoSettings
       )
       videoInput.expectsMediaDataInRealTime = true
-      videoInput.transform = iosRecordingTransform(for: recordingOrientationName)
+      videoInput.transform = iosRecordingTransform(
+        for: recordingOrientationName,
+        sourceSize: CGSize(width: size.width, height: size.height)
+      )
       let adaptor = AVAssetWriterInputPixelBufferAdaptor(
         assetWriterInput: videoInput,
         sourcePixelBufferAttributes: [
@@ -2534,6 +2880,17 @@ final class IosCameraHostApi:
   }
 
   private static let supportedMetadataTypes: [AVMetadataObject.ObjectType] = [
+    .ean13,
+    .ean8,
+    .code128,
+    .code39,
+    .code93,
+    .qr,
+    .pdf417,
+    .upce,
+  ]
+
+  private static let visionSymbologies: [VNBarcodeSymbology] = [
     .ean13,
     .ean8,
     .code128,

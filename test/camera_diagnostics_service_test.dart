@@ -41,6 +41,9 @@ void main() {
           'stallActive': false,
           'initFailureStage': 'session_config',
           'recordingFallbackMode': 'encoder_analysis',
+          'sessionPreset': 'hd1920x1080',
+          'activeFormatWidth': 1920,
+          'activeFormatHeight': 1080,
           'recordAudio': false,
           'probeResults': <Object?>[
             <String, Object?>{
@@ -79,6 +82,9 @@ void main() {
     expect(first['muxWriteStallCount'], 3);
     expect(first['initFailureStage'], 'session_config');
     expect(first['recordingFallbackMode'], 'encoder_analysis');
+    expect(first['sessionPreset'], 'hd1920x1080');
+    expect(first['activeFormatWidth'], 1920);
+    expect(first['activeFormatHeight'], 1080);
     expect(first['recordAudio'], isFalse);
     expect(first['probeResults'], isA<List<Object?>>());
     expect(first['hardwareLevel'], 0);

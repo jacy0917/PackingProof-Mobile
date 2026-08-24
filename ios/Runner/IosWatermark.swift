@@ -16,13 +16,31 @@ func iosWatermarkFontSize(forOutputSize outputSize: CGSize) -> CGFloat {
   44
 }
 
-/// 保持固定 1080x1920 竖屏采集缓冲不变，仅用 MP4 轨道元数据表达最终录像方向。
-func iosRecordingTransform(for recordingOrientation: String) -> CGAffineTransform {
+/// 竖屏采集缓冲仅用 MP4 轨道元数据表达最终录像方向。尺寸参数跟随
+/// iOS 旧设备的 session preset 降级，避免 720p/480p 时平移量仍写死为 1080p。
+func iosRecordingTransform(
+  for recordingOrientation: String,
+  sourceSize: CGSize = CGSize(width: 1080, height: 1920)
+) -> CGAffineTransform {
   switch recordingOrientation {
   case "landscapeLeft":
-    return CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 1920, ty: 0)
+    return CGAffineTransform(
+      a: 0,
+      b: 1,
+      c: -1,
+      d: 0,
+      tx: sourceSize.height,
+      ty: 0
+    )
   case "landscapeRight":
-    return CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 1080)
+    return CGAffineTransform(
+      a: 0,
+      b: -1,
+      c: 1,
+      d: 0,
+      tx: 0,
+      ty: sourceSize.width
+    )
   default:
     return .identity
   }
