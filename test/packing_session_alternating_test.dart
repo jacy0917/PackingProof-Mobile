@@ -616,6 +616,14 @@ void main() {
       ),
     ]);
     expect(controller.candidateCode, isEmpty);
+    final ({String kind, Map<String, Object?> extra}) rejectedEvent = runtimeLog
+        .events
+        .singleWhere((event) => event.kind == 'barcode_rejected');
+    expect(rejectedEvent.extra, <String, Object?>{
+      'code': 'QR12345678901',
+      'format': 'qr',
+      'reason': 'unsupportedFormat',
+    });
 
     controller.handleNativeBarcodeFrameForTesting(<NativeBarcodeCandidate>[
       const NativeBarcodeCandidate(

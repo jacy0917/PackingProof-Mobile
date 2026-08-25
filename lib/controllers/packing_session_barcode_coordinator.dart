@@ -61,6 +61,19 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
   bool _historyScanActive = false;
   String? _historyScanResult;
 
+  void _logRejectedBarcode(RejectedBarcodeDecision decision) {
+    unawaited(
+      _runtimeLog.log(
+        kind: 'barcode_rejected',
+        extra: <String, Object?>{
+          'code': decision.code,
+          'format': decision.format,
+          'reason': decision.reason.name,
+        },
+      ),
+    );
+  }
+
   void _processNativeBarcodeFrame(List<NativeBarcodeCandidate> candidates) {
     if (_recognizedBeepPolicy.shouldBeep(
       candidates.map((NativeBarcodeCandidate candidate) => candidate.value),
@@ -182,6 +195,7 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
       lastShownAt: _lastRejectedBarcodeAt,
     );
     if (rejected != null) {
+      _logRejectedBarcode(rejected);
       _showRejectedBarcodeNotice(rejected, now);
     }
     final BarcodeObservation observation = _stabilityTracker.observe(
@@ -296,6 +310,7 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
         lastShownAt: _lastRejectedBarcodeAt,
       );
       if (rejected != null) {
+        _logRejectedBarcode(rejected);
         _showRejectedBarcodeNotice(rejected, now);
       }
       final BarcodeObservation observation = _stabilityTracker.observe(

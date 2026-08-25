@@ -1382,16 +1382,6 @@ class PackingSessionController extends ChangeNotifier
     RejectedBarcodeDecision decision,
     DateTime now,
   ) {
-    unawaited(
-      _runtimeLog.log(
-        kind: 'barcode_rejected',
-        extra: <String, Object?>{
-          'code': decision.code,
-          'format': decision.format,
-          'reason': decision.reason.name,
-        },
-      ),
-    );
     _rejectedBarcodeMessage = decision.message;
     _lastRejectedBarcodeCode = decision.code;
     _lastRejectedBarcodeAt = now;
