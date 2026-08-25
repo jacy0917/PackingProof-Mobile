@@ -14,10 +14,17 @@ class RejectedBarcodeCandidate {
 }
 
 class RejectedBarcodeDecision {
-  const RejectedBarcodeDecision({required this.code, required this.message});
+  const RejectedBarcodeDecision({
+    required this.code,
+    required this.message,
+    required this.reason,
+    this.format,
+  });
 
   final String code;
   final String message;
+  final WorkScanRejection reason;
+  final String? format;
 }
 
 /// 工作识别被过滤条码的轻提示决策：仅整帧无有效面单码时提示，并按码节流。
@@ -65,9 +72,17 @@ class RejectedBarcodePolicy {
         now.difference(lastShownAt) < perCodeThrottle) {
       return null;
     }
+    final WorkScanRejection reason =
+        BarcodeCandidatePolicy.rejectionForWorkScan(
+          largest.value,
+          format: largest.format,
+          minimumLength: minimumLength,
+        )!;
     return RejectedBarcodeDecision(
       code: code,
       message: _messageFor(largest, minimumLength),
+      reason: reason,
+      format: largest.format,
     );
   }
 

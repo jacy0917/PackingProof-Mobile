@@ -2008,8 +2008,11 @@ final class IosCameraHostApi:
     case .code128: return "code128"
     case .code39: return "code39"
     case .code93: return "code93"
+    case .codabar: return "codabar"
     case .qr: return "qr"
+    case .dataMatrix: return "dataMatrix"
     case .pdf417: return "pdf417"
+    case .aztec: return "aztec"
     case .upce: return "upce"
     default: return symbology.rawValue.lowercased()
     }
@@ -2957,7 +2960,14 @@ final class IosCameraHostApi:
     case .ean13: return "ean13"
     case .ean8: return "ean8"
     case .code128: return "code128"
+    case .code39: return "code39"
+    case .code93: return "code93"
+    case .codabar: return "codabar"
     case .qr: return "qr"
+    case .dataMatrix: return "dataMatrix"
+    case .pdf417: return "pdf417"
+    case .aztec: return "aztec"
+    case .upce: return "upce"
     default: return type.rawValue
     }
   }
@@ -2968,8 +2978,11 @@ final class IosCameraHostApi:
     .code128,
     .code39,
     .code93,
+    .codabar,
     .qr,
+    .dataMatrix,
     .pdf417,
+    .aztec,
     .upce,
   ]
 
@@ -2979,8 +2992,11 @@ final class IosCameraHostApi:
     .code128,
     .code39,
     .code93,
+    .codabar,
     .qr,
+    .dataMatrix,
     .pdf417,
+    .aztec,
     .upce,
   ]
 

@@ -24,7 +24,7 @@ void main() {
       expect(BarcodeCandidatePolicy.isValid('https://example.com'), isFalse);
     });
 
-    test('工作识别只接受 Code128', () {
+    test('工作识别兼容国内快递常见一维码制并继续过滤商品码', () {
       expect(
         BarcodeCandidatePolicy.isValidForWorkScan(
           '6901234567890',
@@ -63,15 +63,29 @@ void main() {
       );
       expect(
         BarcodeCandidatePolicy.isValidForWorkScan(
-          'YT123456789012',
-          format: 'qr',
+          'SF6048285539252',
+          format: 'code39',
         ),
-        isFalse,
+        isTrue,
       );
       expect(
         BarcodeCandidatePolicy.isValidForWorkScan(
-          'YT123456789012',
-          format: 'code39',
+          'JT0025164133000',
+          format: 'code93',
+        ),
+        isTrue,
+      );
+      expect(
+        BarcodeCandidatePolicy.isValidForWorkScan(
+          'YT0066717686457',
+          format: 'qr',
+        ),
+        isTrue,
+      );
+      expect(
+        BarcodeCandidatePolicy.isValidForWorkScan(
+          'QR12345678901',
+          format: 'qr',
         ),
         isFalse,
       );
@@ -82,7 +96,7 @@ void main() {
       expect(BarcodeCandidatePolicy.isValid('6901234567890'), isTrue);
     });
 
-    test('历史记录扫码只接受 Code128，通用内容校验不受影响', () {
+    test('历史记录扫码同样兼容快递码制并拒绝未知或商品码制', () {
       expect(
         BarcodeCandidatePolicy.isValidForHistoryScan(
           'YT123456789012',
@@ -90,15 +104,17 @@ void main() {
         ),
         isTrue,
       );
-      for (final String? format in <String?>[
-        'qr',
-        'ean13',
-        'code39',
-        'code93',
-        'pdf417',
-        'unknown',
-        null,
-      ]) {
+      for (final String format in <String>['code39', 'code93', 'codabar']) {
+        expect(
+          BarcodeCandidatePolicy.isValidForHistoryScan(
+            'SF6048285539252',
+            format: format,
+          ),
+          isTrue,
+          reason: 'format=$format',
+        );
+      }
+      for (final String? format in <String?>['ean13', 'unknown', null]) {
         expect(
           BarcodeCandidatePolicy.isValidForHistoryScan(
             'YT123456789012',
@@ -179,8 +195,39 @@ void main() {
           'JT1234567890',
           format: 'qr',
         ),
+        isNull,
+      );
+      expect(
+        BarcodeCandidatePolicy.rejectionForWorkScan(
+          'QR12345678901',
+          format: 'qr',
+        ),
         WorkScanRejection.unsupportedFormat,
       );
+    });
+
+    test('国内常见承运商代表单号均可通过对应面单码制', () {
+      const Map<String, String> examples = <String, String>{
+        'SF6048285539252': 'code39', // 顺丰
+        'YT0066717686457': 'code128', // 圆通
+        'JT0025164133000': 'code93', // 极兔
+        'JD0123456789012': 'code128', // 京东物流
+        'EA123456789CN': 'qr', // 中国邮政 EMS
+        '785123456789': 'code128', // 中通数字单号
+        '773123456789': 'code39', // 申通数字单号
+        '4312345678901': 'code128', // 韵达数字单号
+        '601234567890': 'code93', // 德邦数字单号
+      };
+      for (final MapEntry<String, String> example in examples.entries) {
+        expect(
+          BarcodeCandidatePolicy.isValidForWorkScan(
+            example.key,
+            format: example.value,
+          ),
+          isTrue,
+          reason: '${example.key} (${example.value})',
+        );
+      }
     });
   });
 

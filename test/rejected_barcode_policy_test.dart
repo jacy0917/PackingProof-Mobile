@@ -99,4 +99,20 @@ void main() {
     );
     expect(afterWindow, isNotNull);
   });
+
+  test('顺丰 Code39 是有效面单码且不再显示拦截横幅', () {
+    final RejectedBarcodeDecision? decision = RejectedBarcodePolicy.decide(
+      candidates: const <RejectedBarcodeCandidate>[
+        RejectedBarcodeCandidate(
+          value: 'SF6048285539252',
+          area: 100,
+          format: 'code39',
+        ),
+      ],
+      minimumLength: 11,
+      now: now,
+    );
+
+    expect(decision, isNull);
+  });
 }

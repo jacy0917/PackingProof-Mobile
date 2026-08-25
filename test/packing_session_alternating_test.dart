@@ -632,6 +632,22 @@ void main() {
     expect(controller.candidateCode, 'YT123456789012');
   });
 
+  test('开始工作后接受顺丰 Code39 面单码', () async {
+    await controller.initialize();
+    await controller.startWork();
+
+    controller.handleNativeBarcodeFrameForTesting(<NativeBarcodeCandidate>[
+      const NativeBarcodeCandidate(
+        value: 'SF6048285539252',
+        area: 200,
+        format: 'code39',
+      ),
+    ]);
+
+    expect(controller.candidateCode, 'SF6048285539252');
+    expect(controller.rejectedBarcodeMessage, isNull);
+  });
+
   testWidgets('原生录像开始前已暂停旧共享文件迁移', (WidgetTester tester) async {
     camera.fullSupported = true;
     try {
