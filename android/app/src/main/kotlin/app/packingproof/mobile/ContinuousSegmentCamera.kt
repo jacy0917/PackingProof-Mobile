@@ -865,7 +865,7 @@ class ContinuousSegmentCamera(
         openCameraAttempts++
         handler.postDelayed(
             { openCamera() },
-            CameraOpenRetryPolicy.RETRY_DELAY_MS,
+            CameraOpenRetryPolicy.retryDelayMs(openCameraAttempts - 1),
         )
     }
 

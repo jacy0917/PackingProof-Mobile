@@ -24,7 +24,15 @@ class CameraOpenRetryPolicyTest {
 
     @Test
     fun `retry budget is bounded`() {
-        assertEquals(3, CameraOpenRetryPolicy.MAX_ATTEMPTS)
+        assertEquals(6, CameraOpenRetryPolicy.MAX_ATTEMPTS)
         assertTrue(CameraOpenRetryPolicy.RETRY_DELAY_MS > 0)
+    }
+
+    @Test
+    fun `retry delay backs off but remains bounded`() {
+        assertEquals(750L, CameraOpenRetryPolicy.retryDelayMs(0))
+        assertEquals(1_500L, CameraOpenRetryPolicy.retryDelayMs(1))
+        assertEquals(2_000L, CameraOpenRetryPolicy.retryDelayMs(2))
+        assertEquals(2_000L, CameraOpenRetryPolicy.retryDelayMs(99))
     }
 }

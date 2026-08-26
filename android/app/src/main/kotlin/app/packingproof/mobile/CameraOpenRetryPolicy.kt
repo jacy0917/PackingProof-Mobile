@@ -7,8 +7,19 @@ package app.packingproof.mobile
  * 稍作延迟重试即可成功；这里只负责判定哪些错误值得重试以及重试次数。
  */
 internal object CameraOpenRetryPolicy {
-    const val MAX_ATTEMPTS = 3
-    const val RETRY_DELAY_MS = 500L
+    // OnePlus/Android 16 may keep the camera client marked as busy for several
+    // seconds during a cold start.  A short fixed budget makes the app fail
+    // before CameraService has a chance to release the stale client.
+    const val MAX_ATTEMPTS = 6
+    const val RETRY_DELAY_MS = 750L
+    private const val MAX_RETRY_DELAY_MS = 2_000L
+
+    /** Delay before the next open attempt (attempt is zero-based). */
+    fun retryDelayMs(attempt: Int): Long {
+        if (attempt <= 0) return RETRY_DELAY_MS
+        return (RETRY_DELAY_MS * (attempt + 1).toLong())
+            .coerceAtMost(MAX_RETRY_DELAY_MS)
+    }
 
     // 对应 CameraDevice.StateCallback 的瞬时错误码（值为编译期常量）。
     private const val ERROR_CAMERA_DISCONNECTED = 1
