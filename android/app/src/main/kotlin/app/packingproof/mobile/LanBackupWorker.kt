@@ -117,6 +117,22 @@ internal class LanBackupWorker(
         val id = explicitId ?: store.claimNextUploadJob()?.optString("id")
         if (id.isNullOrBlank()) return Result.success()
         requestedRetry = false
+        val hostForeground = applicationContext
+            .getSharedPreferences("lan_backup_runtime", Context.MODE_PRIVATE)
+            .getBoolean("host_foreground", false)
+        if (!hostForeground) {
+            val job = store.readJob(id)
+            if (job != null) {
+                return pause(
+                    job,
+                    job.optString("generation"),
+                    "应用在后台，备份已暂停；打开应用后将继续",
+                    LanBackupFailureKind.OFFLINE_OR_TIMEOUT,
+                    autoRetry = false,
+                )
+            }
+            return Result.success()
+        }
         val result = process(id)
         if (explicitId == null && !requestedRetry) {
             LanBackupDispatcher.schedule(applicationContext, append = true)

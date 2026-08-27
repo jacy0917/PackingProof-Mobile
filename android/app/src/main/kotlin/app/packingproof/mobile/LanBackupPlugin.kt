@@ -74,6 +74,18 @@ internal class LanBackupPlugin(
         return summary()
     }
 
+    /** 记录宿主 Activity 是否在前台，供上传 Worker 避免后台启动前台服务。 */
+    fun onHostForeground() {
+        context.getSharedPreferences("lan_backup_runtime", Context.MODE_PRIVATE)
+            .edit().putBoolean("host_foreground", true).commit()
+        schedulePending()
+    }
+
+    fun onHostBackground() {
+        context.getSharedPreferences("lan_backup_runtime", Context.MODE_PRIVATE)
+            .edit().putBoolean("host_foreground", false).commit()
+    }
+
     fun setAutoEnabled(enabled: Boolean) {
         context.getSharedPreferences("lan_backup_runtime", Context.MODE_PRIVATE)
             .edit().putBoolean("auto_enabled", enabled).commit()

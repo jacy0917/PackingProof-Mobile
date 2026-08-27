@@ -134,6 +134,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onStart() {
         super.onStart()
+        lanBackupPlugin?.onHostForeground()
         lanBackupPlugin?.notifySummaryChanged()
         orderInfoReceiverPlugin?.onHostForeground()
         maxVolumeController?.resumeSession()
@@ -147,6 +148,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onStop() {
+        lanBackupPlugin?.onHostBackground()
         orderInfoReceiverPlugin?.onHostBackground()
         maxVolumeController?.pauseSession()
         super.onStop()
