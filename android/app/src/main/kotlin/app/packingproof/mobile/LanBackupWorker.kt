@@ -2,6 +2,7 @@ package app.packingproof.mobile
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.ForegroundServiceStartNotAllowedException
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -391,6 +392,19 @@ internal class LanBackupWorker(
             )
         } catch (error: CancellationException) {
             throw error
+        } catch (error: ForegroundServiceStartNotAllowedException) {
+            // Android 12+ rejects WorkManager's foreground promotion when a
+            // rescheduled upload starts while the app is backgrounded. Keep
+            // the job resumable; the next app foreground initialization will
+            // schedule pending work again instead of reporting a hard failure.
+            Log.w(TAG, "Foreground upload start deferred id=${id.take(8)}", error)
+            pause(
+                job,
+                generation,
+                "应用在后台，备份已暂停；打开应用后将继续",
+                LanBackupFailureKind.OFFLINE_OR_TIMEOUT,
+                autoRetry = false,
+            )
         } catch (error: Throwable) {
             Log.e(TAG, "Backup failed id=${id.take(8)}", error)
             fail(
