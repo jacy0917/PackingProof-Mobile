@@ -526,6 +526,8 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private var activeUploads: [String: ActiveUpload] = [:]
   private var uploadDispatcherTask: Task<Void, Never>?
   private var uploadDispatchRequested = false
+  private let hostLifecycleLock = NSLock()
+  private var hostForeground: Bool
   private let maintenanceGate = IosBackupMaintenanceGate()
   private let cleanupLock = NSLock()
   private let cleanupPolicyLock = NSLock()
@@ -612,6 +614,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
     recordingActivityState: IosRecordingActivityState = .shared,
     cleanupWorkPauseNanoseconds: UInt64? = nil,
     cleanupSliceIntervalNanoseconds: UInt64? = nil,
+    hostForeground: Bool = true,
     afterCleanupRunnerDecisionForTesting: (() -> Void)? = nil,
     beforeCleanupRetrySleepForTesting: ((Int, UInt64) -> Void)? = nil,
     beforeCleanupCandidateForTesting: (([String: Any]) -> Void)? = nil,
@@ -642,6 +645,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
       cleanupWorkPauseNanoseconds ?? Self.cleanupWorkPauseNanoseconds
     self.cleanupSliceIntervalNanoseconds =
       cleanupSliceIntervalNanoseconds ?? Self.cleanupSliceIntervalNanoseconds
+    self.hostForeground = hostForeground
     self.afterCleanupRunnerDecisionForTesting =
       afterCleanupRunnerDecisionForTesting
     self.beforeCleanupRetrySleepForTesting = beforeCleanupRetrySleepForTesting
@@ -1790,6 +1794,25 @@ final class IosBackupHostApi: BackupNativeHostApi {
     requestUploadDispatch()
   }
 
+  func onHostForeground() {
+    hostLifecycleLock.lock()
+    hostForeground = true
+    hostLifecycleLock.unlock()
+    requestUploadDispatch()
+  }
+
+  func onHostBackground() {
+    hostLifecycleLock.lock()
+    hostForeground = false
+    hostLifecycleLock.unlock()
+  }
+
+  private func isHostForeground() -> Bool {
+    hostLifecycleLock.lock()
+    defer { hostLifecycleLock.unlock() }
+    return hostForeground
+  }
+
   private func withUploadsLock<T>(_ body: () -> T) -> T {
     uploadsLock.lock()
     defer { uploadsLock.unlock() }
@@ -1797,7 +1820,8 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func requestUploadDispatch() {
-    guard defaults.bool(forKey: "ios_backup_auto_enabled") else { return }
+    guard defaults.bool(forKey: "ios_backup_auto_enabled"),
+          isHostForeground() else { return }
     uploadsLock.lock()
     uploadDispatchRequested = true
     guard uploadDispatcherTask == nil else {
@@ -1811,6 +1835,10 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func runUploadDispatcher() async {
+    guard isHostForeground() else {
+      withUploadsLock { uploadDispatcherTask = nil }
+      return
+    }
     do {
       let recovery = try await withMaintenanceSlot {
         try recoverCleanupIntentsSlice()
@@ -1830,18 +1858,29 @@ final class IosBackupHostApi: BackupNativeHostApi {
       triggerCleanup()
       return
     }
-    while !Task.isCancelled {
+    while !Task.isCancelled && isHostForeground() {
       guard defaults.bool(forKey: "ios_backup_auto_enabled") else { break }
       withUploadsLock { uploadDispatchRequested = false }
 
       do {
         while !Task.isCancelled,
+              isHostForeground(),
               defaults.bool(forKey: "ios_backup_auto_enabled"),
               let job = try jobStore.get().claimNextUploadJob() {
           guard let jobId = job["id"] as? String,
                 let generation = job["generation"] as? String,
                 !generation.isEmpty
           else { continue }
+          guard isHostForeground() else {
+            _ = try jobStore.get().updateJob(
+              id: jobId,
+              expectedGeneration: generation
+            ) { current in
+              current["state"] = "pending"
+            }
+            emitSummary()
+            break
+          }
           let identity = IosBackupUploadIdentity(
             generation: generation,
             token: UUID()

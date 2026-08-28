@@ -3872,6 +3872,95 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(api.uploadTaskCountsForTesting().active, 0)
   }
 
+  func testUploadDispatcherWaitsForHostForeground() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    fixture.defaults.set(true, forKey: "ios_backup_auto_enabled")
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    let id = "foreground-gated"
+    try store.upsert(makeBackupJob(id: id))
+    let started = expectation(description: "返回前台后开始上传")
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      uploadOperationOverride: { job, identity in
+        _ = try? store.updateJob(
+          id: job["id"] as? String ?? "",
+          expectedGeneration: identity.generation
+        ) { $0["state"] = "completed" }
+        started.fulfill()
+      },
+      hostForeground: false
+    )
+
+    api.requestUploadDispatchForTesting()
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    XCTAssertEqual(api.uploadTaskCountsForTesting().dispatcher, 0)
+    XCTAssertEqual(try store.readJob(id: id)?["state"] as? String, "pending")
+
+    api.onHostForeground()
+    await fulfillment(of: [started], timeout: 5)
+    await api.waitForUploadDispatcherForTesting()
+
+    XCTAssertEqual(try store.readJob(id: id)?["state"] as? String, "completed")
+  }
+
+  func testUploadDispatcherStopsClaimingAfterHostBackground() async throws {
+    let fixture = try makeBackupStoreFixture()
+    defer { removeBackupStoreFixture(fixture) }
+    fixture.defaults.set(true, forKey: "ios_backup_auto_enabled")
+    let store = try IosBackupJobStore(
+      databaseURL: fixture.databaseURL,
+      defaults: fixture.defaults
+    )
+    try store.upsert(makeBackupJob(id: "first-before-background"))
+    try store.upsert(makeBackupJob(id: "second-after-background"))
+    let firstStarted = expectation(description: "首条前台上传已启动")
+    let secondStarted = expectation(description: "返回前台后启动第二条")
+    let firstGate = AsyncTestGate()
+    let api = makeBackupApi(
+      defaults: fixture.defaults,
+      store: store,
+      uploadOperationOverride: { job, identity in
+        let id = job["id"] as? String ?? ""
+        if id == "first-before-background" {
+          firstStarted.fulfill()
+          await firstGate.wait()
+        } else {
+          secondStarted.fulfill()
+        }
+        _ = try? store.updateJob(
+          id: id,
+          expectedGeneration: identity.generation
+        ) { $0["state"] = "completed" }
+      }
+    )
+
+    api.requestUploadDispatchForTesting()
+    await fulfillment(of: [firstStarted], timeout: 5)
+    api.onHostBackground()
+    await firstGate.open()
+    await api.waitForUploadDispatcherForTesting()
+
+    XCTAssertEqual(
+      try store.readJob(id: "second-after-background")?["state"] as? String,
+      "pending"
+    )
+
+    api.onHostForeground()
+    await fulfillment(of: [secondStarted], timeout: 5)
+    await api.waitForUploadDispatcherForTesting()
+
+    XCTAssertEqual(
+      try store.readJob(id: "second-after-background")?["state"] as? String,
+      "completed"
+    )
+  }
+
   func testUploadDispatcherCancelsAndRunsReplacementGeneration() async throws {
     let fixture = try makeBackupStoreFixture()
     defer { removeBackupStoreFixture(fixture) }
@@ -4259,6 +4348,7 @@ class RunnerTests: XCTestCase {
     recordingActivityState: IosRecordingActivityState = IosRecordingActivityState(),
     cleanupWorkPauseNanoseconds: UInt64? = nil,
     cleanupSliceIntervalNanoseconds: UInt64? = nil,
+    hostForeground: Bool = true,
     afterCleanupRunnerDecisionForTesting: (() -> Void)? = nil,
     beforeCleanupRetrySleepForTesting: ((Int, UInt64) -> Void)? = nil,
     beforeCleanupCandidateForTesting: (([String: Any]) -> Void)? = nil,
@@ -4289,6 +4379,7 @@ class RunnerTests: XCTestCase {
       recordingActivityState: recordingActivityState,
       cleanupWorkPauseNanoseconds: cleanupWorkPauseNanoseconds,
       cleanupSliceIntervalNanoseconds: cleanupSliceIntervalNanoseconds,
+      hostForeground: hostForeground,
       afterCleanupRunnerDecisionForTesting:
         afterCleanupRunnerDecisionForTesting,
       beforeCleanupRetrySleepForTesting: beforeCleanupRetrySleepForTesting,

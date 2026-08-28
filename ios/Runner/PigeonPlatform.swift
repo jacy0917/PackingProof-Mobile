@@ -30,6 +30,7 @@ enum IosVideoCodecCapabilities {
 
 final class PigeonPlatform {
   private static var cameraHost: IosCameraHostApi?
+  private static var backupHost: IosBackupHostApi?
   private static var promptAudioHost: IosPromptAudioHost?
   private static var promptAudioChannel: FlutterMethodChannel?
 
@@ -57,9 +58,14 @@ final class PigeonPlatform {
       )
     )
     let backupEvents = BackupNativeEventApi(binaryMessenger: messenger)
+    let backupHost = IosBackupHostApi(
+      eventApi: backupEvents,
+      hostForeground: UIApplication.shared.applicationState != .background
+    )
+    self.backupHost = backupHost
     BackupNativeHostApiSetup.setUp(
       binaryMessenger: messenger,
-      api: IosBackupHostApi(eventApi: backupEvents)
+      api: backupHost
     )
     let cameraHost = IosCameraHostApi(
       eventApi: CameraEventApi(binaryMessenger: messenger),
@@ -96,6 +102,14 @@ final class PigeonPlatform {
   /// `textureFrameAvailable`，会触发 use-after-free 崩溃。
   static func shutdownForTermination() {
     cameraHost?.prepareForTermination()
+  }
+
+  static func onHostForeground() {
+    backupHost?.onHostForeground()
+  }
+
+  static func onHostBackground() {
+    backupHost?.onHostBackground()
   }
 }
 
