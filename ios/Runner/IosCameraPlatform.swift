@@ -318,6 +318,17 @@ enum IosCameraCapabilityPolicy {
   }
 }
 
+enum IosCameraStartRetryPolicy {
+  static let maximumAttempts = 6
+  static let confirmationDelay: TimeInterval = 0.3
+  private static let initialRetryDelay: TimeInterval = 0.75
+  private static let maximumRetryDelay: TimeInterval = 2
+
+  static func retryDelay(afterAttempt attempt: Int) -> TimeInterval {
+    min(initialRetryDelay * TimeInterval(max(1, attempt)), maximumRetryDelay)
+  }
+}
+
 /// 为 metadata 输出提供低频的 Vision 兜底，避免旧设备的 AVFoundation
 /// 条码回调偶发停摆时完全没有识别结果。
 enum IosBarcodeVisionFallbackPolicy {
@@ -781,7 +792,9 @@ final class IosCameraHostApi:
       object: session,
       queue: .main
     ) { [weak self] _ in
-      self?.recoveryRuntimeError = true
+      self?.sessionQueue.async {
+        self?.recoveryRuntimeError = true
+      }
     }
     configureSession()
   }
@@ -868,10 +881,16 @@ final class IosCameraHostApi:
           }
         }
       } else {
-        if !self.session.isRunning {
-          self.session.startRunning()
+        self.startSessionWithRetry { succeeded in
+          if succeeded {
+            self.finishInitialize(completion)
+          } else {
+            completion(.failure(pigeonError(
+              "摄像头启动失败",
+              code: "camera_session_start_failed"
+            )))
+          }
         }
-        self.finishInitialize(completion)
       }
     }
   }
@@ -2306,7 +2325,6 @@ final class IosCameraHostApi:
   /// 恢复已 dispose 的相机：校验 outputs → 重注册纹理 → 重挂 delegate →
   /// 重启 session，并在短时间内有界确认运行状态。
   private func recoverCamera(completion: @escaping (Bool) -> Void) {
-    recoveryRuntimeError = false
     guard outputsAreValid() else {
       completion(false)
       return
@@ -2320,19 +2338,58 @@ final class IosCameraHostApi:
       updateTextureId(newId)
     }
     configureOutputDelegates()
+    startSessionWithRetry(allowDisposed: true) { [weak self] succeeded in
+      guard let self else {
+        completion(false)
+        return
+      }
+      if succeeded {
+        completion(true)
+      } else {
+        self.rollbackRecovery()
+        completion(false)
+      }
+    }
+  }
+
+  private func startSessionWithRetry(
+    attempt: Int = 1,
+    allowDisposed: Bool = false,
+    completion: @escaping (Bool) -> Void
+  ) {
+    guard allowDisposed || !isDisposed else {
+      completion(false)
+      return
+    }
+    recoveryRuntimeError = false
     if !session.isRunning {
       session.startRunning()
     }
-    sessionQueue.asyncAfter(deadline: .now() + .milliseconds(300)) { [weak self] in
-      guard let self else {
+    sessionQueue.asyncAfter(
+      deadline: .now() + IosCameraStartRetryPolicy.confirmationDelay
+    ) { [weak self] in
+      guard let self, allowDisposed || !self.isDisposed else {
         completion(false)
         return
       }
       if self.session.isRunning && !self.recoveryRuntimeError {
         completion(true)
-      } else {
-        self.rollbackRecovery()
+        return
+      }
+      guard attempt < IosCameraStartRetryPolicy.maximumAttempts else {
         completion(false)
+        return
+      }
+      self.sessionQueue.asyncAfter(
+        deadline: .now() + IosCameraStartRetryPolicy.retryDelay(
+          afterAttempt: attempt
+        )
+      ) { [weak self] in
+        self?.startSessionWithRetry(
+          attempt: attempt + 1,
+          allowDisposed: allowDisposed,
+          completion: completion
+        )
       }
     }
   }

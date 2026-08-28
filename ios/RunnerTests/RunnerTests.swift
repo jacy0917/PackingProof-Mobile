@@ -451,6 +451,30 @@ class RunnerTests: XCTestCase {
     }
   }
 
+  func testIosCameraStartRetryPolicyIsBounded() {
+    XCTAssertEqual(IosCameraStartRetryPolicy.maximumAttempts, 6)
+    XCTAssertEqual(
+      IosCameraStartRetryPolicy.retryDelay(afterAttempt: 1),
+      0.75,
+      accuracy: 0.001
+    )
+    XCTAssertEqual(
+      IosCameraStartRetryPolicy.retryDelay(afterAttempt: 2),
+      1.5,
+      accuracy: 0.001
+    )
+    XCTAssertEqual(
+      IosCameraStartRetryPolicy.retryDelay(afterAttempt: 3),
+      2,
+      accuracy: 0.001
+    )
+    XCTAssertEqual(
+      IosCameraStartRetryPolicy.retryDelay(afterAttempt: 99),
+      2,
+      accuracy: 0.001
+    )
+  }
+
   func testIosCameraCapabilityOperationsFailWithTypedErrors() {
     let probeError = IosCameraCapabilityPolicy.probeUnsupportedError(
       sequence: "full"
