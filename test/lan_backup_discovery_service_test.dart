@@ -52,7 +52,7 @@ void main() {
       '"capabilities":["host","mobile-backup"],'
       '"backupCompatibility":{"hostVersion":"0.0.55",'
       '"protocol":"mobile-backup-v2","enrollmentVersion":2,"authVersion":3,'
-      '"minimumMobileVersion":"0.5.25","minimumMobileBuildNumber":11038}}',
+      '"minimumMobileVersion":"999.0.0","minimumMobileBuildNumber":99999999}}',
     )!;
 
     expect(host.compatible, isFalse);
@@ -67,7 +67,7 @@ void main() {
         '"capabilities":["host","mobile-backup"],'
         '"backupCompatibility":{"hostVersion":"0.0.55",'
         '"protocol":"mobile-backup-v2","enrollmentVersion":2,"authVersion":3,'
-        '"minimumMobileVersion":"0.5.25","minimumMobileBuildNumber":11038}}';
+        '"minimumMobileVersion":"999.0.0","minimumMobileBuildNumber":99999999}}';
     final Uri uri = Uri.parse('http://192.168.1.20:5280');
     final LanBackupHostDiscoveryService service = LanBackupHostDiscoveryService(
       candidateProvider: () async => <Uri>[uri],

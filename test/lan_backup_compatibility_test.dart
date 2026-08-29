@@ -71,8 +71,8 @@ void main() {
         'protocol': 'mobile-backup-v2',
         'enrollmentVersion': 2,
         'authVersion': 3,
-        'minimumMobileVersion': '0.5.25',
-        'minimumMobileBuildNumber': 11038,
+        'minimumMobileVersion': '999.0.0',
+        'minimumMobileBuildNumber': 99999999,
       }).failure,
       LanBackupCompatibilityFailure.mobileTooOld,
     );
