@@ -75,7 +75,8 @@ echo "准备验证并构建 $RELEASE_TAG"
 flutter pub get
 flutter analyze --no-pub --no-fatal-infos
 flutter test --no-pub --concurrency=1
-(cd ios && pod install)
+(cd ios && pod install --deployment)
+git restore -- ios/Runner.xcodeproj/project.pbxproj
 if ! git diff --quiet --exit-code || ! git diff --cached --quiet --exit-code; then
   echo "pod install 改写了受跟踪文件，请先提交匹配的 iOS 依赖锁文件" >&2
   exit 1
