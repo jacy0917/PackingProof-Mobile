@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$VersionName = '0.5.24',
-    [int]$VersionCode = 11039,
+    [string]$VersionName = '0.5.25',
+    [int]$VersionCode = 11040,
     [string]$SigningDirectory = '',
     [switch]$ForceClean
 )

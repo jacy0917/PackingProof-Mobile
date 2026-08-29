@@ -2,8 +2,8 @@ const String backupProtocol = 'mobile-backup-v2';
 const int backupEnrollmentVersion = 2;
 const int backupAuthenticationVersion = 3;
 const String minimumBackupHostVersion = '0.0.55';
-const String currentMobileCompatibilityVersion = '0.5.24';
-const int currentMobileCompatibilityBuildNumber = 11039;
+const String currentMobileCompatibilityVersion = '0.5.25';
+const int currentMobileCompatibilityBuildNumber = 11040;
 
 enum LanBackupCompatibilityFailure {
   hostVersionTooOld,
