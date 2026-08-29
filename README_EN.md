@@ -4,9 +4,9 @@
 
 Give every package reviewable packing evidence.
 
-PackingProof Mobile is an Android recording tool for online sellers and packing stations. Mount a phone above the packing area, tap **Start Work** once, and the app continuously records, automatically recognizes shipping-label barcodes, and adds a marker when a tracking number is recognized. When an after-sales dispute occurs, operators can quickly locate the relevant footage by tracking number.
+PackingProof Mobile is an Android and iOS recording tool for online sellers and packing stations. Mount a phone above the packing area, tap **Start Work** once, and the app continuously records, automatically recognizes shipping-label barcodes, and adds a marker when a tracking number is recognized. When an after-sales dispute occurs, operators can quickly locate the relevant footage by tracking number.
 
-[Download the latest release](https://github.com/PackingProof/PackingProof-Mobile/releases)
+[Download the latest Android release](https://github.com/PackingProof/PackingProof-Mobile/releases) · [Join the iOS TestFlight beta](https://testflight.apple.com/join/KR4qNs6t)
 
 <p align="center">
   <img src="docs/screenshots/history.jpg" alt="Recording history and quick search" width="31%">
@@ -40,7 +40,12 @@ For computer backup or spoken order alerts, keep the phone and computer on the s
 - E-commerce warehouses and small packing teams
 - Evidence for after-sales disputes and wrong or missing shipment investigations
 - Shipment records for high-value, fragile, or customized products
-- Low-cost packing monitoring using a spare Android phone
+- Low-cost packing monitoring using a spare phone
+
+## Platform Builds
+
+- **Android**: download the signed ARM64 APK from GitHub Releases
+- **iOS**: install TestFlight, then open the beta link to join
 
 ## Privacy
 

@@ -4,9 +4,9 @@
 
 让每一件包裹都有可回看的打包证据。
 
-包裹留证是一款面向电商商家和打包工作台的 Android 录像工具。手机固定在打包台后，点一次“开始工作”，应用便会持续录像、自动识别面单条码，并在识别到单号时打点标记。发生售后争议时，可按快递单号快速找到对应画面。
+包裹留证是一款面向电商商家和打包工作台的 Android 与 iOS 录像工具。手机固定在打包台后，点一次“开始工作”，应用便会持续录像、自动识别面单条码，并在识别到单号时打点标记。发生售后争议时，可按快递单号快速找到对应画面。
 
-[下载最新版本](https://github.com/PackingProof/PackingProof-Mobile/releases)
+[下载 Android 最新版本](https://github.com/PackingProof/PackingProof-Mobile/releases) · [加入 iOS TestFlight 内测](https://testflight.apple.com/join/KR4qNs6t)
 
 <p align="center">
   <img src="docs/screenshots/history.jpg" alt="录像历史与快速查找" width="31%">
@@ -40,7 +40,12 @@
 - 电商仓库与小型打包工作室
 - 售后争议举证和错漏发核查
 - 高价值、易损或定制商品的发货留档
-- 希望使用闲置 Android 手机搭建低成本打包监控的商家
+- 希望使用闲置手机搭建低成本打包监控的商家
+
+## 平台版本
+
+- **Android**：通过 GitHub Release 下载 ARM64 正式签名 APK
+- **iOS**：先安装 TestFlight，再打开内测链接加入
 
 ## 隐私说明
 
