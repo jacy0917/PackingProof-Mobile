@@ -89,3 +89,21 @@ dist/ios/PackingProof-Mobile-profile-v<versionName>+<versionCode>.ipa
 脚本会在调用 Flutter 构建前读取当前 Git revision 和 UTC 构建时间，并同时注入 App 的 `BUILD_REVISION`、`BUILD_TIMESTAMP` 与外部构建清单。设备诊断中的构建身份必须与 `build-manifest.json` 一致；两者任一为空或不一致时，不得用该包作性能或发布验收。
 
 临时内部分发可传入 `ad-hoc` 或 `development`。签名证书、描述文件和其他凭据不得提交、打印或复制进构建产物。
+
+## 正式发布
+
+`Tools/Publish-iOS.sh` 是 App Store Connect/TestFlight 正式发布入口。它要求当前提交工作区干净且存在与 `pubspec.yaml` 一致的精确版本标签，并依次执行：
+
+- `flutter analyze` 和完整 Flutter 测试
+- 在可用 iPhone 模拟器上运行 `RunnerTests`
+- 通过 `Tools/Build-iOS.sh` 构建 `app-store` Release IPA
+- 校验 IPA 的 Bundle ID、版本、构建号、SHA256、Git revision、构建时间和外部构建清单
+
+示例：
+
+```bash
+git tag v0.5.25+11040
+Tools/Publish-iOS.sh
+```
+
+仅在工具链或缓存故障确实需要完整清理时使用 `Tools/Publish-iOS.sh clean`。正式 TestFlight/App Store 包不得直接调用 `Tools/Build-iOS.sh` 绕过发布门禁；普通 Profile、ad-hoc 和 development 测试包仍使用构建脚本。
