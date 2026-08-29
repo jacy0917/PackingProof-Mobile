@@ -43,7 +43,10 @@ fi
 VERSION_NAME="${BASH_REMATCH[1]}"
 VERSION_CODE="${BASH_REMATCH[2]}"
 
-mapfile -t RELEASE_TAGS < <(
+RELEASE_TAGS=()
+while IFS= read -r tag; do
+  RELEASE_TAGS+=("$tag")
+done < <(
   git tag --points-at HEAD |
     awk '/^v?[0-9]+\.[0-9]+\.[0-9]+(\+[1-9][0-9]*)?$/'
 )
