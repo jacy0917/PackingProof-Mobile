@@ -80,11 +80,11 @@ SIMULATOR_ID="$(
   xcrun simctl list devices available -j |
     python3 -c 'import json, sys
 data = json.load(sys.stdin)["devices"]
-devices = [device for runtime in data.values() for device in runtime if "iPhone" in device.get("name", "")]
+devices = [device for runtime in data.values() for device in runtime]
 booted = next((device for device in devices if device.get("state") == "Booted"), None)
 selected = booted or (devices[0] if devices else None)
 if selected is None:
-    raise SystemExit("没有可用的 iPhone 模拟器")
+    raise SystemExit("没有可用的 iOS 模拟器")
 print(selected["udid"])'
 )"
 
