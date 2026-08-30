@@ -608,6 +608,80 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testIosCapturePresetSelectionUses4KOnlyWhenCurrentLensSupportsIt() {
+    XCTAssertEqual(
+      IosCapturePresetSelection.select(
+        requestedSpec: "uhd4k30",
+        supports4K: true,
+        supportsHd1080: true,
+        supportsHd720: true,
+        supportsHigh: true,
+        supportsMedium: true
+      ),
+      IosCapturePresetSelection(
+        name: "hd4K3840x2160",
+        portraitWidth: 2160,
+        portraitHeight: 3840,
+        recordingSpecName: "uhd4k30"
+      )
+    )
+    XCTAssertEqual(
+      IosCapturePresetSelection.select(
+        requestedSpec: "uhd4k30",
+        supports4K: false,
+        supportsHd1080: true,
+        supportsHigh: true,
+        supportsMedium: true
+      )?.recordingSpecName,
+      "hd1080p30"
+    )
+  }
+
+  func testIosCapturePresetSelectionHonors720pRequest() {
+    XCTAssertEqual(
+      IosCapturePresetSelection.select(
+        requestedSpec: "smooth720p30",
+        supportsHd1080: true,
+        supportsHd720: true,
+        supportsHigh: true,
+        supportsMedium: true
+      ),
+      IosCapturePresetSelection(
+        name: "hd1280x720",
+        portraitWidth: 720,
+        portraitHeight: 1280,
+        recordingSpecName: "smooth720p30"
+      )
+    )
+  }
+
+  func testIosRecordingSpecEncodingPolicyUsesSpecAndCodecBitRates() {
+    XCTAssertEqual(
+      IosRecordingSpecEncodingPolicy.averageBitRate(
+        spec: "uhd4k30", codec: "hevc"
+      ),
+      24_000_000
+    )
+    XCTAssertEqual(
+      IosRecordingSpecEncodingPolicy.averageBitRate(
+        spec: "uhd4k30", codec: "h264"
+      ),
+      35_000_000
+    )
+    XCTAssertEqual(
+      IosRecordingSpecEncodingPolicy.averageBitRate(
+        spec: "smooth720p30", codec: "hevc"
+      ),
+      4_500_000
+    )
+    XCTAssertEqual(
+      IosRecordingSpecEncodingPolicy.averageBitRate(
+        spec: "hd1080p30", codec: "h264"
+      ),
+      10_000_000
+    )
+  }
+
   func testIosRecordingTransformUsesSelectedCaptureSize() {
     let transform = iosRecordingTransform(
       for: "landscapeLeft",

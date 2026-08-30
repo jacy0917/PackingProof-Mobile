@@ -383,13 +383,55 @@ struct IosCapturePresetSelection: Equatable {
   let name: String
   let portraitWidth: Int
   let portraitHeight: Int
+  let recordingSpecName: String
+
+  init(
+    name: String,
+    portraitWidth: Int,
+    portraitHeight: Int,
+    recordingSpecName: String = "hd1080p30"
+  ) {
+    self.name = name
+    self.portraitWidth = portraitWidth
+    self.portraitHeight = portraitHeight
+    self.recordingSpecName = recordingSpecName
+  }
 
   static func select(
+    requestedSpec: String = "hd1080p30",
+    supports4K: Bool = false,
     supportsHd1080: Bool,
+    supportsHd720: Bool = false,
     supportsHigh: Bool,
     supportsMedium: Bool,
     supportsLow: Bool = false
   ) -> IosCapturePresetSelection? {
+    if requestedSpec == "uhd4k30", supports4K {
+      return IosCapturePresetSelection(
+        name: "hd4K3840x2160",
+        portraitWidth: 2160,
+        portraitHeight: 3840,
+        recordingSpecName: "uhd4k30"
+      )
+    }
+    if requestedSpec == "smooth720p30" {
+      if supportsHd720 {
+        return IosCapturePresetSelection(
+          name: "hd1280x720",
+          portraitWidth: 720,
+          portraitHeight: 1280,
+          recordingSpecName: "smooth720p30"
+        )
+      }
+      if supportsHigh {
+        return IosCapturePresetSelection(
+          name: "high",
+          portraitWidth: 720,
+          portraitHeight: 1280,
+          recordingSpecName: "smooth720p30"
+        )
+      }
+    }
     if supportsHd1080 {
       return IosCapturePresetSelection(
         name: "hd1920x1080",
@@ -397,11 +439,20 @@ struct IosCapturePresetSelection: Equatable {
         portraitHeight: 1920
       )
     }
+    if supportsHd720 {
+      return IosCapturePresetSelection(
+        name: "hd1280x720",
+        portraitWidth: 720,
+        portraitHeight: 1280,
+        recordingSpecName: "smooth720p30"
+      )
+    }
     if supportsHigh {
       return IosCapturePresetSelection(
         name: "high",
         portraitWidth: 720,
-        portraitHeight: 1280
+        portraitHeight: 1280,
+        recordingSpecName: "smooth720p30"
       )
     }
     if supportsMedium {
@@ -419,6 +470,17 @@ struct IosCapturePresetSelection: Equatable {
       )
     }
     return nil
+  }
+}
+
+enum IosRecordingSpecEncodingPolicy {
+  static func averageBitRate(spec: String, codec: String) -> Int {
+    let usesHevc = codec.lowercased() == "hevc"
+    switch spec {
+    case "uhd4k30": return usesHevc ? 24_000_000 : 35_000_000
+    case "smooth720p30": return usesHevc ? 4_500_000 : 6_000_000
+    default: return usesHevc ? 7_000_000 : 10_000_000
+    }
   }
 }
 
@@ -705,6 +767,7 @@ final class IosCameraHostApi:
   private var captureSize = (width: 1080, height: 1920)
 
   private var recordingSpecName = "hd1080p30"
+  private var requestedRecordingSpecName = "hd1080p30"
   private var preferredVideoCodec = "hevc"
   private var codecFallbackReason: String?
   private var recordingOrientationName = "portrait"
@@ -766,7 +829,7 @@ final class IosCameraHostApi:
   private let scanEngine: IosBarcodeScanEngine
   private let scanBenchmarkEnabled: Bool
 
-  /// 优先使用 1080p；不支持时由 session 选择策略降级到设备可用的预设，
+  /// 按用户规格选择当前镜头支持的预设；不支持时降级到设备可用的预设，
   /// 录像 writer 与预览始终使用同一组尺寸，避免旧设备输出尺寸不匹配。
   private var portraitSize: (width: Int, height: Int) { captureSize }
 
@@ -856,7 +919,6 @@ final class IosCameraHostApi:
       preferredVideoCodec = requestedCodec
       codecFallbackReason = nil
     }
-    recordingSpecName = request.recordingSpec
     recordingOrientationName = ["landscapeLeft", "landscapeRight"].contains(request.recordingOrientation)
       ? request.recordingOrientation : "portrait"
     sessionQueue.async { [weak self] in
@@ -864,6 +926,8 @@ final class IosCameraHostApi:
         completion(.failure(pigeonError("摄像头已经关闭")))
         return
       }
+      self.requestedRecordingSpecName = request.recordingSpec
+      self.applyCapturePreset(requestedSpec: request.recordingSpec)
       do {
         try self.acquireRecordingAudioSessionIfNeeded()
         try self.addAudioInputIfNeeded()
@@ -1404,6 +1468,7 @@ final class IosCameraHostApi:
         "fpsRanges": fpsRangeNames,
         "cameraDeviceType": device?.deviceType.rawValue ?? "",
         "recordingSpec": recordingSpecName,
+        "supportedRecordingSpecs": supportedRecordingSpecs(),
         "cameraId": device?.uniqueID ?? "",
         "videoWidth": size.width,
         "videoHeight": size.height,
@@ -2084,6 +2149,54 @@ final class IosCameraHostApi:
 
   // MARK: - Session configuration
 
+  private func supportedRecordingSpecs() -> [String] {
+    var specs: [String] = []
+    if session.canSetSessionPreset(.hd4K3840x2160) {
+      specs.append("uhd4k30")
+    }
+    if session.canSetSessionPreset(.hd1920x1080) {
+      specs.append("hd1080p30")
+    }
+    if session.canSetSessionPreset(.hd1280x720)
+        || session.canSetSessionPreset(.high) {
+      specs.append("smooth720p30")
+    }
+    return specs
+  }
+
+  private func applyCapturePreset(requestedSpec: String) {
+    session.beginConfiguration()
+    applyCapturePresetWithinConfiguration(requestedSpec: requestedSpec)
+    session.commitConfiguration()
+  }
+
+  private func applyCapturePresetWithinConfiguration(requestedSpec: String) {
+    let presetSelection = IosCapturePresetSelection.select(
+      requestedSpec: requestedSpec,
+      supports4K: session.canSetSessionPreset(.hd4K3840x2160),
+      supportsHd1080: session.canSetSessionPreset(.hd1920x1080),
+      supportsHd720: session.canSetSessionPreset(.hd1280x720),
+      supportsHigh: session.canSetSessionPreset(.high),
+      supportsMedium: session.canSetSessionPreset(.medium),
+      supportsLow: session.canSetSessionPreset(.low)
+    )
+    guard let presetSelection else { return }
+    sessionPresetName = presetSelection.name
+    captureSize = (
+      width: presetSelection.portraitWidth,
+      height: presetSelection.portraitHeight
+    )
+    recordingSpecName = presetSelection.recordingSpecName
+    switch presetSelection.name {
+    case "hd4K3840x2160": session.sessionPreset = .hd4K3840x2160
+    case "hd1920x1080": session.sessionPreset = .hd1920x1080
+    case "hd1280x720": session.sessionPreset = .hd1280x720
+    case "high": session.sessionPreset = .high
+    case "medium": session.sessionPreset = .medium
+    default: session.sessionPreset = .low
+    }
+  }
+
   private func configureSession() {
     sessionQueue.async { [weak self] in
       guard let self else { return }
@@ -2107,25 +2220,9 @@ final class IosCameraHostApi:
 
       // 输入已经挂载后再协商 preset，避免 canSetSessionPreset 在旧设备上
       // 因为空 session 的能力判断过早而误选默认规格。
-      let presetSelection = IosCapturePresetSelection.select(
-        supportsHd1080: self.session.canSetSessionPreset(.hd1920x1080),
-        supportsHigh: self.session.canSetSessionPreset(.high),
-        supportsMedium: self.session.canSetSessionPreset(.medium),
-        supportsLow: self.session.canSetSessionPreset(.low)
+      self.applyCapturePresetWithinConfiguration(
+        requestedSpec: self.requestedRecordingSpecName
       )
-      if let presetSelection {
-        self.sessionPresetName = presetSelection.name
-        self.captureSize = (
-          width: presetSelection.portraitWidth,
-          height: presetSelection.portraitHeight
-        )
-        switch presetSelection.name {
-        case "hd1920x1080": self.session.sessionPreset = .hd1920x1080
-        case "high": self.session.sessionPreset = .high
-        case "medium": self.session.sessionPreset = .medium
-        default: self.session.sessionPreset = .low
-        }
-      }
 
       let videoOutput = AVCaptureVideoDataOutput()
       // 保持系统缺省的丢弃迟到帧语义，避免视频帧在串行 sessionQueue 上堆积，
@@ -2137,7 +2234,7 @@ final class IosCameraHostApi:
       if self.session.canAddOutput(videoOutput) {
         self.session.addOutput(videoOutput)
         if let connection = videoOutput.connection(with: .video) {
-          // Flutter 纹理和写入器都使用固定 1080x1920 缓冲；最终方向只写入
+          // Flutter 纹理和写入器共同使用协商后的缓冲尺寸；最终方向只写入
           // AVAssetWriterInput.transform，避免横屏设置物理旋转采集帧。
           connection.videoOrientation = .portrait
           connection.automaticallyAdjustsVideoMirroring = false
@@ -2441,6 +2538,9 @@ final class IosCameraHostApi:
         self.session.addInput(input)
         self.videoDeviceInput = input
         self.configureVideoDevice(device)
+        self.applyCapturePresetWithinConfiguration(
+          requestedSpec: self.requestedRecordingSpecName
+        )
         self.session.commitConfiguration()
         if let connection = self.videoOutput?.connection(with: .video) {
           // 切换镜头后仍保持竖屏采集，并显式固定前摄镜像语义。
@@ -2528,7 +2628,11 @@ final class IosCameraHostApi:
         AVVideoWidthKey: size.width,
         AVVideoHeightKey: size.height,
         AVVideoCompressionPropertiesKey: [
-          AVVideoAverageBitRateKey: 8_000_000,
+          AVVideoAverageBitRateKey:
+            IosRecordingSpecEncodingPolicy.averageBitRate(
+              spec: recordingSpecName,
+              codec: preferredVideoCodec
+            ),
           AVVideoExpectedSourceFrameRateKey: 30,
         ],
       ]
