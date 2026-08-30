@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:packing_proof_mobile/controllers/packing_session_controller.dart';
 import 'package:packing_proof_mobile/models/order_info.dart';
 import 'package:packing_proof_mobile/models/recording_orientation.dart';
+import 'package:packing_proof_mobile/models/recording_spec.dart';
 import 'package:packing_proof_mobile/models/recording_video_codec.dart';
 import 'package:packing_proof_mobile/models/speech_prompt.dart';
 import 'package:packing_proof_mobile/platform/contracts/camera_platform.dart';
@@ -32,6 +33,9 @@ class _FakeLensCameraPlatform implements CameraPlatform {
   final List<String> recordingLifecycleEvents = <String>[];
   Completer<void>? previewDeactivationBlocker;
   final Completer<void> previewDeactivationStarted = Completer<void>();
+  final Set<String> uhdCameraIds = <String>{};
+  String activeCameraId = 'wide';
+  String requestedRecordingSpec = 'hd1080p30';
 
   @override
   void Function(List<NativeBarcodeCandidate> candidates)? onBarcodeBatch;
@@ -51,6 +55,7 @@ class _FakeLensCameraPlatform implements CameraPlatform {
     String capabilityMode = 'unverified',
   }) async {
     initializeCalls++;
+    requestedRecordingSpec = recordingSpec;
     recordingLifecycleEvents.add('initialize');
     return const ContinuousCameraInitialization(
       textureId: 1,
@@ -101,9 +106,24 @@ class _FakeLensCameraPlatform implements CameraPlatform {
 
   @override
   Future<CameraDiagnosticsSnapshot?> getDiagnostics() async {
+    final bool uhdSupported = uhdCameraIds.contains(activeCameraId);
+    final bool uhdActive = uhdSupported && requestedRecordingSpec == 'uhd4k30';
     return CameraDiagnosticsSnapshot(
       device: const <String, Object?>{},
-      camera: const <String, Object?>{'cameraId': 'wide'},
+      camera: <String, Object?>{
+        'cameraId': activeCameraId,
+        'videoWidth': uhdActive ? 3840 : 1920,
+        'videoHeight': uhdActive ? 2160 : 1080,
+        'analysisWidth': 960,
+        'analysisHeight': 540,
+        'videoMime': 'video/hevc',
+        'recordingSpec': uhdActive ? 'uhd4k30' : 'hd1080p30',
+        'supportedRecordingSpecs': <String>[
+          if (uhdSupported) 'uhd4k30',
+          'hd1080p30',
+          'smooth720p30',
+        ],
+      },
     );
   }
 
@@ -172,6 +192,7 @@ class _FakeLensCameraPlatform implements CameraPlatform {
   @override
   Future<ContinuousCameraInitialization> switchToCamera(String cameraId) async {
     switchToCameraCalls++;
+    activeCameraId = cameraId;
     return ContinuousCameraInitialization(
       textureId: 1,
       previewWidth: 1920,
@@ -392,6 +413,101 @@ void main() {
     expect(camera.probeSequenceCalls, 0);
     expect(controller.phase, PackingSessionPhase.ready);
     expect(controller.showCameraCapabilityCard, isFalse);
+  });
+
+  test('支持 4K 的当前镜头仅增加选项并保持默认 1080p', () async {
+    camera.uhdCameraIds.add('wide');
+    final PackingSessionController capableController = PackingSessionController(
+      repository: repository,
+      speechService: _FakeSpeechSink(),
+      maxVolumeService: _FakeMaxVolumeSink(),
+      orderInfoReceiver: _FakeOrderReceiverSink(),
+      videoWatermarkService: _FakeWatermarkSink(),
+      capabilities: const PlatformCapabilities(<PlatformCapability>{
+        PlatformCapability.continuousCameraRecording,
+        PlatformCapability.cameraCapabilityNegotiation,
+      }),
+      cameraService: ContinuousCameraService(platform: camera),
+      cameraServiceFactory: () => ContinuousCameraService(platform: camera),
+    );
+    addTearDown(() async {
+      await capableController.shutdown();
+      capableController.dispose();
+    });
+
+    await capableController.initialize();
+
+    expect(
+      capableController.availableRecordingSpecs,
+      RecordingSpecPreset.values,
+    );
+    expect(capableController.recordingSpec, RecordingSpecPreset.hd1080p30);
+  });
+
+  test('旧设置保存 4K 但当前镜头不支持时初始化回退 1080p', () async {
+    await repository.saveRecordingSpec(RecordingSpecPreset.uhd4k30);
+    final PackingSessionController capableController = PackingSessionController(
+      repository: repository,
+      speechService: _FakeSpeechSink(),
+      maxVolumeService: _FakeMaxVolumeSink(),
+      orderInfoReceiver: _FakeOrderReceiverSink(),
+      videoWatermarkService: _FakeWatermarkSink(),
+      capabilities: const PlatformCapabilities(<PlatformCapability>{
+        PlatformCapability.continuousCameraRecording,
+        PlatformCapability.cameraCapabilityNegotiation,
+      }),
+      cameraService: ContinuousCameraService(platform: camera),
+      cameraServiceFactory: () => ContinuousCameraService(platform: camera),
+    );
+    addTearDown(() async {
+      await capableController.shutdown();
+      capableController.dispose();
+    });
+
+    await capableController.initialize();
+
+    expect(camera.requestedRecordingSpec, 'uhd4k30');
+    expect(capableController.recordingSpec, RecordingSpecPreset.hd1080p30);
+    expect(
+      (await repository.loadSettings()).recordingSpec,
+      RecordingSpecPreset.hd1080p30,
+    );
+  });
+
+  test('4K 设置切到不支持镜头后回退并持久化 1080p', () async {
+    camera.uhdCameraIds.add('wide');
+    final PackingSessionController capableController = PackingSessionController(
+      repository: repository,
+      speechService: _FakeSpeechSink(),
+      maxVolumeService: _FakeMaxVolumeSink(),
+      orderInfoReceiver: _FakeOrderReceiverSink(),
+      videoWatermarkService: _FakeWatermarkSink(),
+      capabilities: const PlatformCapabilities(<PlatformCapability>{
+        PlatformCapability.continuousCameraRecording,
+        PlatformCapability.cameraCapabilityNegotiation,
+      }),
+      cameraService: ContinuousCameraService(platform: camera),
+      cameraServiceFactory: () => ContinuousCameraService(platform: camera),
+    );
+    addTearDown(() async {
+      await capableController.shutdown();
+      capableController.dispose();
+    });
+    await capableController.initialize();
+    await capableController.setRecordingSpec(RecordingSpecPreset.uhd4k30);
+
+    await capableController.switchToCamera('tele');
+
+    expect(capableController.recordingSpec, RecordingSpecPreset.hd1080p30);
+    expect(
+      capableController.availableRecordingSpecs,
+      isNot(contains(RecordingSpecPreset.uhd4k30)),
+    );
+    expect(
+      (await repository.loadSettings()).recordingSpec,
+      RecordingSpecPreset.hd1080p30,
+    );
+    expect(capableController.cameraNotice, '当前镜头不支持 4K，已切换到 1080p');
   });
 
   test('用户切到长焦后开始工作不会切回主摄', () async {

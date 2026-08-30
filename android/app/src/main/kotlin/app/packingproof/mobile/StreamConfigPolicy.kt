@@ -35,7 +35,8 @@ internal class StreamConfigPolicy(
     private val preferredVideoHeight: Int,
 ) {
     /**
-     * 录像/预览尺寸候选：优先设定档位，其次 720p 保底档，最后补一个更小的
+     * 录像/预览尺寸候选：优先设定档位；4K 依次回退到 1080p、720p；
+     * 其他档位最后补一个更小的
      * 支持尺寸。候选必须保持少量，否则会话配置失败时会遍历数百种组合并
      * 反复重建编码器，把相机拖入长时间重试。
      */
@@ -47,10 +48,15 @@ internal class StreamConfigPolicy(
         supportedSizes.firstOrNull {
             it.width == preferredVideoWidth && it.height == preferredVideoHeight
         }?.let(candidates::add)
+        if (preferredVideoWidth > 1920 || preferredVideoHeight > 1080) {
+            supportedSizes.firstOrNull { it.width == 1920 && it.height == 1080 }
+                ?.let { if (it !in candidates) candidates.add(it) }
+        }
         if (preferredVideoWidth != 1280 || preferredVideoHeight != 720) {
             supportedSizes.firstOrNull { it.width == 1280 && it.height == 720 }
                 ?.let { if (it !in candidates) candidates.add(it) }
         }
+        if (candidates.size >= 3) return candidates
         val fallback = supportedSizes
             .filter {
                 it.width <= preferredVideoWidth &&

@@ -140,6 +140,11 @@ class RecordingsScreen extends StatefulWidget {
     this.recordAudioEnabled = true,
     this.preferredVideoCodec = RecordingVideoCodec.hevc,
     this.recordingSpec = RecordingSpecPreset.hd1080p30,
+    this.availableRecordingSpecs = const <RecordingSpecPreset>[
+      RecordingSpecPreset.hd1080p30,
+      RecordingSpecPreset.smooth720p30,
+    ],
+    this.showUhd4kOption = false,
     this.recordingOrientation = RecordingOrientation.portrait,
     this.minimumBarcodeLength = AppSettings.defaultMinimumBarcodeLength,
     this.historyPageSize = AppSettings.defaultHistoryPageSize,
@@ -212,6 +217,8 @@ class RecordingsScreen extends StatefulWidget {
   final bool recordAudioEnabled;
   final RecordingVideoCodec preferredVideoCodec;
   final RecordingSpecPreset recordingSpec;
+  final List<RecordingSpecPreset> availableRecordingSpecs;
+  final bool showUhd4kOption;
   final RecordingOrientation recordingOrientation;
   final int minimumBarcodeLength;
   final int historyPageSize;
@@ -644,6 +651,12 @@ class _RecordingsScreenState extends State<RecordingsScreen>
 
   Future<void> _setRecordingSpec(RecordingSpecPreset spec) async {
     if (_recordingSpec == spec) {
+      return;
+    }
+    if (!widget.availableRecordingSpecs.contains(spec)) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前摄像头不支持录制 4K')));
       return;
     }
     setState(() => _recordingSpec = spec);
@@ -1088,6 +1101,8 @@ class _RecordingsScreenState extends State<RecordingsScreen>
                   ),
                   _RecordingSpecSettings(
                     spec: _recordingSpec,
+                    availableSpecs: widget.availableRecordingSpecs,
+                    showUhd4kOption: widget.showUhd4kOption,
                     onChanged: _setRecordingSpec,
                   ),
                   Divider(

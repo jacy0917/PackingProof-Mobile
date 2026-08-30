@@ -335,9 +335,16 @@ class _VideoCodecSettings extends StatelessWidget {
 }
 
 class _RecordingSpecSettings extends StatelessWidget {
-  const _RecordingSpecSettings({required this.spec, required this.onChanged});
+  const _RecordingSpecSettings({
+    required this.spec,
+    required this.availableSpecs,
+    required this.showUhd4kOption,
+    required this.onChanged,
+  });
 
   final RecordingSpecPreset spec;
+  final List<RecordingSpecPreset> availableSpecs;
+  final bool showUhd4kOption;
   final ValueChanged<RecordingSpecPreset> onChanged;
 
   @override
@@ -358,15 +365,18 @@ class _RecordingSpecSettings extends StatelessWidget {
             width: double.infinity,
             child: SegmentedButton<RecordingSpecPreset>(
               showSelectedIcon: false,
-              segments: RecordingSpecPreset.values
-                  .map(
-                    (RecordingSpecPreset value) =>
-                        ButtonSegment<RecordingSpecPreset>(
-                          value: value,
-                          label: Text(value.label),
-                        ),
-                  )
-                  .toList(growable: false),
+              segments:
+                  (showUhd4kOption
+                          ? RecordingSpecPreset.values
+                          : availableSpecs)
+                      .map(
+                        (RecordingSpecPreset value) =>
+                            ButtonSegment<RecordingSpecPreset>(
+                              value: value,
+                              label: Text(value.label),
+                            ),
+                      )
+                      .toList(growable: false),
               selected: <RecordingSpecPreset>{spec},
               onSelectionChanged: (Set<RecordingSpecPreset> values) {
                 onChanged(values.single);

@@ -87,6 +87,7 @@ mixin _PackingSessionAppSupport on ChangeNotifier {
   bool get _recordAudioEnabled;
   RecordingVideoCodec get _preferredVideoCodec;
   RecordingSpecPreset get _recordingSpec;
+  List<RecordingSpecPreset> get _availableRecordingSpecs;
   RecordingOrientation get _recordingOrientation;
   int get _minimumBarcodeLength;
   int get _historyPageSize;
@@ -140,6 +141,8 @@ mixin _PackingSessionAppSupport on ChangeNotifier {
   bool get recordAudioEnabled => _recordAudioEnabled;
   RecordingVideoCodec get preferredVideoCodec => _preferredVideoCodec;
   RecordingSpecPreset get recordingSpec => _recordingSpec;
+  List<RecordingSpecPreset> get availableRecordingSpecs =>
+      _availableRecordingSpecs;
   RecordingOrientation get recordingOrientation => _recordingOrientation;
   int get minimumBarcodeLength => _minimumBarcodeLength;
   int get historyPageSize => _historyPageSize;

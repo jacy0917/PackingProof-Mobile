@@ -647,6 +647,10 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
       recordAudioEnabled: _controller.recordAudioEnabled,
       preferredVideoCodec: _controller.preferredVideoCodec,
       recordingSpec: _controller.recordingSpec,
+      availableRecordingSpecs: _controller.availableRecordingSpecs,
+      showUhd4kOption: _controller.capabilities.supports(
+        PlatformCapability.continuousCameraRecording,
+      ),
       recordingOrientation: _controller.recordingOrientation,
       minimumBarcodeLength: _controller.minimumBarcodeLength,
       historyPageSize: _controller.historyPageSize,

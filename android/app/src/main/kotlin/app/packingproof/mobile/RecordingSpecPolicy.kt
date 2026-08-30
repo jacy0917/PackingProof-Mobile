@@ -14,7 +14,15 @@ internal data class RecordingSpec(
 internal object RecordingSpecPolicy {
     const val DEFAULT_SPEC_NAME = "hd1080p30"
     const val SMOOTH_SPEC_NAME = "smooth720p30"
+    const val UHD_SPEC_NAME = "uhd4k30"
 
+    val UHD = RecordingSpec(
+        videoWidth = 3840,
+        videoHeight = 2160,
+        fps = 30,
+        avcBitRate = 35_000_000,
+        hevcBitRate = 24_000_000,
+    )
     val HD = RecordingSpec(
         videoWidth = 1920,
         videoHeight = 1080,
@@ -30,13 +38,15 @@ internal object RecordingSpecPolicy {
         hevcBitRate = 4_500_000,
     )
 
-    fun resolveName(name: String?): String =
-        if (name?.trim()?.lowercase() in setOf(SMOOTH_SPEC_NAME, "720p30", "smooth")) {
-            SMOOTH_SPEC_NAME
-        } else {
-            DEFAULT_SPEC_NAME
-        }
+    fun resolveName(name: String?): String = when (name?.trim()?.lowercase()) {
+        UHD_SPEC_NAME, "4k", "4k30", "2160p30" -> UHD_SPEC_NAME
+        SMOOTH_SPEC_NAME, "720p30", "smooth" -> SMOOTH_SPEC_NAME
+        else -> DEFAULT_SPEC_NAME
+    }
 
-    fun resolve(name: String?): RecordingSpec =
-        if (resolveName(name) == SMOOTH_SPEC_NAME) SMOOTH else HD
+    fun resolve(name: String?): RecordingSpec = when (resolveName(name)) {
+        UHD_SPEC_NAME -> UHD
+        SMOOTH_SPEC_NAME -> SMOOTH
+        else -> HD
+    }
 }

@@ -37,6 +37,10 @@ class CameraDiagnosticsSnapshotMapperTest {
         assertEquals("camera-1", camera["cameraId"])
         assertEquals(1920, camera["videoWidth"])
         assertEquals(540, camera["analysisHeight"])
+        assertEquals(
+            listOf("uhd4k30", "hd1080p30", "smooth720p30"),
+            camera["supportedRecordingSpecs"],
+        )
         assertEquals(1_000L, camera["lastAnalysisCompletedAgeMs"])
         assertEquals(-1L, camera["previewFrameAgeMs"])
         assertEquals(2_000L, camera["lastCaptureCompletedAgeMs"])
@@ -163,6 +167,7 @@ class CameraDiagnosticsSnapshotMapperTest {
             videoMime = "video/hevc",
             fps = 30,
             recordingSpec = "hd1080p30",
+            supportedRecordingSpecs = listOf("uhd4k30", "hd1080p30", "smooth720p30"),
             recordAudio = true,
         ),
         activity = CameraActivityDiagnostics(

@@ -33,6 +33,28 @@ class StreamConfigPolicyTest {
     }
 
     @Test
+    fun `4K 视频候选依次回退到1080p和720p`() {
+        val uhdPolicy = StreamConfigPolicy(
+            preferredVideoWidth = 3840,
+            preferredVideoHeight = 2160,
+        )
+        assertEquals(
+            listOf(
+                StreamSize(3840, 2160),
+                StreamSize(1920, 1080),
+                StreamSize(1280, 720),
+            ),
+            uhdPolicy.videoCandidates(
+                listOf(
+                    StreamSize(1280, 720),
+                    StreamSize(1920, 1080),
+                    StreamSize(3840, 2160),
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `视频候选在大量支持尺寸下仍保持少量`() {
         val sizes = mutableListOf(
             StreamSize(1920, 1080),

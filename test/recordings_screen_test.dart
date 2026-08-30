@@ -914,16 +914,99 @@ void main() {
     );
 
     await tester.dragUntilVisible(
-      find.text('流畅 720p'),
+      find.text('720p'),
       find.byType(ListView).first,
       const Offset(0, -120),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('流畅 720p'));
+    expect(find.text('4K'), findsNothing);
+    expect(find.text('1920 × 1080 · 30 帧 · 日常推荐'), findsOneWidget);
+    await tester.tap(find.text('720p'));
     await tester.pumpAndSettle();
 
     expect(changed, RecordingSpecPreset.smooth720p30);
+    expect(find.text('1280 × 720 · 30 帧 · 更省空间、更流畅'), findsOneWidget);
     expect(find.text('录像规格已切换，新录像将使用所选规格'), findsOneWidget);
+  });
+
+  testWidgets('当前镜头支持时显示并可选择 4K', (WidgetTester tester) async {
+    RecordingSpecPreset? changed;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingsScreen(
+          mode: RecordingsScreenMode.settings,
+          sessions: const [],
+          workMode: WorkMode.continuousScan,
+          speechEnabled: true,
+          maxVolumeEnabled: true,
+          availableRecordingSpecs: RecordingSpecPreset.values,
+          showUhd4kOption: true,
+          onWorkModeChanged: (_) async {},
+          onSpeechEnabledChanged: (_) async {},
+          onMaxVolumeEnabledChanged: (_) async {},
+          onRecordingSpecChanged: (RecordingSpecPreset spec) async {
+            changed = spec;
+          },
+          onSpeechPreview: () async {},
+          onSessionUpdated: (_) async {},
+          onDeleteSessions: (_) async {},
+        ),
+      ),
+    );
+
+    await tester.dragUntilVisible(
+      find.text('4K'),
+      find.byType(ListView).first,
+      const Offset(0, -120),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('4K'));
+    await tester.pumpAndSettle();
+
+    expect(changed, RecordingSpecPreset.uhd4k30);
+    expect(find.text('3840 × 2160 · 30 帧 · 画质最高，占用最多'), findsOneWidget);
+  });
+
+  testWidgets('当前镜头不支持 4K 时保持三个按钮并拦截切换', (WidgetTester tester) async {
+    RecordingSpecPreset? changed;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingsScreen(
+          mode: RecordingsScreenMode.settings,
+          sessions: const [],
+          workMode: WorkMode.continuousScan,
+          speechEnabled: true,
+          maxVolumeEnabled: true,
+          showUhd4kOption: true,
+          onWorkModeChanged: (_) async {},
+          onSpeechEnabledChanged: (_) async {},
+          onMaxVolumeEnabledChanged: (_) async {},
+          onRecordingSpecChanged: (RecordingSpecPreset spec) async {
+            changed = spec;
+          },
+          onSpeechPreview: () async {},
+          onSessionUpdated: (_) async {},
+          onDeleteSessions: (_) async {},
+        ),
+      ),
+    );
+
+    await tester.dragUntilVisible(
+      find.text('4K'),
+      find.byType(ListView).first,
+      const Offset(0, -120),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('4K'), findsOneWidget);
+    expect(find.text('1080p'), findsOneWidget);
+    expect(find.text('720p'), findsOneWidget);
+    await tester.tap(find.text('4K'));
+    await tester.pumpAndSettle();
+
+    expect(changed, isNull);
+    expect(find.text('1920 × 1080 · 30 帧 · 日常推荐'), findsOneWidget);
+    expect(find.text('当前摄像头不支持录制 4K'), findsOneWidget);
   });
 
   testWidgets('电脑备份未连接时提供扫码入口', (WidgetTester tester) async {

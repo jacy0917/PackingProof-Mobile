@@ -19,6 +19,7 @@ internal data class CameraStreamDiagnostics(
     val videoMime: String,
     val fps: Any,
     val recordingSpec: String,
+    val supportedRecordingSpecs: List<String>,
     val recordAudio: Boolean,
 )
 
@@ -274,6 +275,7 @@ internal object CameraDiagnosticsSnapshotMapper {
             "videoMime" to stream.videoMime,
             "fps" to stream.fps,
             "recordingSpec" to stream.recordingSpec,
+            "supportedRecordingSpecs" to stream.supportedRecordingSpecs,
             "recordAudio" to stream.recordAudio,
             "previewActive" to activity.previewActive,
             "workScanEnabled" to activity.workScanEnabled,

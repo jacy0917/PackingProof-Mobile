@@ -135,21 +135,21 @@ void main() {
     expect(persisted['preferredVideoCodec'], 'h264');
   });
 
-  test('录像规格默认高清且可切换持久化', () async {
+  test('录像规格默认高清且 4K 可切换持久化', () async {
     final SessionRepository repository = testRepository(root);
 
     final AppSettings defaults = await repository.loadSettings();
     expect(defaults.recordingSpec, RecordingSpecPreset.hd1080p30);
 
-    await repository.saveRecordingSpec(RecordingSpecPreset.smooth720p30);
+    await repository.saveRecordingSpec(RecordingSpecPreset.uhd4k30);
     final AppSettings updated = await repository.loadSettings();
-    expect(updated.recordingSpec, RecordingSpecPreset.smooth720p30);
+    expect(updated.recordingSpec, RecordingSpecPreset.uhd4k30);
 
     final Map<String, Object?> persisted = Map<String, Object?>.from(
       jsonDecode(await File('${root.path}/settings.json').readAsString())
           as Map<Object?, Object?>,
     );
-    expect(persisted['recordingSpec'], 'smooth720p30');
+    expect(persisted['recordingSpec'], 'uhd4k30');
   });
 
   test('旧设置缺少录像规格时按高清处理', () async {

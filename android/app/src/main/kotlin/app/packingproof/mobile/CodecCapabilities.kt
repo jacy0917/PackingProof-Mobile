@@ -1,6 +1,8 @@
 package app.packingproof.mobile
 
+import android.media.MediaCodecInfo
 import android.media.MediaCodecList
+import android.media.MediaFormat
 
 /**
  * 查询设备 MediaCodec 编解码能力。
@@ -37,6 +39,34 @@ object CodecCapabilities {
         return codecInfos.any { info ->
             info.isEncoder &&
                 info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+        }
+    }
+
+    fun supportsSurfaceEncoding(
+        mime: String,
+        width: Int,
+        height: Int,
+        framesPerSecond: Int,
+    ): Boolean {
+        if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC && hevcEncoderDisabledForProcess) {
+            return false
+        }
+        return codecInfos.any { info ->
+            if (!info.isEncoder || info.supportedTypes.none { it.equals(mime, ignoreCase = true) }) {
+                return@any false
+            }
+            runCatching {
+                val capabilities = info.getCapabilitiesForType(mime)
+                val videoCapabilities = capabilities.videoCapabilities
+                    ?: return@runCatching false
+                capabilities.colorFormats.contains(
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
+                ) && videoCapabilities.areSizeAndRateSupported(
+                    width,
+                    height,
+                    framesPerSecond.toDouble(),
+                )
+            }.getOrDefault(false)
         }
     }
 

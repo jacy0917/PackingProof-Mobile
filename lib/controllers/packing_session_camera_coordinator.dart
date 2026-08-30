@@ -98,6 +98,10 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
       _capabilityState = settings.cameraCapabilityState;
       _preferredVideoCodec = settings.preferredVideoCodec;
       _recordingSpec = settings.recordingSpec;
+      _availableRecordingSpecs = const <RecordingSpecPreset>[
+        RecordingSpecPreset.hd1080p30,
+        RecordingSpecPreset.smooth720p30,
+      ];
       _recordingOrientation = settings.recordingOrientation;
       _minimumBarcodeLength = settings.minimumBarcodeLength;
       _historyPageSize = settings.historyPageSize;
@@ -420,6 +424,7 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
     final CameraDiagnosticsSnapshot? snapshot = await camera.getDiagnostics();
     if (snapshot == null) return const <String, Object?>{};
     final Map<String, Object?> cameraState = snapshot.camera;
+    await _syncRecordingSpecs(cameraState);
     final String videoMime = '${cameraState['videoMime'] ?? ''}';
     return <String, Object?>{
       'cameraId': '${cameraState['cameraId'] ?? ''}',
@@ -432,6 +437,41 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
       'probeSchemaVersion': CameraCapabilityPolicy.probeSchemaVersion,
       'cameraPipelineVersion': CameraCapabilityPolicy.cameraPipelineVersion,
     };
+  }
+
+  Future<void> _syncRecordingSpecs(Map<String, Object?> cameraState) async {
+    final Object? rawSupported = cameraState['supportedRecordingSpecs'];
+    final List<RecordingSpecPreset> supported = rawSupported is List
+        ? rawSupported
+              .map(tryRecordingSpecFromStorage)
+              .whereType<RecordingSpecPreset>()
+              .toList(growable: false)
+        : const <RecordingSpecPreset>[];
+    final List<RecordingSpecPreset> available = supported.isEmpty
+        ? const <RecordingSpecPreset>[
+            RecordingSpecPreset.hd1080p30,
+            RecordingSpecPreset.smooth720p30,
+          ]
+        : RecordingSpecPreset.values
+              .where(supported.contains)
+              .toList(growable: false);
+    final int videoWidth = (cameraState['videoWidth'] as num?)?.toInt() ?? 0;
+    final int videoHeight = (cameraState['videoHeight'] as num?)?.toInt() ?? 0;
+    final bool activeUhd =
+        videoWidth == RecordingSpecPreset.uhd4k30.videoWidth &&
+        videoHeight == RecordingSpecPreset.uhd4k30.videoHeight;
+    final bool fallbackFromUhd =
+        _recordingSpec == RecordingSpecPreset.uhd4k30 &&
+        (!available.contains(RecordingSpecPreset.uhd4k30) || !activeUhd);
+    _availableRecordingSpecs = fallbackFromUhd
+        ? available
+              .where((value) => value != RecordingSpecPreset.uhd4k30)
+              .toList(growable: false)
+        : available;
+    if (!fallbackFromUhd) return;
+    _recordingSpec = RecordingSpecPreset.hd1080p30;
+    await _repository.saveRecordingSpec(_recordingSpec);
+    _showCameraNotice('当前镜头不支持 4K，已切换到 1080p');
   }
 
   Map<String, Object?>? _identityMap(Object? value) {

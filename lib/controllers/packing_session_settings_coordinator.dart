@@ -21,6 +21,11 @@ mixin _PackingSessionSettingsCoordinator on _PackingSessionPairingCoordinator {
   @override
   RecordingVideoCodec _preferredVideoCodec = RecordingVideoCodec.hevc;
   RecordingSpecPreset _recordingSpec = RecordingSpecPreset.hd1080p30;
+  List<RecordingSpecPreset> _availableRecordingSpecs =
+      const <RecordingSpecPreset>[
+        RecordingSpecPreset.hd1080p30,
+        RecordingSpecPreset.smooth720p30,
+      ];
   RecordingOrientation _recordingOrientation = RecordingOrientation.portrait;
   @override
   int _minimumBarcodeLength = AppSettings.defaultMinimumBarcodeLength;
@@ -115,7 +120,7 @@ mixin _PackingSessionSettingsCoordinator on _PackingSessionPairingCoordinator {
   }
 
   Future<void> setRecordingSpec(RecordingSpecPreset spec) async {
-    if (_recordingSpec == spec) {
+    if (_recordingSpec == spec || !_availableRecordingSpecs.contains(spec)) {
       return;
     }
     _recordingSpec = spec;

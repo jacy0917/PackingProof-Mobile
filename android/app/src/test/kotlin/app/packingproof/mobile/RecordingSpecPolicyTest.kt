@@ -32,4 +32,16 @@ class RecordingSpecPolicyTest {
         assertEquals(10_000_000, spec.avcBitRate)
         assertEquals(7_000_000, spec.hevcBitRate)
     }
+
+    @Test
+    fun `UHD aliases resolve to 4K30 balanced bitrate`() {
+        for (name in listOf("uhd4k30", "4k", "4k30", "2160p30")) {
+            assertEquals(RecordingSpecPolicy.UHD, RecordingSpecPolicy.resolve(name))
+            assertEquals(RecordingSpecPolicy.UHD_SPEC_NAME, RecordingSpecPolicy.resolveName(name))
+        }
+        assertEquals(3840, RecordingSpecPolicy.UHD.videoWidth)
+        assertEquals(2160, RecordingSpecPolicy.UHD.videoHeight)
+        assertEquals(35_000_000, RecordingSpecPolicy.UHD.avcBitRate)
+        assertEquals(24_000_000, RecordingSpecPolicy.UHD.hevcBitRate)
+    }
 }

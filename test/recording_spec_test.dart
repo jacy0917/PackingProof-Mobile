@@ -3,8 +3,10 @@ import 'package:packing_proof_mobile/models/recording_spec.dart';
 
 void main() {
   test('规格枚举存储值与标签', () {
+    expect(RecordingSpecPreset.uhd4k30.storageValue, 'uhd4k30');
     expect(RecordingSpecPreset.hd1080p30.storageValue, 'hd1080p30');
     expect(RecordingSpecPreset.smooth720p30.storageValue, 'smooth720p30');
+    expect(RecordingSpecPreset.uhd4k30.label, '4K');
     expect(RecordingSpecPreset.hd1080p30.label, contains('1080p'));
     expect(RecordingSpecPreset.smooth720p30.label, contains('720p'));
     expect(RecordingSpecPreset.hd1080p30.description, isNotEmpty);
@@ -23,11 +25,22 @@ void main() {
       recordingSpecFromStorage('720p30'),
       RecordingSpecPreset.smooth720p30,
     );
+    for (final String value in <String>['uhd4k30', '4k', '4k30', '2160p30']) {
+      expect(recordingSpecFromStorage(value), RecordingSpecPreset.uhd4k30);
+    }
+    expect(tryRecordingSpecFromStorage('weird'), isNull);
   });
 
-  test('高清与流畅档参数符合预期', () {
+  test('4K、高清与流畅档参数符合预期', () {
+    const RecordingSpecPreset uhd = RecordingSpecPreset.uhd4k30;
     const RecordingSpecPreset hd = RecordingSpecPreset.hd1080p30;
     const RecordingSpecPreset smooth = RecordingSpecPreset.smooth720p30;
+
+    expect(uhd.videoWidth, 3840);
+    expect(uhd.videoHeight, 2160);
+    expect(uhd.fps, 30);
+    expect(uhd.avcBitRate, 35000000);
+    expect(uhd.hevcBitRate, 24000000);
 
     expect(hd.videoWidth, 1920);
     expect(hd.videoHeight, 1080);
