@@ -416,6 +416,15 @@ void main() {
     expect(controller.showCameraCapabilityCard, isFalse);
   });
 
+  test('iOS 未声明能力探针时仍同步当前镜头的 4K 规格', () async {
+    camera.uhdCameraIds.add('wide');
+    await controller.initialize();
+
+    expect(controller.availableRecordingSpecs, RecordingSpecPreset.values);
+    expect(camera.probeSequenceCalls, 0);
+    expect(controller.showCameraCapabilityCard, isFalse);
+  });
+
   test('支持 4K 的当前镜头仅增加选项并保持默认 1080p', () async {
     camera.uhdCameraIds.add('wide');
     final PackingSessionController capableController = PackingSessionController(

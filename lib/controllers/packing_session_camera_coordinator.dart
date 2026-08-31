@@ -381,13 +381,11 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
   }
 
   Future<void> _resolveCameraCapability() async {
-    if (_disposed ||
-        !_supportsNativeCamera ||
-        !_supportsCameraCapabilityNegotiation ||
-        _nativeCamera == null) {
+    if (_disposed || !_supportsNativeCamera || _nativeCamera == null) {
       return;
     }
     final Map<String, Object?> identity = await _currentCameraIdentity();
+    if (!_supportsCameraCapabilityNegotiation) return;
     if (identity.isEmpty) return;
     final Map<String, Object?>? cached = _capabilityState;
     final Map<String, Object?>? cachedIdentity = _identityMap(
