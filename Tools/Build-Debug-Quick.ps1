@@ -6,6 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
+. (Join-Path $PSScriptRoot 'Java-Build-Environment.ps1')
 
 $pubspecPath = Join-Path $repo 'pubspec.yaml'
 $versionLine = (Get-Content -LiteralPath $pubspecPath -Encoding UTF8 |
@@ -21,6 +22,7 @@ if (-not $revision) { throw '无法读取 Git 修订号' }
 $buildTimestamp = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 $env:PACKING_PROOF_BUILD_REVISION = $revision
 $env:PACKING_PROOF_BUILD_TIMESTAMP = $buildTimestamp
+$javaBuildEnvironment = Enter-JavaBuildEnvironment -RepositoryRoot $repo
 
 try {
     if ($ForceClean) {
@@ -60,6 +62,7 @@ try {
     Write-Host "SHA256：$hash"
 }
 finally {
+    Exit-JavaBuildEnvironment -State $javaBuildEnvironment
     Remove-Item Env:PACKING_PROOF_BUILD_REVISION -ErrorAction SilentlyContinue
     Remove-Item Env:PACKING_PROOF_BUILD_TIMESTAMP -ErrorAction SilentlyContinue
 }

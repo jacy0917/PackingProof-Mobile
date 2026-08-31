@@ -37,6 +37,25 @@ void main() {
     expect(diagnosticScript, contains(r'-ForceClean:$ForceClean'));
   });
 
+  test('Android 构建期间使用独立 Java 临时目录并恢复原环境', () {
+    final releaseScript = File('Tools/Build-Android.ps1').readAsStringSync();
+    final debugScript = File('Tools/Build-Debug-Quick.ps1').readAsStringSync();
+    final environmentScript = File(
+      'Tools/Java-Build-Environment.ps1',
+    ).readAsStringSync();
+
+    for (final script in [releaseScript, debugScript]) {
+      expect(script, contains('Java-Build-Environment.ps1'));
+      expect(script, contains('Enter-JavaBuildEnvironment'));
+      expect(script, contains('Exit-JavaBuildEnvironment'));
+    }
+    expect(environmentScript, contains('.dart_tool/java-build-temp'));
+    expect(environmentScript, contains(r'$env:TEMP = $temporaryDirectory'));
+    expect(environmentScript, contains(r'$env:TMP = $temporaryDirectory'));
+    expect(environmentScript, contains(r'$env:TEMP = $State.Temp'));
+    expect(environmentScript, contains(r'$env:TMP = $State.Tmp'));
+  });
+
   test('iOS profile 和 release 构建把可审计的构建身份注入 App', () {
     final script = File('Tools/Build-iOS.sh').readAsStringSync();
 

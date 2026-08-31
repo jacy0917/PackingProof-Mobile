@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
+. (Join-Path $PSScriptRoot 'Java-Build-Environment.ps1')
 
 if ($VersionName -notmatch '^\d+\.\d+\.\d+$') { throw 'VersionName 必须为 x.y.z 格式' }
 if ($VersionCode -le 0) { throw 'VersionCode 必须大于 0' }
@@ -341,6 +342,7 @@ if (-not ([IO.Path]::GetFullPath($temporaryOutput)).StartsWith($resolvedRepo, [S
     throw '临时输出目录必须位于当前仓库内'
 }
 New-Item -ItemType Directory -Force -Path $temporaryOutput | Out-Null
+$javaBuildEnvironment = Enter-JavaBuildEnvironment -RepositoryRoot $repo
 
 try {
     $buildInputFingerprint = Get-ReleaseBuildInputFingerprint
@@ -444,6 +446,7 @@ try {
     Write-Host "Android 安装包已输出到 $resolvedOutput"
 }
 finally {
+    Exit-JavaBuildEnvironment -State $javaBuildEnvironment
     Remove-Item -LiteralPath $temporaryOutput -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:PACKING_PROOF_BUILD_REVISION -ErrorAction SilentlyContinue
     Remove-Item Env:PACKING_PROOF_BUILD_TIMESTAMP -ErrorAction SilentlyContinue
