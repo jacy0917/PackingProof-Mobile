@@ -111,10 +111,20 @@ class VideoWatermarkOrientationTest {
     }
 
     @Test
-    fun `uses the same 44 pixel text for portrait and landscape`() {
+    fun `scales 4K text from the existing 1080p reference`() {
         assertEquals(44f, watermarkTextSize(1920, "portrait"), 0.001f)
         assertEquals(44f, watermarkTextSize(1080, "landscapeLeft"), 0.001f)
         assertEquals(44f, watermarkTextSize(1080, "landscapeRight"), 0.001f)
+        assertEquals(88f, watermarkTextSize(3840, "portrait"), 0.001f)
+        assertEquals(88f, watermarkTextSize(2160, "landscapeLeft"), 0.001f)
+        assertEquals(88f, watermarkTextSize(2160, "landscapeRight"), 0.001f)
+    }
+
+    @Test
+    fun `does not shrink text below the existing 1080p size`() {
+        assertEquals(44f, watermarkTextSize(1280, "portrait"), 0.001f)
+        assertEquals(44f, watermarkTextSize(720, "landscapeLeft"), 0.001f)
+        assertEquals(44f, watermarkTextSize(720, "landscapeRight"), 0.001f)
     }
 
     @Test

@@ -212,10 +212,11 @@ internal class ReusableWatermarkBitmap(
     }
 }
 
-@Suppress("UNUSED_PARAMETER")
 internal fun watermarkTextSize(videoHeight: Int, recordingOrientation: String): Float {
     require(videoHeight > 0)
-    return 44f
+    val referenceHeight = if (recordingOrientation == "portrait") 1920f else 1080f
+    val scale = (videoHeight / referenceHeight).coerceAtLeast(1f)
+    return 44f * scale
 }
 
 internal fun isSuccessfulWatermarkExport(
