@@ -306,7 +306,8 @@ data class ExportRequest (
   val inputPath: String,
   val outputPath: String,
   val startMs: Long,
-  val endMs: Long
+  val endMs: Long,
+  val passthrough: Boolean
 )
  {
   companion object {
@@ -315,7 +316,8 @@ data class ExportRequest (
       val outputPath = pigeonVar_list[1] as String
       val startMs = pigeonVar_list[2] as Long
       val endMs = pigeonVar_list[3] as Long
-      return ExportRequest(inputPath, outputPath, startMs, endMs)
+      val passthrough = pigeonVar_list[4] as Boolean
+      return ExportRequest(inputPath, outputPath, startMs, endMs, passthrough)
     }
   }
   fun toList(): List<Any?> {
@@ -324,6 +326,7 @@ data class ExportRequest (
       outputPath,
       startMs,
       endMs,
+      passthrough,
     )
   }
   override fun equals(other: Any?): Boolean {
@@ -334,7 +337,7 @@ data class ExportRequest (
       return true
     }
     val other = other as ExportRequest
-    return PlatformApiPigeonUtils.deepEquals(this.inputPath, other.inputPath) && PlatformApiPigeonUtils.deepEquals(this.outputPath, other.outputPath) && PlatformApiPigeonUtils.deepEquals(this.startMs, other.startMs) && PlatformApiPigeonUtils.deepEquals(this.endMs, other.endMs)
+    return PlatformApiPigeonUtils.deepEquals(this.inputPath, other.inputPath) && PlatformApiPigeonUtils.deepEquals(this.outputPath, other.outputPath) && PlatformApiPigeonUtils.deepEquals(this.startMs, other.startMs) && PlatformApiPigeonUtils.deepEquals(this.endMs, other.endMs) && PlatformApiPigeonUtils.deepEquals(this.passthrough, other.passthrough)
   }
 
   override fun hashCode(): Int {
@@ -343,10 +346,11 @@ data class ExportRequest (
     result = 31 * result + PlatformApiPigeonUtils.deepHash(this.outputPath)
     result = 31 * result + PlatformApiPigeonUtils.deepHash(this.startMs)
     result = 31 * result + PlatformApiPigeonUtils.deepHash(this.endMs)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.passthrough)
     return result
   }
   override fun toString(): String {
-    return "ExportRequest(inputPath=$inputPath, outputPath=$outputPath, startMs=$startMs, endMs=$endMs)"
+    return "ExportRequest(inputPath=$inputPath, outputPath=$outputPath, startMs=$startMs, endMs=$endMs, passthrough=$passthrough)"
   }
 }
 

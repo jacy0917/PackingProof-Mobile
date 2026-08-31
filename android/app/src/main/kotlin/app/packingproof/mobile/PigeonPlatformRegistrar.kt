@@ -181,6 +181,7 @@ private class PigeonMediaProcessingHostApi(
                 "outputPath" to request.outputPath,
                 "startMs" to request.startMs,
                 "endMs" to request.endMs,
+                "passthrough" to request.passthrough,
             ),
             callback,
         ) { it as String }

@@ -295,6 +295,7 @@ struct ExportRequest: Hashable, CustomStringConvertible {
   var outputPath: String
   var startMs: Int64
   var endMs: Int64
+  var passthrough: Bool
 
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
@@ -303,12 +304,14 @@ struct ExportRequest: Hashable, CustomStringConvertible {
     let outputPath = pigeonVar_list[1] as! String
     let startMs = pigeonVar_list[2] as! Int64
     let endMs = pigeonVar_list[3] as! Int64
+    let passthrough = pigeonVar_list[4] as! Bool
 
     return ExportRequest(
       inputPath: inputPath,
       outputPath: outputPath,
       startMs: startMs,
-      endMs: endMs
+      endMs: endMs,
+      passthrough: passthrough
     )
   }
   func toList() -> [Any?] {
@@ -317,13 +320,14 @@ struct ExportRequest: Hashable, CustomStringConvertible {
       outputPath,
       startMs,
       endMs,
+      passthrough,
     ]
   }
   static func == (lhs: ExportRequest, rhs: ExportRequest) -> Bool {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return PlatformApiPigeonInternal.deepEquals(lhs.inputPath, rhs.inputPath) && PlatformApiPigeonInternal.deepEquals(lhs.outputPath, rhs.outputPath) && PlatformApiPigeonInternal.deepEquals(lhs.startMs, rhs.startMs) && PlatformApiPigeonInternal.deepEquals(lhs.endMs, rhs.endMs)
+    return PlatformApiPigeonInternal.deepEquals(lhs.inputPath, rhs.inputPath) && PlatformApiPigeonInternal.deepEquals(lhs.outputPath, rhs.outputPath) && PlatformApiPigeonInternal.deepEquals(lhs.startMs, rhs.startMs) && PlatformApiPigeonInternal.deepEquals(lhs.endMs, rhs.endMs) && PlatformApiPigeonInternal.deepEquals(lhs.passthrough, rhs.passthrough)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -332,10 +336,11 @@ struct ExportRequest: Hashable, CustomStringConvertible {
     PlatformApiPigeonInternal.deepHash(value: outputPath, hasher: &hasher)
     PlatformApiPigeonInternal.deepHash(value: startMs, hasher: &hasher)
     PlatformApiPigeonInternal.deepHash(value: endMs, hasher: &hasher)
+    PlatformApiPigeonInternal.deepHash(value: passthrough, hasher: &hasher)
   }
 
   public var description: String {
-    return "ExportRequest(inputPath: \(String(describing: inputPath)), outputPath: \(String(describing: outputPath)), startMs: \(String(describing: startMs)), endMs: \(String(describing: endMs)))"
+    return "ExportRequest(inputPath: \(String(describing: inputPath)), outputPath: \(String(describing: outputPath)), startMs: \(String(describing: startMs)), endMs: \(String(describing: endMs)), passthrough: \(String(describing: passthrough)))"
   }
 }
 

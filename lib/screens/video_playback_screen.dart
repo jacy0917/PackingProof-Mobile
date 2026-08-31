@@ -746,7 +746,7 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
     }
   }
 
-  Future<void> _shareCompatibleFile() async {
+  Future<void> _shareRemuxedFile() async {
     final File file = File(_session.filePath);
     if (!await file.exists()) {
       if (mounted) {
@@ -774,7 +774,7 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('兼容视频生成失败，请稍后重试')));
+        ).showSnackBar(const SnackBar(content: Text('视频整理失败，请稍后重试')));
       }
     } finally {
       if (mounted) setState(() => _fallbackBusy = false);
@@ -904,8 +904,8 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
                     errorDetail: _playbackErrorDetail,
                     primaryAction: _openWithSystemPlayer,
                     primaryActionLabel: '用系统播放器打开',
-                    secondaryAction: _shareCompatibleFile,
-                    secondaryActionLabel: '分享兼容视频',
+                    secondaryAction: _shareRemuxedFile,
+                    secondaryActionLabel: '整理后分享',
                     destructiveAction: widget.onDelete == null
                         ? null
                         : _deleteLocalRecording,

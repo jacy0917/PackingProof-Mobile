@@ -700,6 +700,18 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testIosVideoExportPolicyUsesPassthroughForHevcRemux() {
+    let remux = iosVideoExportPolicy(passthrough: true)
+    XCTAssertEqual(remux.presetName, AVAssetExportPresetPassthrough)
+    XCTAssertTrue(remux.optimizeForNetworkUse)
+    XCTAssertFalse(remux.appliesRequestedTimeRange)
+
+    let clip = iosVideoExportPolicy(passthrough: false)
+    XCTAssertEqual(clip.presetName, AVAssetExportPresetHighestQuality)
+    XCTAssertFalse(clip.optimizeForNetworkUse)
+    XCTAssertTrue(clip.appliesRequestedTimeRange)
+  }
+
   func testIosRecordingTransformUsesSelectedCaptureSize() {
     let transform = iosRecordingTransform(
       for: "landscapeLeft",

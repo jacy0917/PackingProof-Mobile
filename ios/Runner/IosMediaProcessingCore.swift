@@ -2,6 +2,22 @@ import AVFoundation
 import Foundation
 import QuartzCore
 
+struct IosVideoExportPolicy {
+  let presetName: String
+  let optimizeForNetworkUse: Bool
+  let appliesRequestedTimeRange: Bool
+}
+
+func iosVideoExportPolicy(passthrough: Bool) -> IosVideoExportPolicy {
+  IosVideoExportPolicy(
+    presetName: passthrough
+      ? AVAssetExportPresetPassthrough
+      : AVAssetExportPresetHighestQuality,
+    optimizeForNetworkUse: passthrough,
+    appliesRequestedTimeRange: !passthrough
+  )
+}
+
 struct IosWatermarkExportRequest {
   let inputPath: String
   let outputPath: String

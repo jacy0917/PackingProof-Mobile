@@ -29,7 +29,7 @@ void main() {
       channel: channel,
       cacheDirectory: Directory('${root.path}${Platform.pathSeparator}cache'),
       nativeExportSupported: true,
-      compatibleFullRangeExport: false,
+      remuxFullRangeHevc: false,
     );
 
     final File result = await service.prepare(
@@ -42,7 +42,7 @@ void main() {
     expect(result.path, source.path);
   });
 
-  test('iOS 完整 HEVC 分享生成 H.264 兼容副本', () async {
+  test('iOS 完整 HEVC 分享生成无损重封装副本', () async {
     final File source = File('${root.path}${Platform.pathSeparator}source.mp4');
     await source.writeAsBytes(<int>[1, 2, 3]);
     int exportCalls = 0;
@@ -54,6 +54,7 @@ void main() {
               call.arguments as Map<Object?, Object?>;
           expect(arguments['startMs'], 0);
           expect(arguments['endMs'], 30000);
+          expect(arguments['passthrough'], isTrue);
           final File output = File(arguments['outputPath']! as String);
           await output.writeAsBytes(<int>[4, 5, 6]);
           return output.path;
@@ -62,7 +63,7 @@ void main() {
       channel: channel,
       cacheDirectory: Directory('${root.path}${Platform.pathSeparator}cache'),
       nativeExportSupported: true,
-      compatibleFullRangeExport: true,
+      remuxFullRangeHevc: true,
       systemMediaPresenter: const _FakeSystemMediaPresenter('video/hevc'),
     );
 
@@ -85,7 +86,7 @@ void main() {
       channel: channel,
       cacheDirectory: Directory('${root.path}${Platform.pathSeparator}cache'),
       nativeExportSupported: true,
-      compatibleFullRangeExport: true,
+      remuxFullRangeHevc: true,
       systemMediaPresenter: const _FakeSystemMediaPresenter('video/avc'),
     );
 
@@ -109,6 +110,7 @@ void main() {
           exportCalls++;
           final Map<Object?, Object?> arguments =
               call.arguments as Map<Object?, Object?>;
+          expect(arguments['passthrough'], isFalse);
           final File output = File(arguments['outputPath']! as String);
           await output.writeAsBytes(<int>[4, 5, 6]);
           return output.path;

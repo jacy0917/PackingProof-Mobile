@@ -35,12 +35,14 @@ class PigeonMediaProcessingPlatform implements MediaProcessingPlatform {
     required String outputPath,
     required int startMs,
     required int endMs,
+    required bool passthrough,
   }) => _api.exportRange(
     ExportRequest(
       inputPath: inputPath,
       outputPath: outputPath,
       startMs: startMs,
       endMs: endMs,
+      passthrough: passthrough,
     ),
   );
 

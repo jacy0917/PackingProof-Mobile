@@ -34,6 +34,7 @@ class UnsupportedMediaProcessingPlatform implements MediaProcessingPlatform {
     required String outputPath,
     required int startMs,
     required int endMs,
+    required bool passthrough,
   }) {
     throw const CapabilityUnavailableException(
       PlatformCapability.videoExport,

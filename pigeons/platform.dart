@@ -32,6 +32,7 @@ class ExportRequest {
   String outputPath;
   int startMs;
   int endMs;
+  bool passthrough;
 }
 
 class VideoDecodeSupportDto {

@@ -41,6 +41,7 @@ abstract interface class MediaProcessingPlatform {
     required String outputPath,
     required int startMs,
     required int endMs,
+    required bool passthrough,
   });
 
   Future<int> exportProgress();

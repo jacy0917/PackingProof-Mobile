@@ -18,7 +18,7 @@ class VideoShareService {
     MethodChannel? channel,
     Directory? cacheDirectory,
     bool? nativeExportSupported,
-    bool? compatibleFullRangeExport,
+    bool? remuxFullRangeHevc,
     MediaProcessingPlatform? platform,
     SystemMediaPresenter? systemMediaPresenter,
   }) : _providedCacheDirectory = cacheDirectory,
@@ -27,7 +27,7 @@ class VideoShareService {
            AppContainer.forCurrentPlatform().capabilities.supports(
              PlatformCapability.videoExport,
            ),
-       _compatibleFullRangeExport = compatibleFullRangeExport ?? Platform.isIOS,
+       _remuxFullRangeHevc = remuxFullRangeHevc ?? Platform.isIOS,
        _platform =
            platform ??
            (channel != null
@@ -42,7 +42,7 @@ class VideoShareService {
 
   final Directory? _providedCacheDirectory;
   final bool _nativeExportSupported;
-  final bool _compatibleFullRangeExport;
+  final bool _remuxFullRangeHevc;
   final MediaProcessingPlatform _platform;
   final SystemMediaPresenter _systemMediaPresenter;
 
@@ -72,9 +72,8 @@ class VideoShareService {
     final bool fullRange =
         mediaStart <= const Duration(milliseconds: 50) &&
         mediaEnd >= sourceDuration - const Duration(milliseconds: 50);
-    final bool compatibilityExport =
-        fullRange && await _requiresCompatibilityExport(source);
-    if (fullRange && !compatibilityExport) {
+    final bool remux = fullRange && await _requiresHevcRemux(source);
+    if (fullRange && !remux) {
       onProgress?.call(1, '准备分享');
       return source;
     }
@@ -88,11 +87,11 @@ class VideoShareService {
           utf8.encode(
             '${source.path}|${stat.size}|${stat.modified.millisecondsSinceEpoch}|'
             '${mediaStart.inMilliseconds}|${mediaEnd.inMilliseconds}|'
-            '$compatibilityExport',
+            '$remux',
           ),
         )
         .toString();
-    final String outputPrefix = compatibilityExport ? 'compatible' : 'clip';
+    final String outputPrefix = remux ? 'remux' : 'clip';
     final File output = File(p.join(cache.path, '${outputPrefix}_$key.mp4'));
     if (await output.exists() && await output.length() > 0) {
       await output.setLastModified(DateTime.now());
@@ -100,7 +99,7 @@ class VideoShareService {
       return output;
     }
 
-    final String exportMessage = compatibilityExport ? '正在生成兼容视频' : '正在生成分享视频';
+    final String exportMessage = remux ? '正在整理视频文件' : '正在生成分享视频';
     onProgress?.call(0.5, exportMessage);
     bool completed = false;
     final Timer progressTimer = Timer.periodic(
@@ -113,6 +112,7 @@ class VideoShareService {
         outputPath: output.path,
         startMs: mediaStart.inMilliseconds,
         endMs: mediaEnd.inMilliseconds,
+        passthrough: remux,
       );
       completed = true;
       final File result = File(exported.isEmpty ? output.path : exported);
@@ -129,8 +129,8 @@ class VideoShareService {
     }
   }
 
-  Future<bool> _requiresCompatibilityExport(File source) async {
-    if (!_compatibleFullRangeExport || !_nativeExportSupported) return false;
+  Future<bool> _requiresHevcRemux(File source) async {
+    if (!_remuxFullRangeHevc || !_nativeExportSupported) return false;
     try {
       final String mime =
           (await _systemMediaPresenter.getVideoTrackMime(source.path) ?? '')
@@ -272,12 +272,14 @@ class _LegacyVideoExportPlatform implements MediaProcessingPlatform {
     required String outputPath,
     required int startMs,
     required int endMs,
+    required bool passthrough,
   }) async {
     final String? exported = await channel.invokeMethod<String>('export', {
       'inputPath': inputPath,
       'outputPath': outputPath,
       'startMs': startMs,
       'endMs': endMs,
+      'passthrough': passthrough,
     });
     return exported ?? '';
   }

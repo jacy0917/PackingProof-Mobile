@@ -196,6 +196,7 @@ class _LegacyVideoWatermarkPlatform implements MediaProcessingPlatform {
     required String outputPath,
     required int startMs,
     required int endMs,
+    required bool passthrough,
   }) {
     throw UnsupportedError('水印通道不支持导出');
   }

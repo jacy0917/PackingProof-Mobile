@@ -373,22 +373,26 @@ private final class IosMediaProcessingHostApi: MediaProcessingHostApi {
       let input = URL(fileURLWithPath: request.inputPath)
       let output = URL(fileURLWithPath: request.outputPath)
       let asset = AVAsset(url: input)
+      let policy = iosVideoExportPolicy(passthrough: request.passthrough)
       guard let session = AVAssetExportSession(
         asset: asset,
-        presetName: AVAssetExportPresetHighestQuality
+        presetName: policy.presetName
       ) else {
         completion(.failure(pigeonError("无法创建导出会话")))
         return
       }
       session.outputURL = output
       session.outputFileType = .mp4
-      session.timeRange = CMTimeRange(
-        start: CMTime(value: Int64(request.startMs), timescale: 1000),
-        duration: CMTime(
-          value: Int64(request.endMs - request.startMs),
-          timescale: 1000
+      session.shouldOptimizeForNetworkUse = policy.optimizeForNetworkUse
+      if policy.appliesRequestedTimeRange {
+        session.timeRange = CMTimeRange(
+          start: CMTime(value: Int64(request.startMs), timescale: 1000),
+          duration: CMTime(
+            value: Int64(request.endMs - request.startMs),
+            timescale: 1000
+          )
         )
-      )
+      }
       self.exportLock.lock()
       self.activeExportSessions[request.outputPath] = session
       self.exportLock.unlock()

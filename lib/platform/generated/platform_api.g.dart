@@ -234,6 +234,7 @@ class ExportRequest {
     required this.outputPath,
     required this.startMs,
     required this.endMs,
+    required this.passthrough,
   });
 
   String inputPath;
@@ -244,12 +245,15 @@ class ExportRequest {
 
   int endMs;
 
+  bool passthrough;
+
   List<Object?> _toList() {
     return <Object?>[
       inputPath,
       outputPath,
       startMs,
       endMs,
+      passthrough,
     ];
   }
 
@@ -263,6 +267,7 @@ class ExportRequest {
       outputPath: result[1]! as String,
       startMs: result[2]! as int,
       endMs: result[3]! as int,
+      passthrough: result[4]! as bool,
     );
   }
 
@@ -275,7 +280,7 @@ class ExportRequest {
     if (identical(this, other)) {
       return true;
     }
-    return _deepEquals(inputPath, other.inputPath) && _deepEquals(outputPath, other.outputPath) && _deepEquals(startMs, other.startMs) && _deepEquals(endMs, other.endMs);
+    return _deepEquals(inputPath, other.inputPath) && _deepEquals(outputPath, other.outputPath) && _deepEquals(startMs, other.startMs) && _deepEquals(endMs, other.endMs) && _deepEquals(passthrough, other.passthrough);
   }
 
   @override
@@ -284,7 +289,7 @@ class ExportRequest {
 
   @override
   String toString() {
-    return 'ExportRequest(inputPath: $inputPath, outputPath: $outputPath, startMs: $startMs, endMs: $endMs)';
+    return 'ExportRequest(inputPath: $inputPath, outputPath: $outputPath, startMs: $startMs, endMs: $endMs, passthrough: $passthrough)';
   }
 }
 
