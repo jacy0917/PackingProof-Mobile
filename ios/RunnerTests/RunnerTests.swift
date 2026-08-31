@@ -783,6 +783,32 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(timeline.keyframeSeconds(duration: 2.5), [0, 1, 2, 2.5])
   }
 
+  func testWatermarkFontSizeScales4KFrom1080pReference() {
+    XCTAssertEqual(
+      iosWatermarkFontSize(forOutputSize: CGSize(width: 1080, height: 1920)),
+      44
+    )
+    XCTAssertEqual(
+      iosWatermarkFontSize(forOutputSize: CGSize(width: 1920, height: 1080)),
+      44
+    )
+    XCTAssertEqual(
+      iosWatermarkFontSize(forOutputSize: CGSize(width: 2160, height: 3840)),
+      88
+    )
+    XCTAssertEqual(
+      iosWatermarkFontSize(forOutputSize: CGSize(width: 3840, height: 2160)),
+      88
+    )
+  }
+
+  func testWatermarkFontSizeDoesNotShrinkExistingLowerResolutions() {
+    XCTAssertEqual(
+      iosWatermarkFontSize(forOutputSize: CGSize(width: 720, height: 1280)),
+      44
+    )
+  }
+
   func testWatermarkLayoutUsesFinalVideoCoordinatesForAllOrientations() {
     let naturalSize = CGSize(width: 1080, height: 1920)
     let transforms = [

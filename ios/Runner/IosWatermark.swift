@@ -13,7 +13,10 @@ func iosWatermarkTopFraction(forOutputSize outputSize: CGSize) -> CGFloat {
 }
 
 func iosWatermarkFontSize(forOutputSize outputSize: CGSize) -> CGFloat {
-  44
+  let referenceShortEdge: CGFloat = 1080
+  let shortEdge = min(abs(outputSize.width), abs(outputSize.height))
+  let scale = max(1, shortEdge / referenceShortEdge)
+  return 44 * scale
 }
 
 /// 竖屏采集缓冲仅用 MP4 轨道元数据表达最终录像方向。尺寸参数跟随
