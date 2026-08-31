@@ -18,25 +18,33 @@ class VideoShareService {
     MethodChannel? channel,
     Directory? cacheDirectory,
     bool? nativeExportSupported,
+    bool? compatibleFullRangeExport,
     MediaProcessingPlatform? platform,
+    SystemMediaPresenter? systemMediaPresenter,
   }) : _providedCacheDirectory = cacheDirectory,
        _nativeExportSupported =
            nativeExportSupported ??
            AppContainer.forCurrentPlatform().capabilities.supports(
              PlatformCapability.videoExport,
            ),
+       _compatibleFullRangeExport = compatibleFullRangeExport ?? Platform.isIOS,
        _platform =
            platform ??
            (channel != null
                ? _LegacyVideoExportPlatform(channel)
-               : AppContainer.forCurrentPlatform().mediaProcessing);
+               : AppContainer.forCurrentPlatform().mediaProcessing),
+       _systemMediaPresenter =
+           systemMediaPresenter ??
+           AppContainer.forCurrentPlatform().systemMediaPresenter;
 
   static const Duration _maximumAge = Duration(hours: 24);
   static const int _maximumBytes = 512 * 1024 * 1024;
 
   final Directory? _providedCacheDirectory;
   final bool _nativeExportSupported;
+  final bool _compatibleFullRangeExport;
   final MediaProcessingPlatform _platform;
+  final SystemMediaPresenter _systemMediaPresenter;
 
   Future<File> prepare({
     required String sourcePath,
@@ -64,7 +72,9 @@ class VideoShareService {
     final bool fullRange =
         mediaStart <= const Duration(milliseconds: 50) &&
         mediaEnd >= sourceDuration - const Duration(milliseconds: 50);
-    if (fullRange) {
+    final bool compatibilityExport =
+        fullRange && await _requiresCompatibilityExport(source);
+    if (fullRange && !compatibilityExport) {
       onProgress?.call(1, '准备分享');
       return source;
     }
@@ -77,22 +87,25 @@ class VideoShareService {
         .convert(
           utf8.encode(
             '${source.path}|${stat.size}|${stat.modified.millisecondsSinceEpoch}|'
-            '${mediaStart.inMilliseconds}|${mediaEnd.inMilliseconds}',
+            '${mediaStart.inMilliseconds}|${mediaEnd.inMilliseconds}|'
+            '$compatibilityExport',
           ),
         )
         .toString();
-    final File output = File(p.join(cache.path, 'clip_$key.mp4'));
+    final String outputPrefix = compatibilityExport ? 'compatible' : 'clip';
+    final File output = File(p.join(cache.path, '${outputPrefix}_$key.mp4'));
     if (await output.exists() && await output.length() > 0) {
       await output.setLastModified(DateTime.now());
       onProgress?.call(1, '准备分享');
       return output;
     }
 
-    onProgress?.call(0.5, '正在生成分享视频');
+    final String exportMessage = compatibilityExport ? '正在生成兼容视频' : '正在生成分享视频';
+    onProgress?.call(0.5, exportMessage);
     bool completed = false;
     final Timer progressTimer = Timer.periodic(
       const Duration(milliseconds: 250),
-      (_) => unawaited(_reportNativeProgress(onProgress)),
+      (_) => unawaited(_reportNativeProgress(onProgress, exportMessage)),
     );
     try {
       final String exported = await _platform.exportRange(
@@ -116,11 +129,31 @@ class VideoShareService {
     }
   }
 
-  Future<void> _reportNativeProgress(VideoShareProgress? callback) async {
+  Future<bool> _requiresCompatibilityExport(File source) async {
+    if (!_compatibleFullRangeExport || !_nativeExportSupported) return false;
+    try {
+      final String mime =
+          (await _systemMediaPresenter.getVideoTrackMime(source.path) ?? '')
+              .trim()
+              .toLowerCase();
+      if (mime.isEmpty) return true;
+      return mime.contains('hevc') ||
+          mime.contains('h265') ||
+          mime.contains('hvc1') ||
+          mime.contains('hev1');
+    } on Object {
+      return true;
+    }
+  }
+
+  Future<void> _reportNativeProgress(
+    VideoShareProgress? callback,
+    String message,
+  ) async {
     if (callback == null) return;
     try {
       final int value = await _platform.exportProgress();
-      callback(0.5 + value.clamp(0, 100) / 200, '正在生成分享视频');
+      callback(0.5 + value.clamp(0, 100) / 200, message);
     } on PlatformException {
       // Export completion or cancellation can race with the final progress poll.
     }

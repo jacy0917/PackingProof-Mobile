@@ -746,7 +746,7 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
     }
   }
 
-  Future<void> _shareRawFile() async {
+  Future<void> _shareCompatibleFile() async {
     final File file = File(_session.filePath);
     if (!await file.exists()) {
       if (mounted) {
@@ -756,12 +756,29 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
       }
       return;
     }
-    await SharePlus.instance.share(
-      ShareParams(
-        title: _session.displayCode,
-        files: <XFile>[XFile(file.path, mimeType: 'video/mp4')],
-      ),
-    );
+    setState(() => _fallbackBusy = true);
+    try {
+      final File prepared = await _shareService.prepare(
+        sourcePath: file.path,
+        mediaStart: Duration.zero,
+        mediaEnd: _session.duration,
+        sourceDuration: _session.duration,
+      );
+      await SharePlus.instance.share(
+        ShareParams(
+          title: _session.displayCode,
+          files: <XFile>[XFile(prepared.path, mimeType: 'video/mp4')],
+        ),
+      );
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('兼容视频生成失败，请稍后重试')));
+      }
+    } finally {
+      if (mounted) setState(() => _fallbackBusy = false);
+    }
   }
 
   Future<void> _downloadAndPlayRemote() async {
@@ -887,8 +904,8 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
                     errorDetail: _playbackErrorDetail,
                     primaryAction: _openWithSystemPlayer,
                     primaryActionLabel: '用系统播放器打开',
-                    secondaryAction: _shareRawFile,
-                    secondaryActionLabel: '分享原文件',
+                    secondaryAction: _shareCompatibleFile,
+                    secondaryActionLabel: '分享兼容视频',
                     destructiveAction: widget.onDelete == null
                         ? null
                         : _deleteLocalRecording,
