@@ -86,6 +86,7 @@ class ContinuousSegmentCamera(
         RecordingFpsRangePolicy(RecordingSpecPolicy.HD.fps)
     private val stallRecoveryPolicy = PreviewStallRecoveryPolicy()
     private var recordingSpec = RecordingSpecPolicy.HD
+    private var negotiatedUhdFps = RecordingSpecPolicy.UHD.fps
     internal var recordingSpecName = RecordingSpecPolicy.DEFAULT_SPEC_NAME
     private var requestedRecordingSpecName = RecordingSpecPolicy.DEFAULT_SPEC_NAME
     private var recordingOrientationName = "portrait"
@@ -944,27 +945,39 @@ class ContinuousSegmentCamera(
             it.width == RecordingSpecPolicy.UHD.videoWidth &&
                 it.height == RecordingSpecPolicy.UHD.videoHeight
         } && !RecordingSpecRuntimeRejectionCache.isUhdRejected(cameraId)
-        val fpsSupports30 = availableFpsRanges.any {
-            RecordingSpecPolicy.UHD.fps in it.lower..it.upper
-        }
-        supportedRecordingSpecs = RecordingSpecSupportPolicy.supportedSpecs(
-            cameraSupportsUhd = cameraSupportsUhd,
-            fpsSupports30 = fpsSupports30,
-            avcEncoderSupportsUhd = CodecCapabilities.supportsSurfaceEncoding(
-                MediaFormat.MIMETYPE_VIDEO_AVC,
-                RecordingSpecPolicy.UHD.videoWidth,
-                RecordingSpecPolicy.UHD.videoHeight,
-                RecordingSpecPolicy.UHD.fps,
-            ),
-            hevcEncoderSupportsUhd = CodecCapabilities.hasDecoder(
-                MediaFormat.MIMETYPE_VIDEO_HEVC,
-            ) && CodecCapabilities.supportsSurfaceEncoding(
-                MediaFormat.MIMETYPE_VIDEO_HEVC,
-                RecordingSpecPolicy.UHD.videoWidth,
-                RecordingSpecPolicy.UHD.videoHeight,
-                RecordingSpecPolicy.UHD.fps,
-            ),
+        val uhdSize = Size(
+            RecordingSpecPolicy.UHD.videoWidth,
+            RecordingSpecPolicy.UHD.videoHeight,
         )
+        val minimumUhdFrameDuration = runCatching {
+            configuration.getOutputMinFrameDuration(MediaRecorder::class.java, uhdSize)
+        }.getOrDefault(0L)
+        val maximumUhdVideoFps = minimumUhdFrameDuration.takeIf { it > 0L }?.let {
+            (1_000_000_000L / it).toInt()
+        }
+        val uhdFps = RecordingSpecSupportPolicy.selectUhdFps(
+            cameraSupportsUhd = cameraSupportsUhd,
+            cameraFpsRanges = availableFpsRanges.map { it.lower to it.upper },
+            maximumVideoFps = maximumUhdVideoFps,
+            encoderSupportsUhd = { fps ->
+                CodecCapabilities.supportsSurfaceEncoding(
+                    MediaFormat.MIMETYPE_VIDEO_AVC,
+                    RecordingSpecPolicy.UHD.videoWidth,
+                    RecordingSpecPolicy.UHD.videoHeight,
+                    fps,
+                ) || (
+                    CodecCapabilities.hasDecoder(MediaFormat.MIMETYPE_VIDEO_HEVC) &&
+                        CodecCapabilities.supportsSurfaceEncoding(
+                            MediaFormat.MIMETYPE_VIDEO_HEVC,
+                            RecordingSpecPolicy.UHD.videoWidth,
+                            RecordingSpecPolicy.UHD.videoHeight,
+                            fps,
+                        )
+                    )
+            },
+        )
+        negotiatedUhdFps = uhdFps ?: RecordingSpecPolicy.UHD.fps
+        supportedRecordingSpecs = RecordingSpecSupportPolicy.supportedSpecs(uhdFps)
         if (
             requestedRecordingSpecName == RecordingSpecPolicy.UHD_SPEC_NAME &&
             RecordingSpecPolicy.UHD_SPEC_NAME !in supportedRecordingSpecs
@@ -984,7 +997,13 @@ class ContinuousSegmentCamera(
 
     private fun applyRecordingSpec(name: String) {
         recordingSpecName = RecordingSpecPolicy.resolveName(name)
-        recordingSpec = RecordingSpecPolicy.resolve(recordingSpecName)
+        recordingSpec = RecordingSpecPolicy.resolve(recordingSpecName).let { spec ->
+            if (recordingSpecName == RecordingSpecPolicy.UHD_SPEC_NAME) {
+                spec.copy(fps = negotiatedUhdFps)
+            } else {
+                spec
+            }
+        }
         recordingFpsRangePolicy = RecordingFpsRangePolicy(recordingSpec.fps)
         streamConfigPolicy = StreamConfigPolicy(
             recordingSpec.videoWidth,

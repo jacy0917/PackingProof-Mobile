@@ -637,6 +637,24 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testIosPreferredRecordingFpsSelectsHighestCompatible4KRate() {
+    XCTAssertEqual(
+      iosPreferredRecordingFps(ranges: [(minimum: 1, maximum: 24)]),
+      24
+    )
+    XCTAssertEqual(
+      iosPreferredRecordingFps(ranges: [(minimum: 23.976, maximum: 23.976)]),
+      24
+    )
+    XCTAssertEqual(
+      iosPreferredRecordingFps(ranges: [(minimum: 30, maximum: 60)]),
+      30
+    )
+    XCTAssertNil(
+      iosPreferredRecordingFps(ranges: [(minimum: 1, maximum: 14)])
+    )
+  }
+
   func testIosCapturePresetSelectionHonors720pRequest() {
     XCTAssertEqual(
       IosCapturePresetSelection.select(

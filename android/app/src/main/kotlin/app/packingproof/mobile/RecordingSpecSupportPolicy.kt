@@ -3,17 +3,26 @@ package app.packingproof.mobile
 import java.util.Collections
 
 internal object RecordingSpecSupportPolicy {
-    fun supportedSpecs(
+    private val preferredUhdFps = listOf(30, 25, 24, 20, 15)
+
+    fun selectUhdFps(
         cameraSupportsUhd: Boolean,
-        fpsSupports30: Boolean,
-        avcEncoderSupportsUhd: Boolean,
-        hevcEncoderSupportsUhd: Boolean,
+        cameraFpsRanges: List<Pair<Int, Int>>,
+        maximumVideoFps: Int?,
+        encoderSupportsUhd: (Int) -> Boolean,
+    ): Int? {
+        if (!cameraSupportsUhd) return null
+        return preferredUhdFps.firstOrNull { fps ->
+            (maximumVideoFps == null || fps <= maximumVideoFps) &&
+                cameraFpsRanges.any { fps in it.first..it.second } &&
+                encoderSupportsUhd(fps)
+        }
+    }
+
+    fun supportedSpecs(
+        uhdFps: Int?,
     ): List<String> = buildList {
-        if (
-            cameraSupportsUhd &&
-            fpsSupports30 &&
-            (avcEncoderSupportsUhd || hevcEncoderSupportsUhd)
-        ) {
+        if (uhdFps != null) {
             add(RecordingSpecPolicy.UHD_SPEC_NAME)
         }
         add(RecordingSpecPolicy.DEFAULT_SPEC_NAME)

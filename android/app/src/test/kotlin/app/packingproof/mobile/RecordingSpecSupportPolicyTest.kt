@@ -5,27 +5,31 @@ import org.junit.Test
 
 class RecordingSpecSupportPolicyTest {
     @Test
-    fun `4K requires camera fps and at least one encoder`() {
-        val supported = RecordingSpecSupportPolicy.supportedSpecs(
+    fun `4K selects highest common camera video and encoder fps`() {
+        val fps = RecordingSpecSupportPolicy.selectUhdFps(
             cameraSupportsUhd = true,
-            fpsSupports30 = true,
-            avcEncoderSupportsUhd = false,
-            hevcEncoderSupportsUhd = true,
+            cameraFpsRanges = listOf(15 to 30),
+            maximumVideoFps = 25,
+            encoderSupportsUhd = { it <= 24 },
         )
+        assertEquals(24, fps)
         assertEquals(
             listOf("uhd4k30", "hd1080p30", "smooth720p30"),
-            supported,
+            RecordingSpecSupportPolicy.supportedSpecs(fps),
         )
     }
 
     @Test
     fun `missing any hardware requirement hides 4K`() {
-        for (supported in listOf(
-            RecordingSpecSupportPolicy.supportedSpecs(false, true, true, true),
-            RecordingSpecSupportPolicy.supportedSpecs(true, false, true, true),
-            RecordingSpecSupportPolicy.supportedSpecs(true, true, false, false),
+        for (fps in listOf(
+            RecordingSpecSupportPolicy.selectUhdFps(false, listOf(15 to 30), 30) { true },
+            RecordingSpecSupportPolicy.selectUhdFps(true, listOf(1 to 14), 30) { true },
+            RecordingSpecSupportPolicy.selectUhdFps(true, listOf(15 to 30), 30) { false },
         )) {
-            assertEquals(listOf("hd1080p30", "smooth720p30"), supported)
+            assertEquals(
+                listOf("hd1080p30", "smooth720p30"),
+                RecordingSpecSupportPolicy.supportedSpecs(fps),
+            )
         }
     }
 

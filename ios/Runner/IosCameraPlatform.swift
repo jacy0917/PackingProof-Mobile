@@ -473,6 +473,18 @@ struct IosCapturePresetSelection: Equatable {
   }
 }
 
+func iosPreferredRecordingFps(
+  ranges: [(minimum: Double, maximum: Double)],
+  candidates: [Int] = [30, 25, 24, 20, 15]
+) -> Int? {
+  return candidates.first { fps in
+    ranges.contains { range in
+      Double(fps) + 0.1 >= range.minimum &&
+        Double(fps) - 0.1 <= range.maximum
+    }
+  }
+}
+
 enum IosRecordingSpecEncodingPolicy {
   static func averageBitRate(spec: String, codec: String) -> Int {
     let usesHevc = codec.lowercased() == "hevc"
@@ -767,6 +779,7 @@ final class IosCameraHostApi:
   private var captureSize = (width: 1080, height: 1920)
 
   private var recordingSpecName = "hd1080p30"
+  private var recordingFps = 30
   private var requestedRecordingSpecName = "hd1080p30"
   private var preferredVideoCodec = "hevc"
   private var codecFallbackReason: String?
@@ -2151,7 +2164,7 @@ final class IosCameraHostApi:
 
   private func supportedRecordingSpecs() -> [String] {
     var specs: [String] = []
-    if session.canSetSessionPreset(.hd4K3840x2160) {
+    if session.canSetSessionPreset(.hd4K3840x2160), preferred4KRecordingFps() != nil {
       specs.append("uhd4k30")
     }
     if session.canSetSessionPreset(.hd1920x1080) {
@@ -2168,12 +2181,15 @@ final class IosCameraHostApi:
     session.beginConfiguration()
     applyCapturePresetWithinConfiguration(requestedSpec: requestedSpec)
     session.commitConfiguration()
+    refreshRecordingFpsFromActiveFormat()
   }
 
   private func applyCapturePresetWithinConfiguration(requestedSpec: String) {
+    let preferred4KFps = preferred4KRecordingFps()
     let presetSelection = IosCapturePresetSelection.select(
       requestedSpec: requestedSpec,
-      supports4K: session.canSetSessionPreset(.hd4K3840x2160),
+      supports4K:
+        session.canSetSessionPreset(.hd4K3840x2160) && preferred4KFps != nil,
       supportsHd1080: session.canSetSessionPreset(.hd1920x1080),
       supportsHd720: session.canSetSessionPreset(.hd1280x720),
       supportsHigh: session.canSetSessionPreset(.high),
@@ -2195,6 +2211,31 @@ final class IosCameraHostApi:
     case "medium": session.sessionPreset = .medium
     default: session.sessionPreset = .low
     }
+    recordingFps = presetSelection.recordingSpecName == "uhd4k30" ? preferred4KFps ?? 30 : 30
+  }
+
+  private func preferred4KRecordingFps() -> Int? {
+    guard let device = videoDeviceInput?.device else { return nil }
+    let ranges = device.formats.flatMap { format -> [(minimum: Double, maximum: Double)] in
+      let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+      guard dimensions.width == 3840, dimensions.height == 2160 else { return [] }
+      return format.videoSupportedFrameRateRanges.map {
+        (minimum: $0.minFrameRate, maximum: $0.maxFrameRate)
+      }
+    }
+    return iosPreferredRecordingFps(ranges: ranges)
+  }
+
+  private func refreshRecordingFpsFromActiveFormat() {
+    guard recordingSpecName == "uhd4k30", let device = videoDeviceInput?.device else {
+      recordingFps = 30
+      return
+    }
+    recordingFps = iosPreferredRecordingFps(
+      ranges: device.activeFormat.videoSupportedFrameRateRanges.map {
+        (minimum: $0.minFrameRate, maximum: $0.maxFrameRate)
+      }
+    ) ?? 30
   }
 
   private func configureSession() {
@@ -2262,6 +2303,7 @@ final class IosCameraHostApi:
       }
 
       self.session.commitConfiguration()
+      self.refreshRecordingFpsFromActiveFormat()
       self.configureOutputDelegates()
     }
   }
@@ -2542,6 +2584,7 @@ final class IosCameraHostApi:
           requestedSpec: self.requestedRecordingSpecName
         )
         self.session.commitConfiguration()
+        self.refreshRecordingFpsFromActiveFormat()
         if let connection = self.videoOutput?.connection(with: .video) {
           // 切换镜头后仍保持竖屏采集，并显式固定前摄镜像语义。
           connection.videoOrientation = .portrait
@@ -2577,7 +2620,7 @@ final class IosCameraHostApi:
       previewWidth: Int64(size.width),
       previewHeight: Int64(size.height),
       sensorOrientation: 0,
-      fps: 30,
+      fps: Int64(recordingFps),
       videoMime: usesHevc ? "video/hevc" : "video/avc",
       codecFallbackReason: codecFallbackReason,
       flashAvailable: device?.hasTorch == true,
@@ -2633,7 +2676,7 @@ final class IosCameraHostApi:
               spec: recordingSpecName,
               codec: preferredVideoCodec
             ),
-          AVVideoExpectedSourceFrameRateKey: 30,
+          AVVideoExpectedSourceFrameRateKey: recordingFps,
         ],
       ]
       let videoInput = AVAssetWriterInput(

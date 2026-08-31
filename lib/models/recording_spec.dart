@@ -15,7 +15,7 @@ extension RecordingSpecPresetDetails on RecordingSpecPreset {
   };
 
   String get description => switch (this) {
-    RecordingSpecPreset.uhd4k30 => '3840 × 2160 · 30 帧 · 画质最高，占用最多',
+    RecordingSpecPreset.uhd4k30 => '3840 × 2160 · 最高 30 帧 · 设备自动适配',
     RecordingSpecPreset.hd1080p30 => '1920 × 1080 · 30 帧 · 日常推荐',
     RecordingSpecPreset.smooth720p30 => '1280 × 720 · 30 帧 · 更省空间、更流畅',
   };

@@ -964,7 +964,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(changed, RecordingSpecPreset.uhd4k30);
-    expect(find.text('3840 × 2160 · 30 帧 · 画质最高，占用最多'), findsOneWidget);
+    expect(find.text('3840 × 2160 · 最高 30 帧 · 设备自动适配'), findsOneWidget);
   });
 
   testWidgets('当前镜头不支持 4K 时保持三个按钮并拦截切换', (WidgetTester tester) async {
