@@ -82,13 +82,11 @@ class ContinuousSegmentCamera(
     internal val cameraManager = activity.getSystemService(CameraManager::class.java)
     private val backCameraCatalog = BackCameraCatalog(cameraManager)
     private val captureRequestTargetPolicy = CaptureRequestTargetPolicy()
-    private var recordingFpsRangePolicy =
-        RecordingFpsRangePolicy(RecordingSpecPolicy.HD.fps)
+    private val recordingSpecState = RecordingSpecRuntimeState()
+    private val recordingFpsRangePolicy get() = recordingSpecState.fpsRangePolicy
     private val stallRecoveryPolicy = PreviewStallRecoveryPolicy()
-    private var recordingSpec = RecordingSpecPolicy.HD
-    private var negotiatedUhdFps = RecordingSpecPolicy.UHD.fps
-    internal var recordingSpecName = RecordingSpecPolicy.DEFAULT_SPEC_NAME
-    private var requestedRecordingSpecName = RecordingSpecPolicy.DEFAULT_SPEC_NAME
+    private val recordingSpec get() = recordingSpecState.spec
+    internal val recordingSpecName get() = recordingSpecState.name
     private var recordingOrientationName = "portrait"
     @Volatile private var captureStartedCount = 0L
     @Volatile private var lastCaptureStartedAtMs = 0L
@@ -143,10 +141,7 @@ class ContinuousSegmentCamera(
     @Volatile internal var analysisSize = Size(1280, 720)
     @Volatile private var sessionConfigStage: String? = null
     @Volatile private var sessionConfigAttempts = 0
-    internal var streamConfigPolicy = StreamConfigPolicy(
-        RecordingSpecPolicy.HD.videoWidth,
-        RecordingSpecPolicy.HD.videoHeight,
-    )
+    internal val streamConfigPolicy get() = recordingSpecState.streamConfigPolicy
     internal var videoCandidates = emptyList<Size>()
     internal var analysisCandidates = emptyList<Size>()
     private var workingStreamConfig: StreamConfig? = null
@@ -168,10 +163,6 @@ class ContinuousSegmentCamera(
     @Volatile internal var probeGeneration = 0
     internal val probeReaders = mutableListOf<ImageReader>()
     private var supportedVideoSizes: List<String> = emptyList()
-    @Volatile private var supportedRecordingSpecs = listOf(
-        RecordingSpecPolicy.DEFAULT_SPEC_NAME,
-        RecordingSpecPolicy.SMOOTH_SPEC_NAME,
-    )
     private var supportedYuvSizes: List<String> = emptyList()
     private var supportedPreviewSizes: List<String> = emptyList()
     private var fpsRanges: List<String> = emptyList()
@@ -285,8 +276,7 @@ class ContinuousSegmentCamera(
         }
         initializeResult = result
         openCameraAttempts = 0
-        requestedRecordingSpecName = RecordingSpecPolicy.resolveName(recordingSpecName)
-        applyRecordingSpec(requestedRecordingSpecName)
+        recordingSpecState.request(recordingSpecName)
         this.recordingOrientationName = when (recordingOrientationName) {
             "landscapeLeft", "landscapeRight" -> recordingOrientationName
             else -> "portrait"
@@ -941,50 +931,10 @@ class ContinuousSegmentCamera(
         } else {
             emptyList()
         }
-        val cameraSupportsUhd = videoSizes.any {
-            it.width == RecordingSpecPolicy.UHD.videoWidth &&
-                it.height == RecordingSpecPolicy.UHD.videoHeight
-        } && !RecordingSpecRuntimeRejectionCache.isUhdRejected(cameraId)
-        val uhdSize = Size(
-            RecordingSpecPolicy.UHD.videoWidth,
-            RecordingSpecPolicy.UHD.videoHeight,
+        val uhdFps = CameraRecordingSpecCapabilityProbe.selectUhdFps(
+            configuration, videoSizes, availableFpsRanges, cameraId,
         )
-        val minimumUhdFrameDuration = runCatching {
-            configuration.getOutputMinFrameDuration(MediaRecorder::class.java, uhdSize)
-        }.getOrDefault(0L)
-        val maximumUhdVideoFps = minimumUhdFrameDuration.takeIf { it > 0L }?.let {
-            (1_000_000_000L / it).toInt()
-        }
-        val uhdFps = RecordingSpecSupportPolicy.selectUhdFps(
-            cameraSupportsUhd = cameraSupportsUhd,
-            cameraFpsRanges = availableFpsRanges.map { it.lower to it.upper },
-            maximumVideoFps = maximumUhdVideoFps,
-            encoderSupportsUhd = { fps ->
-                CodecCapabilities.supportsSurfaceEncoding(
-                    MediaFormat.MIMETYPE_VIDEO_AVC,
-                    RecordingSpecPolicy.UHD.videoWidth,
-                    RecordingSpecPolicy.UHD.videoHeight,
-                    fps,
-                ) || (
-                    CodecCapabilities.hasDecoder(MediaFormat.MIMETYPE_VIDEO_HEVC) &&
-                        CodecCapabilities.supportsSurfaceEncoding(
-                            MediaFormat.MIMETYPE_VIDEO_HEVC,
-                            RecordingSpecPolicy.UHD.videoWidth,
-                            RecordingSpecPolicy.UHD.videoHeight,
-                            fps,
-                        )
-                    )
-            },
-        )
-        negotiatedUhdFps = uhdFps ?: RecordingSpecPolicy.UHD.fps
-        supportedRecordingSpecs = RecordingSpecSupportPolicy.supportedSpecs(uhdFps)
-        if (
-            requestedRecordingSpecName == RecordingSpecPolicy.UHD_SPEC_NAME &&
-            RecordingSpecPolicy.UHD_SPEC_NAME !in supportedRecordingSpecs
-        ) {
-            requestedRecordingSpecName = RecordingSpecPolicy.DEFAULT_SPEC_NAME
-        }
-        applyRecordingSpec(requestedRecordingSpecName)
+        recordingSpecState.updateUhdFps(uhdFps)
         videoCandidates = streamConfigPolicy.videoCandidates(
             videoSizes.map { StreamSize(it.width, it.height) },
         ).map { Size(it.width, it.height) }
@@ -993,31 +943,6 @@ class ContinuousSegmentCamera(
         ).map { Size(it.width, it.height) }
         videoSize = videoCandidates.first()
         analysisSize = analysisCandidates.first()
-    }
-
-    private fun applyRecordingSpec(name: String) {
-        recordingSpecName = RecordingSpecPolicy.resolveName(name)
-        recordingSpec = RecordingSpecPolicy.resolve(recordingSpecName).let { spec ->
-            if (recordingSpecName == RecordingSpecPolicy.UHD_SPEC_NAME) {
-                spec.copy(fps = negotiatedUhdFps)
-            } else {
-                spec
-            }
-        }
-        recordingFpsRangePolicy = RecordingFpsRangePolicy(recordingSpec.fps)
-        streamConfigPolicy = StreamConfigPolicy(
-            recordingSpec.videoWidth,
-            recordingSpec.videoHeight,
-        )
-    }
-
-    private fun rejectRequestedUhd() {
-        RecordingSpecRuntimeRejectionCache.rejectUhd(selectedCameraId)
-        supportedRecordingSpecs = supportedRecordingSpecs.filterNot {
-            it == RecordingSpecPolicy.UHD_SPEC_NAME
-        }
-        requestedRecordingSpecName = RecordingSpecPolicy.DEFAULT_SPEC_NAME
-        applyRecordingSpec(requestedRecordingSpecName)
     }
 
     private fun createCaptureSession(characteristics: CameraCharacteristics) {
@@ -1256,12 +1181,8 @@ class ContinuousSegmentCamera(
         val analysis = config.toAnalysisSize()
         val encoderChanged = video != videoSize
         val analysisChanged = analysis != analysisSize
-        if (
-            recordingSpecName == RecordingSpecPolicy.UHD_SPEC_NAME &&
-            (video.width != RecordingSpecPolicy.UHD.videoWidth ||
-                video.height != RecordingSpecPolicy.UHD.videoHeight)
-        ) {
-            rejectRequestedUhd()
+        if (recordingSpecState.shouldRejectUhd(video.width, video.height)) {
+            recordingSpecState.rejectUhd(selectedCameraId)
         }
         val applyCameraSide = {
             if (analysisChanged) recreateAnalysisReader(analysis)
@@ -2449,7 +2370,7 @@ class ContinuousSegmentCamera(
                     StreamSize(analysisSize.width, analysisSize.height),
                     recordingVideoEncoder.selectedMime,
                     if (recordingRequested || recordingActive) recordingSpec.fps else "auto",
-                    recordingSpecName, supportedRecordingSpecs, recordAudio,
+                    recordingSpecName, recordingSpecState.supportedNames, recordAudio,
                 ),
                 CameraActivityDiagnostics(
                     previewActive, workScanEnabled, pairingScanEnabled, recordingRequested,

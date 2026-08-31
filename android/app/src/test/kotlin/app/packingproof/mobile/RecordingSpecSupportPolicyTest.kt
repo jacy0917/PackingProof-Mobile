@@ -41,4 +41,36 @@ class RecordingSpecSupportPolicyTest {
         assertEquals(false, RecordingSpecRuntimeRejectionCache.isUhdRejected("tele"))
         RecordingSpecRuntimeRejectionCache.clear()
     }
+
+    @Test
+    fun `runtime state applies negotiated 4K fps and falls back after rejection`() {
+        RecordingSpecRuntimeRejectionCache.clear()
+        val state = RecordingSpecRuntimeState()
+        state.request("4k")
+        state.updateUhdFps(24)
+
+        assertEquals(RecordingSpecPolicy.UHD_SPEC_NAME, state.name)
+        assertEquals(24, state.spec.fps)
+        assertEquals(true, state.shouldRejectUhd(1920, 1080))
+
+        state.rejectUhd("wide")
+        assertEquals(RecordingSpecPolicy.DEFAULT_SPEC_NAME, state.name)
+        assertEquals(RecordingSpecPolicy.HD, state.spec)
+        assertEquals(
+            listOf(RecordingSpecPolicy.DEFAULT_SPEC_NAME, RecordingSpecPolicy.SMOOTH_SPEC_NAME),
+            state.supportedNames,
+        )
+        assertEquals(true, RecordingSpecRuntimeRejectionCache.isUhdRejected("wide"))
+        RecordingSpecRuntimeRejectionCache.clear()
+    }
+
+    @Test
+    fun `runtime state keeps requested 4K hidden when capability is unavailable`() {
+        val state = RecordingSpecRuntimeState()
+        state.request(RecordingSpecPolicy.UHD_SPEC_NAME)
+        state.updateUhdFps(null)
+
+        assertEquals(RecordingSpecPolicy.DEFAULT_SPEC_NAME, state.name)
+        assertEquals(RecordingSpecPolicy.HD, state.spec)
+    }
 }
