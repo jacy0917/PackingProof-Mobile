@@ -34,6 +34,7 @@ class _FakeLensCameraPlatform implements CameraPlatform {
   Completer<void>? previewDeactivationBlocker;
   final Completer<void> previewDeactivationStarted = Completer<void>();
   final Set<String> uhdCameraIds = <String>{};
+  bool reportPortraitUhdSize = false;
   String activeCameraId = 'wide';
   String requestedRecordingSpec = 'hd1080p30';
 
@@ -112,8 +113,8 @@ class _FakeLensCameraPlatform implements CameraPlatform {
       device: const <String, Object?>{},
       camera: <String, Object?>{
         'cameraId': activeCameraId,
-        'videoWidth': uhdActive ? 3840 : 1920,
-        'videoHeight': uhdActive ? 2160 : 1080,
+        'videoWidth': uhdActive ? (reportPortraitUhdSize ? 2160 : 3840) : 1920,
+        'videoHeight': uhdActive ? (reportPortraitUhdSize ? 3840 : 2160) : 1080,
         'analysisWidth': 960,
         'analysisHeight': 540,
         'videoMime': 'video/hevc',
@@ -471,6 +472,42 @@ void main() {
     expect(
       (await repository.loadSettings()).recordingSpec,
       RecordingSpecPreset.hd1080p30,
+    );
+  });
+
+  test('iOS 竖屏 4K 尺寸不会被误判为不支持', () async {
+    camera.uhdCameraIds.add('wide');
+    camera.reportPortraitUhdSize = true;
+    await repository.saveRecordingSpec(RecordingSpecPreset.uhd4k30);
+    final PackingSessionController capableController = PackingSessionController(
+      repository: repository,
+      speechService: _FakeSpeechSink(),
+      maxVolumeService: _FakeMaxVolumeSink(),
+      orderInfoReceiver: _FakeOrderReceiverSink(),
+      videoWatermarkService: _FakeWatermarkSink(),
+      capabilities: const PlatformCapabilities(<PlatformCapability>{
+        PlatformCapability.continuousCameraRecording,
+        PlatformCapability.cameraCapabilityNegotiation,
+      }),
+      cameraService: ContinuousCameraService(platform: camera),
+      cameraServiceFactory: () => ContinuousCameraService(platform: camera),
+    );
+    addTearDown(() async {
+      await capableController.shutdown();
+      capableController.dispose();
+    });
+
+    await capableController.initialize();
+
+    expect(camera.requestedRecordingSpec, 'uhd4k30');
+    expect(capableController.recordingSpec, RecordingSpecPreset.uhd4k30);
+    expect(
+      capableController.availableRecordingSpecs,
+      contains(RecordingSpecPreset.uhd4k30),
+    );
+    expect(
+      (await repository.loadSettings()).recordingSpec,
+      RecordingSpecPreset.uhd4k30,
     );
   });
 

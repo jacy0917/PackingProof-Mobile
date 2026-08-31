@@ -458,8 +458,10 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
     final int videoWidth = (cameraState['videoWidth'] as num?)?.toInt() ?? 0;
     final int videoHeight = (cameraState['videoHeight'] as num?)?.toInt() ?? 0;
     final bool activeUhd =
-        videoWidth == RecordingSpecPreset.uhd4k30.videoWidth &&
-        videoHeight == RecordingSpecPreset.uhd4k30.videoHeight;
+        (videoWidth == RecordingSpecPreset.uhd4k30.videoWidth &&
+            videoHeight == RecordingSpecPreset.uhd4k30.videoHeight) ||
+        (videoWidth == RecordingSpecPreset.uhd4k30.videoHeight &&
+            videoHeight == RecordingSpecPreset.uhd4k30.videoWidth);
     final bool fallbackFromUhd =
         _recordingSpec == RecordingSpecPreset.uhd4k30 &&
         (!available.contains(RecordingSpecPreset.uhd4k30) || !activeUhd);
