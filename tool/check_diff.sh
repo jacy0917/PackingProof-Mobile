@@ -10,6 +10,9 @@ case "$base_ref" in
     ;;
 esac
 
-base_commit="$(git rev-parse --verify "${base_ref}^{commit}")"
+if ! base_commit="$(git rev-parse --verify "${base_ref}^{commit}" 2>/dev/null)"; then
+  base_commit="$(git rev-parse --verify "HEAD^{commit}^")"
+  echo "差异基准 ${base_ref} 不可用，改用 ${base_commit}" >&2
+fi
 
 git diff --check "${base_commit}...HEAD" -- .

@@ -331,13 +331,20 @@ case "$base_ref" in
     base_ref="$(git rev-list --max-parents=0 HEAD | tail -n 1)"
     ;;
 esac
-requested_base_commit="$(git rev-parse --verify "${base_ref}^{commit}")"
+if ! requested_base_commit="$(git rev-parse --verify "${base_ref}^{commit}" 2>/dev/null)"; then
+  requested_base_commit="$(git rev-parse --verify "HEAD^{commit}^")"
+  echo "差异基准 ${base_ref} 不可用，改用 ${requested_base_commit}" >&2
+fi
 dart_base_commit="$requested_base_commit"
-if git merge-base --is-ancestor "$dart_base_commit" "$broad_catch_baseline"; then
+if git cat-file -e "${broad_catch_baseline}^{commit}" 2>/dev/null &&
+  git merge-base --is-ancestor "$dart_base_commit" "$broad_catch_baseline"
+then
   dart_base_commit="$broad_catch_baseline"
 fi
 native_base_commit="$requested_base_commit"
-if git merge-base --is-ancestor "$native_base_commit" "$native_broad_catch_baseline"; then
+if git cat-file -e "${native_broad_catch_baseline}^{commit}" 2>/dev/null &&
+  git merge-base --is-ancestor "$native_base_commit" "$native_broad_catch_baseline"
+then
   native_base_commit="$native_broad_catch_baseline"
 fi
 
