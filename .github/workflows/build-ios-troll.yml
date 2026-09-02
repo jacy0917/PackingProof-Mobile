@@ -12,13 +12,19 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Clone latest Flutter SDK
+    - name: Clone Flutter SDK (Specific Version)
       run: |
-        git clone https://github.com/flutter/flutter.git -b master --depth 1 /Users/runner/flutter
+        git clone https://github.com/flutter/flutter.git -b 3.47.2 --depth 1 /Users/runner/flutter
         echo "/Users/runner/flutter/bin" >> $GITHUB_PATH
+      env:
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
     - name: Install dependencies
       run: flutter pub get
+      env:
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
     - name: Build IPA (No Codesign)
       run: flutter build ios --release --no-codesign
