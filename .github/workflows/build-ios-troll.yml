@@ -1,0 +1,36 @@
+name: Build iOS IPA for TrollStore
+
+on:
+  push:
+    branches: [ main ] # 或者你当前修改所在的分支名，比如 patch-2, patch-3 等
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.24.0' # 建议检查原项目 pubspec.yaml 里的 Flutter 版本要求
+
+    - name: Install dependencies
+      run: flutter pub get
+
+    - name: Build IPA (No Codesign)
+      run: flutter build ios --release --no-codesign
+
+    - name: Package as IPA
+      run: |
+        mkdir -p Payload
+        cp -r build/ios/Release-iphoneos/Runner.app Payload/
+        zip -r app.ipa Payload/
+
+    - name: Upload IPA artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: trollstore-ipa
+        path: app.ipa
