@@ -2,9 +2,59 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
-// 说明：由于缺少该 Mixin 依附的主类及依赖库定义，此处假设相关接口均已在项目中存在。
-// 请确保导入了必要的组件类，如 ContinuousCameraService, CameraController, CameraCapabilityState 等。
+// ---------------------------------------------------------------------------
+// 状态枚举 (导出供 UI 页面使用，如 packing_home_screen.dart)
+// ---------------------------------------------------------------------------
 
+/// 打包会话生命周期阶段
+enum PackingSessionPhase {
+  initializing,
+  starting,
+  recording,
+  saving,
+  error,
+}
+
+/// 硬件能力协商状态
+enum CameraCapabilityState {
+  full,
+  encoderAnalysis,
+  unsupported,
+}
+
+// ---------------------------------------------------------------------------
+// 辅助类占位定义（如项目中已有，可替换为真实的引用）
+// ---------------------------------------------------------------------------
+class CameraInitOptions {}
+class BackCameraLens {}
+class RecordingSpecPreset {}
+
+// ---------------------------------------------------------------------------
+// 打包会话主控制器 (PackingSessionController)
+// ---------------------------------------------------------------------------
+class PackingSessionController extends ChangeNotifier with _PackingSessionCameraCoordinator {
+  PackingSessionPhase _phase = PackingSessionPhase.initializing;
+
+  /// 提供给外部 UI 视图读取的当前状态
+  PackingSessionPhase get phase => _phase;
+
+  void updatePhase(PackingSessionPhase newPhase) {
+    if (_phase != newPhase) {
+      _phase = newPhase;
+      notifyListeners();
+    }
+  }
+
+  @override
+  bool get _supportsNativeCamera => true; // 根据实际情况配置或接入底层 Service
+
+  @override
+  String? get _currentCameraIdentity => 'default_camera';
+}
+
+// ---------------------------------------------------------------------------
+// 摄像头协调器 Mixin
+// ---------------------------------------------------------------------------
 mixin _PackingSessionCameraCoordinator {
   // ---------------------------------------------------------------------------
   // 状态与属性定义
@@ -54,8 +104,7 @@ mixin _PackingSessionCameraCoordinator {
   }) {
     _pendingCameraInitializations++;
 
-    // 修复点 1：增加 catchError((_) {})，确保即使上一次初始化失败，
-    // 后续排队的任务依然能够正常执行，不会中断 Future 链条。
+    // 拦截 Future 错误，确保队列不受单个异常阻断
     final currentTail = _cameraInitializeTail;
     final nextTail = currentTail.catchError((_) {}).then((_) async {
       try {
@@ -100,7 +149,6 @@ mixin _PackingSessionCameraCoordinator {
 
   /// 释放摄像头资源
   Future<void> disposeCamera() async {
-    // 修复点 2：销毁时显式取消能力探测定时器和诊断定时器
     _capabilityProbeTimer?.cancel();
     _capabilityProbeTimer = null;
 
@@ -127,8 +175,6 @@ mixin _PackingSessionCameraCoordinator {
     });
 
     try {
-      // 触发硬件能力探测...
-      // 假设从服务层获取结果
       final result = await _executeProbeInternal();
       if (!completer.isCompleted) {
         completer.complete(result);
@@ -172,9 +218,7 @@ mixin _PackingSessionCameraCoordinator {
   Future<void> _refreshBackCameraLenses() async {
     final newBackCameraLenses = <BackCameraLens>[];
     
-    // 假设此处拉取硬件镜头列表...
-    
-    // 修复点 3：修正变量拼写错误 (之前多写了一个 s)
+    // 修正变量拼写
     _backCameraLenses = List<BackCameraLens>.unmodifiable(newBackCameraLenses);
   }
 
@@ -207,23 +251,13 @@ mixin _PackingSessionCameraCoordinator {
     try {
       // 抓取快照逻辑...
     } catch (e, stackTrace) {
-      // 修复点 4：捕获日志避免调试困难，同时不影响主流程
       debugPrint('Camera diagnostics capture failed: $e\n$stackTrace');
     } finally {
       _diagnosticsCaptureRunning = false;
       if (_pendingDiagnosticsTrigger) {
         _pendingDiagnosticsTrigger = false;
-        // 挂起的请求延迟到下一帧触发
         scheduleMicrotask(() => _triggerDiagnosticsCapture('pending_retrigger'));
       }
     }
   }
 }
-
-// ---------------------------------------------------------------------------
-// 辅助占位类（防止编译提示未定义，请根据项目实际情况替换或移除）
-// ---------------------------------------------------------------------------
-class CameraInitOptions {}
-class BackCameraLens {}
-class RecordingSpecPreset {}
-enum CameraCapabilityState { full, encoderAnalysis, unsupported }
