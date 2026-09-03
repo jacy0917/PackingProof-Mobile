@@ -3,7 +3,7 @@ part of 'packing_session_controller.dart';
 /// 协调摄像头初始化、能力判定、镜头身份与运行诊断。
 mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
   set _hiddenRemoteRecordingIds(Set<int> value);
-  set _nativeCamera(ContinuousCameraService? value);
+  ContinuousCameraService? _nativeCamera;
   ContinuousCameraService Function() get _cameraServiceFactory;
   @override
   ContinuousCameraInitialization? get _nativeInitialization;
