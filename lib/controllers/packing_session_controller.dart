@@ -8,7 +8,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
-import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -117,8 +117,8 @@ class PackingSessionController extends ChangeNotifier
        _packageInfoLoader = packageInfoLoader ?? PackageInfo.fromPlatform,
        // ignore: prefer_initializing_formals
        _buildConfig = buildConfig,
-       _barcodeScanner = BarcodeScanner(
-         formats: const <BarcodeFormat>[BarcodeFormat.all],
+       _barcodeScanner = MobileScanner(
+         formats: const [BarcodeFormat.all],
        ) {
     _runtimeLog =
         runtimeLog ??
