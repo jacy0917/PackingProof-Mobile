@@ -24,7 +24,8 @@ class _PackingHomeScreenState extends State<PackingHomeScreen> {
   @override
   void initState() {
     super.initState();
-    _controller = PackingSessionController(repository: widget.repository);
+    // 修复：PackingSessionController 无参初始化
+    _controller = PackingSessionController();
   }
 
   @override
