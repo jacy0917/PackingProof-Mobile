@@ -157,7 +157,7 @@ class PackingSessionController extends ChangeNotifier
   @override
   final OrderInfoReceiverSink _orderInfoReceiver;
   @override
-  final BarcodeScanner _barcodeScanner;
+  final MobileScanner _barcodeScanner;
   final Future<PackageInfo> Function() _packageInfoLoader;
   final AppBuildConfig _buildConfig;
   @override
@@ -1617,7 +1617,7 @@ class PackingSessionController extends ChangeNotifier
       cleanup('wakelock', WakelockPlus.disable),
       if (camera != null) cleanup('camera', camera.dispose),
       if (nativeCamera != null) cleanup('nativeCamera', nativeCamera.dispose),
-      cleanup('barcodeScanner', _barcodeScanner.close),
+      cleanup('barcodeScanner', _barcodeScanner.dispose),
       cleanup('speechService', _speechService.dispose),
       cleanup('maxVolumeService', _maxVolumeService.dispose),
       if (_orderInfoSubscription != null)
