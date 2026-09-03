@@ -79,8 +79,8 @@ class PackingSessionController extends ChangeNotifier
         _PackingSessionBarcodeCoordinator,
         _PackingSessionOrderCoordinator,
         _PackingSessionPairingCoordinator,
-        _PackingSessionCameraCoordinator,
-        _PackingSessionSettingsCoordinator, {
+        _PackingSessionSettingsCoordinator,
+        _PackingSessionCameraCoordinator; {
   PackingSessionController({
     SessionRepository? repository,
     SpeechPromptSink? speechService,
