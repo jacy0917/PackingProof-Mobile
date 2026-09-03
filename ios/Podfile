@@ -1,6 +1,7 @@
-platform :ios, '15.3'
+# Uncomment this line to define a global platform for your project
+platform :ios, '12.0'
 
-# CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+# CocoaPods analytics sends network stats which slows down stats collection. Disables this feature.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
 project 'Runner', {
@@ -12,26 +13,26 @@ project 'Runner', {
 def flutter_root
   generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
   unless File.exist?(generated_xcode_build_settings_path)
-    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first."
   end
 
   File.foreach(generated_xcode_build_settings_path) do |line|
     matches = line.match(/FLUTTER_ROOT\=(.*)/)
     return matches[1].strip if matches
   end
-  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig then run flutter pub get"
 end
 
 require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
 
 flutter_ios_podfile_setup
 
-require File.expand_path('scripts/apple_silicon_simulator', __dir__)
-
 target 'Runner' do
   use_frameworks!
+  use_modular_headers!
 
-  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+  flutter_install_all_ios_pods File.dirname(File.expand_path(__FILE__))
+  
   target 'RunnerTests' do
     inherit! :search_paths
   end
@@ -40,11 +41,13 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
-    target.build_configurations.each do |configuration|
-      configuration.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.3'
+    
+    target.build_configurations.each do |config|
+      # 设置 AVFoundation 为弱链接 (-weak_framework AVFoundation)
+      # 避免低版本 iOS (如 iOS 15.3) 启动时因缺失部分高版本 API 符号而强行闪退
+      config.build_settings['OTHER_LDFLAGS'] ||= ['$(inherited)']
+      config.build_settings['OTHER_LDFLAGS'] << '-weak_framework'
+      config.build_settings['OTHER_LDFLAGS'] << 'AVFoundation'
     end
-  end
-  if defined?(mlkit_apple_silicon_simulator_patch)
-    mlkit_apple_silicon_simulator_patch(installer)
   end
 end
