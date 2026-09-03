@@ -26,6 +26,13 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
+    # 👇 新增步骤：安装 CocoaPods 依赖（这是之前缺失的关键一步）
+    - name: Install iOS pods
+      run: cd ios && pod install
+      env:
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+
     - name: Build iOS App (No Codesign)
       run: |
         xcodebuild archive \
