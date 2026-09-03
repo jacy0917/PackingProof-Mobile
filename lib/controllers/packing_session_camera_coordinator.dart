@@ -1,7 +1,7 @@
 part of 'packing_session_controller.dart';
 
 /// 协调摄像头初始化、能力判定、镜头身份与运行诊断。
-mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
+mixin _PackingSessionCameraCoordinator { 
   set _hiddenRemoteRecordingIds(Set<int> value);
   ContinuousCameraService? _nativeCamera;
   ContinuousCameraService Function() get _cameraServiceFactory;
@@ -11,9 +11,7 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
   set _cameraController(CameraController? value);
   bool get _supportsCameraCapabilityNegotiation;
   bool get isCameraReady;
-  @override
   bool get isWorking;
-  @override
   bool get isBusy;
   set _cameraNotice(String? value);
 
