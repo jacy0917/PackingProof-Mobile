@@ -12,10 +12,10 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Clone Flutter SDK (Specific Version)
-      run: |
-        git clone https://github.com/flutter/flutter.git -b 3.47.2 --depth 1 /Users/runner/flutter
-        echo "/Users/runner/flutter/bin" >> $GITHUB_PATH
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: 'stable'
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
@@ -26,18 +26,26 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    - name: Build IPA (No Codesign)
-      run: flutter build ios --release --no-codesign
-
-    - name: Package as IPA
+    - name: Build iOS App (No Codesign)
       run: |
-        mkdir -p Payload
-        cp -r build/ios/Release-iphoneos/Runner.app Payload/
-        zip -r app.ipa Payload/
+        xcodebuild archive \
+          -workspace ios/Runner.xcworkspace \
+          -scheme Runner \
+          -sdk iphoneos \
+          -configuration Release \
+          -archivePath build/Runner.xcarchive \
+          CODE_SIGNING_ALLOWED=NO
+
+    - name: Export Unsigned IPA
+      run: |
+        mkdir -p build/ipa/Payload
+        cp -r build/Runner.xcarchive/Products/Applications/Runner.app build/ipa/Payload/
+        cd build/ipa
+        zip -r ../../TrollStore-iOS-IPA.ipa Payload/
 
     - name: Upload IPA artifact
       uses: actions/upload-artifact@v4
       with:
-        name: trollstore-ipa
-        path: app.ipa
+        name: TrollStore-iOS-IPA
+        path: TrollStore-iOS-IPA.ipa
         retention-days: 7
