@@ -28,11 +28,11 @@ class BarcodeCandidatePolicy {
 
   /// 国内快递面单常用的一维码制。顺丰等面单不保证始终由系统识别为
   /// Code 128，因此不能把码制当作承运商身份。
+  /// [修改说明] 删除了 'codabar'，防止底层调用 iOS 15.4 新增的 Codabar API 导致 iOS 15.3 崩溃
   static const Set<String> _shippingLinearFormats = <String>{
     'code128',
     'code39',
     'code93',
-    'codabar',
   };
 
   /// 二维码可能同时承载营销链接或内部路由数据；仅当内容具有明确的
