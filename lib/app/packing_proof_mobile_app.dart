@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
+// 显式使用绝对路径导入 PackingHomeScreen
+import 'package:packing_proof_mobile/screens/packing_home_screen.dart';
+
 import '../models/app_settings.dart';
 import '../platform/platform_container.dart';
-import '../screens/packing_home_screen.dart';
 import '../services/session_repository.dart';
 import 'app_build_config.dart';
 import 'packing_proof_theme.dart';
