@@ -1,7 +1,7 @@
 part of 'packing_session_controller.dart';
 
 /// 协调运行设置变更、服务同步、持久化与必要的相机重建。
-mixin _PackingSessionSettingsCoordinator on _PackingSessionPairingCoordinator {
+mixin _PackingSessionSettingsCoordinator on _PackingSessionController {
   PackingSessionPhase get _phase;
 
   Future<void> retryInitialize();
