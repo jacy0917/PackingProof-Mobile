@@ -26,7 +26,7 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 0. 预先创建空文件兜底（指向正确的 Generated 目录） =================
+    # ================= 0. 确保 Generated 目录及文件存在 =================
     - name: Ensure Generated PlatformApi.swift Exists
       run: |
         mkdir -p ios/Runner/Generated
@@ -50,8 +50,8 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 2. 补全 Xcode 工程文件引用 =================
-    - name: Inject Generated Files into Xcode Project
+    # ================= 2. 修复 Xcode 项目引用 (关键步骤) =================
+    - name: Fix Xcode Project References
       run: |
         cd ios
         sudo gem install xcodeproj
@@ -60,14 +60,27 @@ jobs:
         project_path = 'Runner.xcodeproj'
         project = Xcodeproj::Project.open(project_path)
         target = project.targets.first
-        runner_group = project.main_group['Runner']
         
-        Dir.glob('Runner/**/*.swift').each do |file|
-          next if target.source_build_phase.files_references.any? { |ref| ref && ref.path == File.basename(file) }
-          file_ref = runner_group.new_file(File.basename(file))
-          target.add_file_references([file_ref])
-          puts \"Injected #{file} to Xcode Project\"
+        # 1. 移除废弃的 Runner/PlatformApi.swift 强引用
+        target.source_build_phase.files.each do |file_ref|
+          if file_ref.file_ref && file_ref.file_ref.path == 'PlatformApi.swift'
+            target.source_build_phase.remove_build_file(file_ref)
+            puts 'Removed stale PlatformApi.swift reference from target'
+          end
         end
+
+        # 2. 正确引入 Generated 目录下的 Swift 文件
+        runner_group = project.main_group['Runner']
+        generated_group = runner_group['Generated'] || runner_group.new_group('Generated', 'Generated')
+        
+        Dir.glob('Runner/Generated/*.swift').each do |file|
+          filename = File.basename(file)
+          next if target.source_build_phase.files_references.any? { |ref| ref && ref.path == filename }
+          file_ref = generated_group.new_file(filename)
+          target.add_file_references([file_ref])
+          puts \"Injected #{file} into Xcode Project\"
+        end
+        
         project.save
         "
 
