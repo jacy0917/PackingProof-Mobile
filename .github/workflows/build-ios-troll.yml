@@ -20,11 +20,23 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
+    - name: Verify Flutter installation
+      run: |
+        echo "=== Flutter version ==="
+        flutter --version
+        echo "=== Flutter path ==="
+        which flutter
+        echo "=== Current directory ==="
+        pwd
+        echo "=== List root files ==="
+        ls -la $GITHUB_WORKSPACE
+
     - name: Install dependencies
       run: |
         cd $GITHUB_WORKSPACE
-        pwd
-        ls -la
+        rm -rf build
+        rm -f pubspec.lock
+        flutter clean
         flutter pub get
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
@@ -33,6 +45,7 @@ jobs:
     # ================= 1. 精准且不覆盖地生成 Pigeon 代码 =================
     - name: Generate Pigeon Code
       run: |
+        cd $GITHUB_WORKSPACE
         mkdir -p ios/Runner/Generated
         rm -f ios/Runner/Generated/PlatformApi.swift
         
@@ -66,6 +79,7 @@ jobs:
     # ================= 2. 物理同步至 Runner 目录 =================
     - name: Synchronize PlatformApi.swift Paths
       run: |
+        cd $GITHUB_WORKSPACE
         mkdir -p ios/Runner/Generated
         if [ -f ios/Runner/Generated/PlatformApi.swift ]; then
           cp ios/Runner/Generated/PlatformApi.swift ios/Runner/PlatformApi.swift
@@ -77,17 +91,20 @@ jobs:
 
     - name: Install iOS pods
       run: |
-        cd ios
+        cd $GITHUB_WORKSPACE/ios
         pod install --repo-update
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
     - name: Build Unsigned IPA for TrollStore
-      run: flutter build ipa --release --no-codesign
+      run: |
+        cd $GITHUB_WORKSPACE
+        flutter build ipa --release --no-codesign
 
     - name: Package TrollStore IPA
       run: |
+        cd $GITHUB_WORKSPACE
         mkdir -p build/ipa/Payload
         cp -r build/ios/archive/Runner.xcarchive/Products/Applications/*.app build/ipa/Payload/
         cd build/ipa
