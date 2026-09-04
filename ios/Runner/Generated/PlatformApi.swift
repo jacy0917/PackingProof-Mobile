@@ -71,6 +71,7 @@ enum PlatformApiPigeonInternal {
 
     return innerValue is NSNull
   }
+
   static func doubleEquals(_ lhs: Double, _ rhs: Double) -> Bool {
     return (lhs.isNaN && rhs.isNaN) || lhs == rhs
   }
@@ -179,14 +180,12 @@ enum PlatformApiPigeonInternal {
       hasher.combine(0)
     }
   }
-
 }
 
 private func nilOrValue<T>(_ value: Any?) -> T? {
   if value is NSNull { return nil }
   return value as! T?
 }
-
 
 enum CameraWatermarkDisposition: Int, CaseIterable {
   case completed = 0
@@ -197,7 +196,6 @@ enum CameraWatermarkDisposition: Int, CaseIterable {
 /// Generated class from Pigeon that represents data sent in messages.
 struct ThumbnailRequest: Hashable, CustomStringConvertible {
   var path: String
-
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> ThumbnailRequest? {
@@ -237,7 +235,6 @@ struct WatermarkRequest: Hashable, CustomStringConvertible {
   var trackingNumber: String
   var videoCodec: String
   var recordingOrientation: String
-
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> WatermarkRequest? {
@@ -297,7 +294,6 @@ struct ExportRequest: Hashable, CustomStringConvertible {
   var endMs: Int64
   var passthrough: Bool
 
-
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> ExportRequest? {
     let inputPath = pigeonVar_list[0] as! String
@@ -356,7 +352,6 @@ struct VideoDecodeSupportDto: Hashable, CustomStringConvertible {
   var hasHevcEncoder: Bool
   var hasAvcEncoder: Bool
   var forceSoftwareDecode: Bool
-
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> VideoDecodeSupportDto? {
@@ -438,7 +433,6 @@ struct OrderInfoDto: Hashable, CustomStringConvertible {
   var pushTimeMs: Int64? = nil
   var isTest: Bool
 
-
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> OrderInfoDto? {
     let trackingNumber = pigeonVar_list[0] as! String
@@ -517,7 +511,6 @@ struct OrderReceiverStatusDto: Hashable, CustomStringConvertible {
   var port: Int64
   var errorMessage: String
 
-
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> OrderReceiverStatusDto? {
     let running = pigeonVar_list[0] as! Bool
@@ -570,7 +563,6 @@ struct CameraInitializeRequest: Hashable, CustomStringConvertible {
   var recordingSpec: String
   var capabilityMode: String
   var recordingOrientation: String
-
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> CameraInitializeRequest? {
@@ -628,7 +620,6 @@ struct CameraInitializationDto: Hashable, CustomStringConvertible {
   var canSwitchCamera: Bool
   var cameraId: String? = nil
   var zoomRatio: Double
-
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> CameraInitializationDto? {
@@ -711,7 +702,6 @@ struct CameraLensDto: Hashable, CustomStringConvertible {
   var zoomRatio: Double
   var isMain: Bool
 
-
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> CameraLensDto? {
     let cameraId = pigeonVar_list[0] as! String
@@ -759,7 +749,6 @@ struct CameraRecordingStartDto: Hashable, CustomStringConvertible {
   var path: String
   var startedAtMs: Int64
 
-
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> CameraRecordingStartDto? {
     let path = pigeonVar_list[0] as! String
@@ -802,14 +791,13 @@ struct CameraRecordingSplitDto: Hashable, CustomStringConvertible {
   var boundaryAtMs: Int64
   var watermarkDisposition: CameraWatermarkDisposition
 
-
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> CameraRecordingSplitDto? {
     let completedPath = pigeonVar_list[0] as! String
     let nextPath = pigeonVar_list[1] as! String
     let completedStartedAtMs = pigeonVar_list[2] as! Int64
     let boundaryAtMs = pigeonVar_list[3] as! Int64
-    let watermarkDisposition = pigeonVar_list[4] as! CameraWatermarkDisposition
+    let watermarkDisposition = CameraWatermarkDisposition(rawValue: pigeonVar_list[4] as! Int)!
 
     return CameraRecordingSplitDto(
       completedPath: completedPath,
@@ -825,7 +813,7 @@ struct CameraRecordingSplitDto: Hashable, CustomStringConvertible {
       nextPath,
       completedStartedAtMs,
       boundaryAtMs,
-      watermarkDisposition,
+      watermarkDisposition.rawValue,
     ]
   }
   static func == (lhs: CameraRecordingSplitDto, rhs: CameraRecordingSplitDto) -> Bool {
@@ -856,13 +844,12 @@ struct CameraRecordingStopDto: Hashable, CustomStringConvertible {
   var endedAtMs: Int64
   var watermarkDisposition: CameraWatermarkDisposition
 
-
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> CameraRecordingStopDto? {
     let path = pigeonVar_list[0] as! String
     let startedAtMs = pigeonVar_list[1] as! Int64
     let endedAtMs = pigeonVar_list[2] as! Int64
-    let watermarkDisposition = pigeonVar_list[3] as! CameraWatermarkDisposition
+    let watermarkDisposition = CameraWatermarkDisposition(rawValue: pigeonVar_list[3] as! Int)!
 
     return CameraRecordingStopDto(
       path: path,
@@ -876,7 +863,7 @@ struct CameraRecordingStopDto: Hashable, CustomStringConvertible {
       path,
       startedAtMs,
       endedAtMs,
-      watermarkDisposition,
+      watermarkDisposition.rawValue,
     ]
   }
   static func == (lhs: CameraRecordingStopDto, rhs: CameraRecordingStopDto) -> Bool {
@@ -899,850 +886,76 @@ struct CameraRecordingStopDto: Hashable, CustomStringConvertible {
   }
 }
 
-/// Generated class from Pigeon that represents data sent in messages.
-struct BarcodeCandidateDto: Hashable, CustomStringConvertible {
-  var value: String
-  var area: Int64
-  var format: String? = nil
-  var detectedAtMs: Int64
-
-
-  // swift-format-ignore: AlwaysUseLowerCamelCase
-  static func fromList(_ pigeonVar_list: [Any?]) -> BarcodeCandidateDto? {
-    let value = pigeonVar_list[0] as! String
-    let area = pigeonVar_list[1] as! Int64
-    let format: String? = nilOrValue(pigeonVar_list[2])
-    let detectedAtMs = pigeonVar_list[3] as! Int64
-
-    return BarcodeCandidateDto(
-      value: value,
-      area: area,
-      format: format,
-      detectedAtMs: detectedAtMs
-    )
-  }
-  func toList() -> [Any?] {
-    return [
-      value,
-      area,
-      format,
-      detectedAtMs,
-    ]
-  }
-  static func == (lhs: BarcodeCandidateDto, rhs: BarcodeCandidateDto) -> Bool {
-    if Swift.type(of: lhs) != Swift.type(of: rhs) {
-      return false
-    }
-    return PlatformApiPigeonInternal.deepEquals(lhs.value, rhs.value) && PlatformApiPigeonInternal.deepEquals(lhs.area, rhs.area) && PlatformApiPigeonInternal.deepEquals(lhs.format, rhs.format) && PlatformApiPigeonInternal.deepEquals(lhs.detectedAtMs, rhs.detectedAtMs)
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine("BarcodeCandidateDto")
-    PlatformApiPigeonInternal.deepHash(value: value, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: area, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: format, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: detectedAtMs, hasher: &hasher)
-  }
-
-  public var description: String {
-    return "BarcodeCandidateDto(value: \(String(describing: value)), area: \(String(describing: area)), format: \(String(describing: format)), detectedAtMs: \(String(describing: detectedAtMs)))"
-  }
-}
-
-/// Generated class from Pigeon that represents data sent in messages.
-struct BackupJobDto: Hashable, CustomStringConvertible {
-  var revision: Int64
-  var id: String
-  var filePath: String
-  var state: String
-  var uploadedBytes: Int64
-  var totalBytes: Int64
-  var lastModifiedMs: Int64? = nil
-  var contentSha256: String? = nil
-  var errorMessage: String? = nil
-  var failureKind: String? = nil
-  var fileCreatedAtMs: Int64? = nil
-  var backupCompletedAtMs: Int64? = nil
-  var scheduledCleanupAtMs: Int64? = nil
-  var localDeletedAtMs: Int64? = nil
-  var waitingCleanup: Bool
-  var remoteRecordId: Int64? = nil
-  var destinationComputerId: String
-  var cleanupReason: String? = nil
-
-
-  // swift-format-ignore: AlwaysUseLowerCamelCase
-  static func fromList(_ pigeonVar_list: [Any?]) -> BackupJobDto? {
-    let revision = pigeonVar_list[0] as! Int64
-    let id = pigeonVar_list[1] as! String
-    let filePath = pigeonVar_list[2] as! String
-    let state = pigeonVar_list[3] as! String
-    let uploadedBytes = pigeonVar_list[4] as! Int64
-    let totalBytes = pigeonVar_list[5] as! Int64
-    let lastModifiedMs: Int64? = nilOrValue(pigeonVar_list[6])
-    let contentSha256: String? = nilOrValue(pigeonVar_list[7])
-    let errorMessage: String? = nilOrValue(pigeonVar_list[8])
-    let failureKind: String? = nilOrValue(pigeonVar_list[9])
-    let fileCreatedAtMs: Int64? = nilOrValue(pigeonVar_list[10])
-    let backupCompletedAtMs: Int64? = nilOrValue(pigeonVar_list[11])
-    let scheduledCleanupAtMs: Int64? = nilOrValue(pigeonVar_list[12])
-    let localDeletedAtMs: Int64? = nilOrValue(pigeonVar_list[13])
-    let waitingCleanup = pigeonVar_list[14] as! Bool
-    let remoteRecordId: Int64? = nilOrValue(pigeonVar_list[15])
-    let destinationComputerId = pigeonVar_list[16] as! String
-    let cleanupReason: String? = nilOrValue(pigeonVar_list[17])
-
-    return BackupJobDto(
-      revision: revision,
-      id: id,
-      filePath: filePath,
-      state: state,
-      uploadedBytes: uploadedBytes,
-      totalBytes: totalBytes,
-      lastModifiedMs: lastModifiedMs,
-      contentSha256: contentSha256,
-      errorMessage: errorMessage,
-      failureKind: failureKind,
-      fileCreatedAtMs: fileCreatedAtMs,
-      backupCompletedAtMs: backupCompletedAtMs,
-      scheduledCleanupAtMs: scheduledCleanupAtMs,
-      localDeletedAtMs: localDeletedAtMs,
-      waitingCleanup: waitingCleanup,
-      remoteRecordId: remoteRecordId,
-      destinationComputerId: destinationComputerId,
-      cleanupReason: cleanupReason
-    )
-  }
-  func toList() -> [Any?] {
-    return [
-      revision,
-      id,
-      filePath,
-      state,
-      uploadedBytes,
-      totalBytes,
-      lastModifiedMs,
-      contentSha256,
-      errorMessage,
-      failureKind,
-      fileCreatedAtMs,
-      backupCompletedAtMs,
-      scheduledCleanupAtMs,
-      localDeletedAtMs,
-      waitingCleanup,
-      remoteRecordId,
-      destinationComputerId,
-      cleanupReason,
-    ]
-  }
-  static func == (lhs: BackupJobDto, rhs: BackupJobDto) -> Bool {
-    if Swift.type(of: lhs) != Swift.type(of: rhs) {
-      return false
-    }
-    return PlatformApiPigeonInternal.deepEquals(lhs.revision, rhs.revision) && PlatformApiPigeonInternal.deepEquals(lhs.id, rhs.id) && PlatformApiPigeonInternal.deepEquals(lhs.filePath, rhs.filePath) && PlatformApiPigeonInternal.deepEquals(lhs.state, rhs.state) && PlatformApiPigeonInternal.deepEquals(lhs.uploadedBytes, rhs.uploadedBytes) && PlatformApiPigeonInternal.deepEquals(lhs.totalBytes, rhs.totalBytes) && PlatformApiPigeonInternal.deepEquals(lhs.lastModifiedMs, rhs.lastModifiedMs) && PlatformApiPigeonInternal.deepEquals(lhs.contentSha256, rhs.contentSha256) && PlatformApiPigeonInternal.deepEquals(lhs.errorMessage, rhs.errorMessage) && PlatformApiPigeonInternal.deepEquals(lhs.failureKind, rhs.failureKind) && PlatformApiPigeonInternal.deepEquals(lhs.fileCreatedAtMs, rhs.fileCreatedAtMs) && PlatformApiPigeonInternal.deepEquals(lhs.backupCompletedAtMs, rhs.backupCompletedAtMs) && PlatformApiPigeonInternal.deepEquals(lhs.scheduledCleanupAtMs, rhs.scheduledCleanupAtMs) && PlatformApiPigeonInternal.deepEquals(lhs.localDeletedAtMs, rhs.localDeletedAtMs) && PlatformApiPigeonInternal.deepEquals(lhs.waitingCleanup, rhs.waitingCleanup) && PlatformApiPigeonInternal.deepEquals(lhs.remoteRecordId, rhs.remoteRecordId) && PlatformApiPigeonInternal.deepEquals(lhs.destinationComputerId, rhs.destinationComputerId) && PlatformApiPigeonInternal.deepEquals(lhs.cleanupReason, rhs.cleanupReason)
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine("BackupJobDto")
-    PlatformApiPigeonInternal.deepHash(value: revision, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: id, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: filePath, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: state, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: uploadedBytes, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: totalBytes, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: lastModifiedMs, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: contentSha256, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: errorMessage, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: failureKind, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: fileCreatedAtMs, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: backupCompletedAtMs, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: scheduledCleanupAtMs, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: localDeletedAtMs, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: waitingCleanup, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: remoteRecordId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: destinationComputerId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: cleanupReason, hasher: &hasher)
-  }
-
-  public var description: String {
-    return "BackupJobDto(revision: \(String(describing: revision)), id: \(String(describing: id)), filePath: \(String(describing: filePath)), state: \(String(describing: state)), uploadedBytes: \(String(describing: uploadedBytes)), totalBytes: \(String(describing: totalBytes)), lastModifiedMs: \(String(describing: lastModifiedMs)), contentSha256: \(String(describing: contentSha256)), errorMessage: \(String(describing: errorMessage)), failureKind: \(String(describing: failureKind)), fileCreatedAtMs: \(String(describing: fileCreatedAtMs)), backupCompletedAtMs: \(String(describing: backupCompletedAtMs)), scheduledCleanupAtMs: \(String(describing: scheduledCleanupAtMs)), localDeletedAtMs: \(String(describing: localDeletedAtMs)), waitingCleanup: \(String(describing: waitingCleanup)), remoteRecordId: \(String(describing: remoteRecordId)), destinationComputerId: \(String(describing: destinationComputerId)), cleanupReason: \(String(describing: cleanupReason)))"
-  }
-}
-
-/// Generated class from Pigeon that represents data sent in messages.
-struct BackupSummaryDto: Hashable, CustomStringConvertible {
-  var schemaVersion: Int64
-  var revision: Int64
-  var completedRevision: Int64
-  var cleanupHighWatermark: Int64
-  var deviceId: String
-  var deviceName: String
-  var baseUrl: String? = nil
-  var computerId: String? = nil
-  var computerName: String? = nil
-  var lastConnectedAtMs: Int64? = nil
-  var preferredHostId: String? = nil
-  var preferredHostName: String? = nil
-  var totalCount: Int64
-  var pendingCount: Int64
-  var uploadingCount: Int64
-  var pausedCount: Int64
-  var completedCount: Int64
-  var failedCount: Int64
-  var waitingCleanupCount: Int64
-  var localDeletedCount: Int64
-  var unfinishedUploadedBytes: Int64
-  var unfinishedTotalBytes: Int64
-  var dominantFailureKind: String? = nil
-  var activeJob: BackupJobDto? = nil
-  var problemJob: BackupJobDto? = nil
-
-
-  // swift-format-ignore: AlwaysUseLowerCamelCase
-  static func fromList(_ pigeonVar_list: [Any?]) -> BackupSummaryDto? {
-    let schemaVersion = pigeonVar_list[0] as! Int64
-    let revision = pigeonVar_list[1] as! Int64
-    let completedRevision = pigeonVar_list[2] as! Int64
-    let cleanupHighWatermark = pigeonVar_list[3] as! Int64
-    let deviceId = pigeonVar_list[4] as! String
-    let deviceName = pigeonVar_list[5] as! String
-    let baseUrl: String? = nilOrValue(pigeonVar_list[6])
-    let computerId: String? = nilOrValue(pigeonVar_list[7])
-    let computerName: String? = nilOrValue(pigeonVar_list[8])
-    let lastConnectedAtMs: Int64? = nilOrValue(pigeonVar_list[9])
-    let preferredHostId: String? = nilOrValue(pigeonVar_list[10])
-    let preferredHostName: String? = nilOrValue(pigeonVar_list[11])
-    let totalCount = pigeonVar_list[12] as! Int64
-    let pendingCount = pigeonVar_list[13] as! Int64
-    let uploadingCount = pigeonVar_list[14] as! Int64
-    let pausedCount = pigeonVar_list[15] as! Int64
-    let completedCount = pigeonVar_list[16] as! Int64
-    let failedCount = pigeonVar_list[17] as! Int64
-    let waitingCleanupCount = pigeonVar_list[18] as! Int64
-    let localDeletedCount = pigeonVar_list[19] as! Int64
-    let unfinishedUploadedBytes = pigeonVar_list[20] as! Int64
-    let unfinishedTotalBytes = pigeonVar_list[21] as! Int64
-    let dominantFailureKind: String? = nilOrValue(pigeonVar_list[22])
-    let activeJob: BackupJobDto? = nilOrValue(pigeonVar_list[23])
-    let problemJob: BackupJobDto? = nilOrValue(pigeonVar_list[24])
-
-    return BackupSummaryDto(
-      schemaVersion: schemaVersion,
-      revision: revision,
-      completedRevision: completedRevision,
-      cleanupHighWatermark: cleanupHighWatermark,
-      deviceId: deviceId,
-      deviceName: deviceName,
-      baseUrl: baseUrl,
-      computerId: computerId,
-      computerName: computerName,
-      lastConnectedAtMs: lastConnectedAtMs,
-      preferredHostId: preferredHostId,
-      preferredHostName: preferredHostName,
-      totalCount: totalCount,
-      pendingCount: pendingCount,
-      uploadingCount: uploadingCount,
-      pausedCount: pausedCount,
-      completedCount: completedCount,
-      failedCount: failedCount,
-      waitingCleanupCount: waitingCleanupCount,
-      localDeletedCount: localDeletedCount,
-      unfinishedUploadedBytes: unfinishedUploadedBytes,
-      unfinishedTotalBytes: unfinishedTotalBytes,
-      dominantFailureKind: dominantFailureKind,
-      activeJob: activeJob,
-      problemJob: problemJob
-    )
-  }
-  func toList() -> [Any?] {
-    return [
-      schemaVersion,
-      revision,
-      completedRevision,
-      cleanupHighWatermark,
-      deviceId,
-      deviceName,
-      baseUrl,
-      computerId,
-      computerName,
-      lastConnectedAtMs,
-      preferredHostId,
-      preferredHostName,
-      totalCount,
-      pendingCount,
-      uploadingCount,
-      pausedCount,
-      completedCount,
-      failedCount,
-      waitingCleanupCount,
-      localDeletedCount,
-      unfinishedUploadedBytes,
-      unfinishedTotalBytes,
-      dominantFailureKind,
-      activeJob,
-      problemJob,
-    ]
-  }
-  static func == (lhs: BackupSummaryDto, rhs: BackupSummaryDto) -> Bool {
-    if Swift.type(of: lhs) != Swift.type(of: rhs) {
-      return false
-    }
-    return PlatformApiPigeonInternal.deepEquals(lhs.schemaVersion, rhs.schemaVersion) && PlatformApiPigeonInternal.deepEquals(lhs.revision, rhs.revision) && PlatformApiPigeonInternal.deepEquals(lhs.completedRevision, rhs.completedRevision) && PlatformApiPigeonInternal.deepEquals(lhs.cleanupHighWatermark, rhs.cleanupHighWatermark) && PlatformApiPigeonInternal.deepEquals(lhs.deviceId, rhs.deviceId) && PlatformApiPigeonInternal.deepEquals(lhs.deviceName, rhs.deviceName) && PlatformApiPigeonInternal.deepEquals(lhs.baseUrl, rhs.baseUrl) && PlatformApiPigeonInternal.deepEquals(lhs.computerId, rhs.computerId) && PlatformApiPigeonInternal.deepEquals(lhs.computerName, rhs.computerName) && PlatformApiPigeonInternal.deepEquals(lhs.lastConnectedAtMs, rhs.lastConnectedAtMs) && PlatformApiPigeonInternal.deepEquals(lhs.preferredHostId, rhs.preferredHostId) && PlatformApiPigeonInternal.deepEquals(lhs.preferredHostName, rhs.preferredHostName) && PlatformApiPigeonInternal.deepEquals(lhs.totalCount, rhs.totalCount) && PlatformApiPigeonInternal.deepEquals(lhs.pendingCount, rhs.pendingCount) && PlatformApiPigeonInternal.deepEquals(lhs.uploadingCount, rhs.uploadingCount) && PlatformApiPigeonInternal.deepEquals(lhs.pausedCount, rhs.pausedCount) && PlatformApiPigeonInternal.deepEquals(lhs.completedCount, rhs.completedCount) && PlatformApiPigeonInternal.deepEquals(lhs.failedCount, rhs.failedCount) && PlatformApiPigeonInternal.deepEquals(lhs.waitingCleanupCount, rhs.waitingCleanupCount) && PlatformApiPigeonInternal.deepEquals(lhs.localDeletedCount, rhs.localDeletedCount) && PlatformApiPigeonInternal.deepEquals(lhs.unfinishedUploadedBytes, rhs.unfinishedUploadedBytes) && PlatformApiPigeonInternal.deepEquals(lhs.unfinishedTotalBytes, rhs.unfinishedTotalBytes) && PlatformApiPigeonInternal.deepEquals(lhs.dominantFailureKind, rhs.dominantFailureKind) && PlatformApiPigeonInternal.deepEquals(lhs.activeJob, rhs.activeJob) && PlatformApiPigeonInternal.deepEquals(lhs.problemJob, rhs.problemJob)
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine("BackupSummaryDto")
-    PlatformApiPigeonInternal.deepHash(value: schemaVersion, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: revision, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: completedRevision, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: cleanupHighWatermark, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: deviceId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: deviceName, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: baseUrl, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: computerId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: computerName, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: lastConnectedAtMs, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: preferredHostId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: preferredHostName, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: totalCount, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: pendingCount, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: uploadingCount, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: pausedCount, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: completedCount, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: failedCount, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: waitingCleanupCount, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: localDeletedCount, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: unfinishedUploadedBytes, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: unfinishedTotalBytes, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: dominantFailureKind, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: activeJob, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: problemJob, hasher: &hasher)
-  }
-
-  public var description: String {
-    return "BackupSummaryDto(schemaVersion: \(String(describing: schemaVersion)), revision: \(String(describing: revision)), completedRevision: \(String(describing: completedRevision)), cleanupHighWatermark: \(String(describing: cleanupHighWatermark)), deviceId: \(String(describing: deviceId)), deviceName: \(String(describing: deviceName)), baseUrl: \(String(describing: baseUrl)), computerId: \(String(describing: computerId)), computerName: \(String(describing: computerName)), lastConnectedAtMs: \(String(describing: lastConnectedAtMs)), preferredHostId: \(String(describing: preferredHostId)), preferredHostName: \(String(describing: preferredHostName)), totalCount: \(String(describing: totalCount)), pendingCount: \(String(describing: pendingCount)), uploadingCount: \(String(describing: uploadingCount)), pausedCount: \(String(describing: pausedCount)), completedCount: \(String(describing: completedCount)), failedCount: \(String(describing: failedCount)), waitingCleanupCount: \(String(describing: waitingCleanupCount)), localDeletedCount: \(String(describing: localDeletedCount)), unfinishedUploadedBytes: \(String(describing: unfinishedUploadedBytes)), unfinishedTotalBytes: \(String(describing: unfinishedTotalBytes)), dominantFailureKind: \(String(describing: dominantFailureKind)), activeJob: \(String(describing: activeJob)), problemJob: \(String(describing: problemJob)))"
-  }
-}
-
-/// Generated class from Pigeon that represents data sent in messages.
-struct BackupJobsByPathsDto: Hashable, CustomStringConvertible {
-  var revision: Int64
-  var jobs: [BackupJobDto]
-  var missingPaths: [String]
-
-
-  // swift-format-ignore: AlwaysUseLowerCamelCase
-  static func fromList(_ pigeonVar_list: [Any?]) -> BackupJobsByPathsDto? {
-    let revision = pigeonVar_list[0] as! Int64
-    let jobs = pigeonVar_list[1] as! [BackupJobDto]
-    let missingPaths = pigeonVar_list[2] as! [String]
-
-    return BackupJobsByPathsDto(
-      revision: revision,
-      jobs: jobs,
-      missingPaths: missingPaths
-    )
-  }
-  func toList() -> [Any?] {
-    return [
-      revision,
-      jobs,
-      missingPaths,
-    ]
-  }
-  static func == (lhs: BackupJobsByPathsDto, rhs: BackupJobsByPathsDto) -> Bool {
-    if Swift.type(of: lhs) != Swift.type(of: rhs) {
-      return false
-    }
-    return PlatformApiPigeonInternal.deepEquals(lhs.revision, rhs.revision) && PlatformApiPigeonInternal.deepEquals(lhs.jobs, rhs.jobs) && PlatformApiPigeonInternal.deepEquals(lhs.missingPaths, rhs.missingPaths)
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine("BackupJobsByPathsDto")
-    PlatformApiPigeonInternal.deepHash(value: revision, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: jobs, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: missingPaths, hasher: &hasher)
-  }
-
-  public var description: String {
-    return "BackupJobsByPathsDto(revision: \(String(describing: revision)), jobs: \(String(describing: jobs)), missingPaths: \(String(describing: missingPaths)))"
-  }
-}
-
-/// Generated class from Pigeon that represents data sent in messages.
-struct BackupCleanupEventDto: Hashable, CustomStringConvertible {
-  var revision: Int64
-  var eventId: String
-  var jobId: String
-  var filePath: String
-  var fileSizeBytes: Int64
-  var deletedAtMs: Int64
-  var reason: String
-
-
-  // swift-format-ignore: AlwaysUseLowerCamelCase
-  static func fromList(_ pigeonVar_list: [Any?]) -> BackupCleanupEventDto? {
-    let revision = pigeonVar_list[0] as! Int64
-    let eventId = pigeonVar_list[1] as! String
-    let jobId = pigeonVar_list[2] as! String
-    let filePath = pigeonVar_list[3] as! String
-    let fileSizeBytes = pigeonVar_list[4] as! Int64
-    let deletedAtMs = pigeonVar_list[5] as! Int64
-    let reason = pigeonVar_list[6] as! String
-
-    return BackupCleanupEventDto(
-      revision: revision,
-      eventId: eventId,
-      jobId: jobId,
-      filePath: filePath,
-      fileSizeBytes: fileSizeBytes,
-      deletedAtMs: deletedAtMs,
-      reason: reason
-    )
-  }
-  func toList() -> [Any?] {
-    return [
-      revision,
-      eventId,
-      jobId,
-      filePath,
-      fileSizeBytes,
-      deletedAtMs,
-      reason,
-    ]
-  }
-  static func == (lhs: BackupCleanupEventDto, rhs: BackupCleanupEventDto) -> Bool {
-    if Swift.type(of: lhs) != Swift.type(of: rhs) {
-      return false
-    }
-    return PlatformApiPigeonInternal.deepEquals(lhs.revision, rhs.revision) && PlatformApiPigeonInternal.deepEquals(lhs.eventId, rhs.eventId) && PlatformApiPigeonInternal.deepEquals(lhs.jobId, rhs.jobId) && PlatformApiPigeonInternal.deepEquals(lhs.filePath, rhs.filePath) && PlatformApiPigeonInternal.deepEquals(lhs.fileSizeBytes, rhs.fileSizeBytes) && PlatformApiPigeonInternal.deepEquals(lhs.deletedAtMs, rhs.deletedAtMs) && PlatformApiPigeonInternal.deepEquals(lhs.reason, rhs.reason)
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine("BackupCleanupEventDto")
-    PlatformApiPigeonInternal.deepHash(value: revision, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: eventId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: jobId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: filePath, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: fileSizeBytes, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: deletedAtMs, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: reason, hasher: &hasher)
-  }
-
-  public var description: String {
-    return "BackupCleanupEventDto(revision: \(String(describing: revision)), eventId: \(String(describing: eventId)), jobId: \(String(describing: jobId)), filePath: \(String(describing: filePath)), fileSizeBytes: \(String(describing: fileSizeBytes)), deletedAtMs: \(String(describing: deletedAtMs)), reason: \(String(describing: reason)))"
-  }
-}
-
-/// Generated class from Pigeon that represents data sent in messages.
-struct BackupCleanupPageDto: Hashable, CustomStringConvertible {
-  var latestRevision: Int64
-  var nextAfterRevision: Int64
-  var hasMore: Bool
-  var events: [BackupCleanupEventDto]
-
-
-  // swift-format-ignore: AlwaysUseLowerCamelCase
-  static func fromList(_ pigeonVar_list: [Any?]) -> BackupCleanupPageDto? {
-    let latestRevision = pigeonVar_list[0] as! Int64
-    let nextAfterRevision = pigeonVar_list[1] as! Int64
-    let hasMore = pigeonVar_list[2] as! Bool
-    let events = pigeonVar_list[3] as! [BackupCleanupEventDto]
-
-    return BackupCleanupPageDto(
-      latestRevision: latestRevision,
-      nextAfterRevision: nextAfterRevision,
-      hasMore: hasMore,
-      events: events
-    )
-  }
-  func toList() -> [Any?] {
-    return [
-      latestRevision,
-      nextAfterRevision,
-      hasMore,
-      events,
-    ]
-  }
-  static func == (lhs: BackupCleanupPageDto, rhs: BackupCleanupPageDto) -> Bool {
-    if Swift.type(of: lhs) != Swift.type(of: rhs) {
-      return false
-    }
-    return PlatformApiPigeonInternal.deepEquals(lhs.latestRevision, rhs.latestRevision) && PlatformApiPigeonInternal.deepEquals(lhs.nextAfterRevision, rhs.nextAfterRevision) && PlatformApiPigeonInternal.deepEquals(lhs.hasMore, rhs.hasMore) && PlatformApiPigeonInternal.deepEquals(lhs.events, rhs.events)
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine("BackupCleanupPageDto")
-    PlatformApiPigeonInternal.deepHash(value: latestRevision, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: nextAfterRevision, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: hasMore, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: events, hasher: &hasher)
-  }
-
-  public var description: String {
-    return "BackupCleanupPageDto(latestRevision: \(String(describing: latestRevision)), nextAfterRevision: \(String(describing: nextAfterRevision)), hasMore: \(String(describing: hasMore)), events: \(String(describing: events)))"
-  }
-}
-
-/// Generated class from Pigeon that represents data sent in messages.
-struct CameraSessionStartedDto: Hashable, CustomStringConvertible {
-  var sessionId: String
-  var startedAtMs: Int64
-
-
-  // swift-format-ignore: AlwaysUseLowerCamelCase
-  static func fromList(_ pigeonVar_list: [Any?]) -> CameraSessionStartedDto? {
-    let sessionId = pigeonVar_list[0] as! String
-    let startedAtMs = pigeonVar_list[1] as! Int64
-
-    return CameraSessionStartedDto(
-      sessionId: sessionId,
-      startedAtMs: startedAtMs
-    )
-  }
-  func toList() -> [Any?] {
-    return [
-      sessionId,
-      startedAtMs,
-    ]
-  }
-  static func == (lhs: CameraSessionStartedDto, rhs: CameraSessionStartedDto) -> Bool {
-    if Swift.type(of: lhs) != Swift.type(of: rhs) {
-      return false
-    }
-    return PlatformApiPigeonInternal.deepEquals(lhs.sessionId, rhs.sessionId) && PlatformApiPigeonInternal.deepEquals(lhs.startedAtMs, rhs.startedAtMs)
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine("CameraSessionStartedDto")
-    PlatformApiPigeonInternal.deepHash(value: sessionId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: startedAtMs, hasher: &hasher)
-  }
-
-  public var description: String {
-    return "CameraSessionStartedDto(sessionId: \(String(describing: sessionId)), startedAtMs: \(String(describing: startedAtMs)))"
-  }
-}
-
-/// Generated class from Pigeon that represents data sent in messages.
-struct CameraSegmentStartedDto: Hashable, CustomStringConvertible {
-  var sessionId: String
-  var segmentId: String
-  var startedAtMs: Int64
-
-
-  // swift-format-ignore: AlwaysUseLowerCamelCase
-  static func fromList(_ pigeonVar_list: [Any?]) -> CameraSegmentStartedDto? {
-    let sessionId = pigeonVar_list[0] as! String
-    let segmentId = pigeonVar_list[1] as! String
-    let startedAtMs = pigeonVar_list[2] as! Int64
-
-    return CameraSegmentStartedDto(
-      sessionId: sessionId,
-      segmentId: segmentId,
-      startedAtMs: startedAtMs
-    )
-  }
-  func toList() -> [Any?] {
-    return [
-      sessionId,
-      segmentId,
-      startedAtMs,
-    ]
-  }
-  static func == (lhs: CameraSegmentStartedDto, rhs: CameraSegmentStartedDto) -> Bool {
-    if Swift.type(of: lhs) != Swift.type(of: rhs) {
-      return false
-    }
-    return PlatformApiPigeonInternal.deepEquals(lhs.sessionId, rhs.sessionId) && PlatformApiPigeonInternal.deepEquals(lhs.segmentId, rhs.segmentId) && PlatformApiPigeonInternal.deepEquals(lhs.startedAtMs, rhs.startedAtMs)
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine("CameraSegmentStartedDto")
-    PlatformApiPigeonInternal.deepHash(value: sessionId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: segmentId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: startedAtMs, hasher: &hasher)
-  }
-
-  public var description: String {
-    return "CameraSegmentStartedDto(sessionId: \(String(describing: sessionId)), segmentId: \(String(describing: segmentId)), startedAtMs: \(String(describing: startedAtMs)))"
-  }
-}
-
-/// Generated class from Pigeon that represents data sent in messages.
-struct CameraSegmentCompletedDto: Hashable, CustomStringConvertible {
-  var sessionId: String
-  var segmentId: String
-  var path: String
-  var startedAtMs: Int64
-  var endedAtMs: Int64
-
-
-  // swift-format-ignore: AlwaysUseLowerCamelCase
-  static func fromList(_ pigeonVar_list: [Any?]) -> CameraSegmentCompletedDto? {
-    let sessionId = pigeonVar_list[0] as! String
-    let segmentId = pigeonVar_list[1] as! String
-    let path = pigeonVar_list[2] as! String
-    let startedAtMs = pigeonVar_list[3] as! Int64
-    let endedAtMs = pigeonVar_list[4] as! Int64
-
-    return CameraSegmentCompletedDto(
-      sessionId: sessionId,
-      segmentId: segmentId,
-      path: path,
-      startedAtMs: startedAtMs,
-      endedAtMs: endedAtMs
-    )
-  }
-  func toList() -> [Any?] {
-    return [
-      sessionId,
-      segmentId,
-      path,
-      startedAtMs,
-      endedAtMs,
-    ]
-  }
-  static func == (lhs: CameraSegmentCompletedDto, rhs: CameraSegmentCompletedDto) -> Bool {
-    if Swift.type(of: lhs) != Swift.type(of: rhs) {
-      return false
-    }
-    return PlatformApiPigeonInternal.deepEquals(lhs.sessionId, rhs.sessionId) && PlatformApiPigeonInternal.deepEquals(lhs.segmentId, rhs.segmentId) && PlatformApiPigeonInternal.deepEquals(lhs.path, rhs.path) && PlatformApiPigeonInternal.deepEquals(lhs.startedAtMs, rhs.startedAtMs) && PlatformApiPigeonInternal.deepEquals(lhs.endedAtMs, rhs.endedAtMs)
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine("CameraSegmentCompletedDto")
-    PlatformApiPigeonInternal.deepHash(value: sessionId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: segmentId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: path, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: startedAtMs, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: endedAtMs, hasher: &hasher)
-  }
-
-  public var description: String {
-    return "CameraSegmentCompletedDto(sessionId: \(String(describing: sessionId)), segmentId: \(String(describing: segmentId)), path: \(String(describing: path)), startedAtMs: \(String(describing: startedAtMs)), endedAtMs: \(String(describing: endedAtMs)))"
-  }
-}
-
-/// Generated class from Pigeon that represents data sent in messages.
-struct CameraSegmentFailedDto: Hashable, CustomStringConvertible {
-  var sessionId: String
-  var segmentId: String
-  var reason: String
-
-
-  // swift-format-ignore: AlwaysUseLowerCamelCase
-  static func fromList(_ pigeonVar_list: [Any?]) -> CameraSegmentFailedDto? {
-    let sessionId = pigeonVar_list[0] as! String
-    let segmentId = pigeonVar_list[1] as! String
-    let reason = pigeonVar_list[2] as! String
-
-    return CameraSegmentFailedDto(
-      sessionId: sessionId,
-      segmentId: segmentId,
-      reason: reason
-    )
-  }
-  func toList() -> [Any?] {
-    return [
-      sessionId,
-      segmentId,
-      reason,
-    ]
-  }
-  static func == (lhs: CameraSegmentFailedDto, rhs: CameraSegmentFailedDto) -> Bool {
-    if Swift.type(of: lhs) != Swift.type(of: rhs) {
-      return false
-    }
-    return PlatformApiPigeonInternal.deepEquals(lhs.sessionId, rhs.sessionId) && PlatformApiPigeonInternal.deepEquals(lhs.segmentId, rhs.segmentId) && PlatformApiPigeonInternal.deepEquals(lhs.reason, rhs.reason)
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine("CameraSegmentFailedDto")
-    PlatformApiPigeonInternal.deepHash(value: sessionId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: segmentId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: reason, hasher: &hasher)
-  }
-
-  public var description: String {
-    return "CameraSegmentFailedDto(sessionId: \(String(describing: sessionId)), segmentId: \(String(describing: segmentId)), reason: \(String(describing: reason)))"
-  }
-}
-
-/// Generated class from Pigeon that represents data sent in messages.
-struct CameraSessionFailedDto: Hashable, CustomStringConvertible {
-  var sessionId: String
-  var reason: String
-
-
-  // swift-format-ignore: AlwaysUseLowerCamelCase
-  static func fromList(_ pigeonVar_list: [Any?]) -> CameraSessionFailedDto? {
-    let sessionId = pigeonVar_list[0] as! String
-    let reason = pigeonVar_list[1] as! String
-
-    return CameraSessionFailedDto(
-      sessionId: sessionId,
-      reason: reason
-    )
-  }
-  func toList() -> [Any?] {
-    return [
-      sessionId,
-      reason,
-    ]
-  }
-  static func == (lhs: CameraSessionFailedDto, rhs: CameraSessionFailedDto) -> Bool {
-    if Swift.type(of: lhs) != Swift.type(of: rhs) {
-      return false
-    }
-    return PlatformApiPigeonInternal.deepEquals(lhs.sessionId, rhs.sessionId) && PlatformApiPigeonInternal.deepEquals(lhs.reason, rhs.reason)
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine("CameraSessionFailedDto")
-    PlatformApiPigeonInternal.deepHash(value: sessionId, hasher: &hasher)
-    PlatformApiPigeonInternal.deepHash(value: reason, hasher: &hasher)
-  }
-
-  public var description: String {
-    return "CameraSessionFailedDto(sessionId: \(String(describing: sessionId)), reason: \(String(describing: reason)))"
-  }
-}
-
-private class PlatformApiPigeonCodecReader: FlutterStandardReader {
+private class PlatformHostApiPigeonCodecReader: FlutterStandardReader {
   override func readValue(ofType type: UInt8) -> Any? {
     switch type {
     case 129:
-      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
-      if let enumResultAsInt = enumResultAsInt {
-        return CameraWatermarkDisposition(rawValue: enumResultAsInt)
-      }
-      return nil
-    case 130:
-      return ThumbnailRequest.fromList(self.readValue() as! [Any?])
-    case 131:
-      return WatermarkRequest.fromList(self.readValue() as! [Any?])
-    case 132:
-      return ExportRequest.fromList(self.readValue() as! [Any?])
-    case 133:
-      return VideoDecodeSupportDto.fromList(self.readValue() as! [Any?])
-    case 134:
-      return OrderInfoDto.fromList(self.readValue() as! [Any?])
-    case 135:
-      return OrderReceiverStatusDto.fromList(self.readValue() as! [Any?])
-    case 136:
       return CameraInitializeRequest.fromList(self.readValue() as! [Any?])
-    case 137:
+    case 130:
       return CameraInitializationDto.fromList(self.readValue() as! [Any?])
-    case 138:
+    case 131:
       return CameraLensDto.fromList(self.readValue() as! [Any?])
-    case 139:
+    case 132:
       return CameraRecordingStartDto.fromList(self.readValue() as! [Any?])
-    case 140:
+    case 133:
       return CameraRecordingSplitDto.fromList(self.readValue() as! [Any?])
-    case 141:
+    case 134:
       return CameraRecordingStopDto.fromList(self.readValue() as! [Any?])
-    case 142:
-      return BarcodeCandidateDto.fromList(self.readValue() as! [Any?])
-    case 143:
-      return BackupJobDto.fromList(self.readValue() as! [Any?])
-    case 144:
-      return BackupSummaryDto.fromList(self.readValue() as! [Any?])
-    case 145:
-      return BackupJobsByPathsDto.fromList(self.readValue() as! [Any?])
-    case 146:
-      return BackupCleanupEventDto.fromList(self.readValue() as! [Any?])
-    case 147:
-      return BackupCleanupPageDto.fromList(self.readValue() as! [Any?])
-    case 148:
-      return CameraSessionStartedDto.fromList(self.readValue() as! [Any?])
-    case 149:
-      return CameraSegmentStartedDto.fromList(self.readValue() as! [Any?])
-    case 150:
-      return CameraSegmentCompletedDto.fromList(self.readValue() as! [Any?])
-    case 151:
-      return CameraSegmentFailedDto.fromList(self.readValue() as! [Any?])
-    case 152:
-      return CameraSessionFailedDto.fromList(self.readValue() as! [Any?])
+    case 135:
+      return ExportRequest.fromList(self.readValue() as! [Any?])
+    case 136:
+      return OrderInfoDto.fromList(self.readValue() as! [Any?])
+    case 137:
+      return OrderReceiverStatusDto.fromList(self.readValue() as! [Any?])
+    case 138:
+      return ThumbnailRequest.fromList(self.readValue() as! [Any?])
+    case 139:
+      return VideoDecodeSupportDto.fromList(self.readValue() as! [Any?])
+    case 140:
+      return WatermarkRequest.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
     }
   }
 }
 
-private class PlatformApiPigeonCodecWriter: FlutterStandardWriter {
+private class PlatformHostApiPigeonCodecWriter: FlutterStandardWriter {
   override func writeValue(_ value: Any) {
-    if let value = value as? CameraWatermarkDisposition {
+    if let value = value as? CameraInitializeRequest {
       super.writeByte(129)
-      super.writeValue(value.rawValue)
-    } else if let value = value as? ThumbnailRequest {
-      super.writeByte(130)
-      super.writeValue(value.toList())
-    } else if let value = value as? WatermarkRequest {
-      super.writeByte(131)
-      super.writeValue(value.toList())
-    } else if let value = value as? ExportRequest {
-      super.writeByte(132)
-      super.writeValue(value.toList())
-    } else if let value = value as? VideoDecodeSupportDto {
-      super.writeByte(133)
-      super.writeValue(value.toList())
-    } else if let value = value as? OrderInfoDto {
-      super.writeByte(134)
-      super.writeValue(value.toList())
-    } else if let value = value as? OrderReceiverStatusDto {
-      super.writeByte(135)
-      super.writeValue(value.toList())
-    } else if let value = value as? CameraInitializeRequest {
-      super.writeByte(136)
       super.writeValue(value.toList())
     } else if let value = value as? CameraInitializationDto {
-      super.writeByte(137)
+      super.writeByte(130)
       super.writeValue(value.toList())
     } else if let value = value as? CameraLensDto {
-      super.writeByte(138)
+      super.writeByte(131)
       super.writeValue(value.toList())
     } else if let value = value as? CameraRecordingStartDto {
-      super.writeByte(139)
+      super.writeByte(132)
       super.writeValue(value.toList())
     } else if let value = value as? CameraRecordingSplitDto {
-      super.writeByte(140)
+      super.writeByte(133)
       super.writeValue(value.toList())
     } else if let value = value as? CameraRecordingStopDto {
-      super.writeByte(141)
+      super.writeByte(134)
       super.writeValue(value.toList())
-    } else if let value = value as? BarcodeCandidateDto {
-      super.writeByte(142)
+    } else if let value = value as? ExportRequest {
+      super.writeByte(135)
       super.writeValue(value.toList())
-    } else if let value = value as? BackupJobDto {
-      super.writeByte(143)
+    } else if let value = value as? OrderInfoDto {
+      super.writeByte(136)
       super.writeValue(value.toList())
-    } else if let value = value as? BackupSummaryDto {
-      super.writeByte(144)
+    } else if let value = value as? OrderReceiverStatusDto {
+      super.writeByte(137)
       super.writeValue(value.toList())
-    } else if let value = value as? BackupJobsByPathsDto {
-      super.writeByte(145)
+    } else if let value = value as? ThumbnailRequest {
+      super.writeByte(138)
       super.writeValue(value.toList())
-    } else if let value = value as? BackupCleanupEventDto {
-      super.writeByte(146)
+    } else if let value = value as? VideoDecodeSupportDto {
+      super.writeByte(139)
       super.writeValue(value.toList())
-    } else if let value = value as? BackupCleanupPageDto {
-      super.writeByte(147)
-      super.writeValue(value.toList())
-    } else if let value = value as? CameraSessionStartedDto {
-      super.writeByte(148)
-      super.writeValue(value.toList())
-    } else if let value = value as? CameraSegmentStartedDto {
-      super.writeByte(149)
-      super.writeValue(value.toList())
-    } else if let value = value as? CameraSegmentCompletedDto {
-      super.writeByte(150)
-      super.writeValue(value.toList())
-    } else if let value = value as? CameraSegmentFailedDto {
-      super.writeByte(151)
-      super.writeValue(value.toList())
-    } else if let value = value as? CameraSessionFailedDto {
-      super.writeByte(152)
+    } else if let value = value as? WatermarkRequest {
+      super.writeByte(140)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -1750,37 +963,49 @@ private class PlatformApiPigeonCodecWriter: FlutterStandardWriter {
   }
 }
 
-private class PlatformApiPigeonCodecReaderWriter: FlutterStandardReaderWriter {
+private class PlatformHostApiPigeonCodecReaderWriter: FlutterStandardReaderWriter {
   override func reader(with data: Data) -> FlutterStandardReader {
-    return PlatformApiPigeonCodecReader(data: data)
+    return PlatformHostApiPigeonCodecReader(data: data)
   }
 
   override func writer(with data: NSMutableData) -> FlutterStandardWriter {
-    return PlatformApiPigeonCodecWriter(data: data)
+    return PlatformHostApiPigeonCodecWriter(data: data)
   }
 }
 
-class PlatformApiPigeonCodec: FlutterStandardMessageCodec, @unchecked Sendable {
-  static let shared = PlatformApiPigeonCodec(readerWriter: PlatformApiPigeonCodecReaderWriter())
+class PlatformHostApiPigeonCodec: FlutterStandardMessageCodec, @unchecked Sendable {
+  static let shared = PlatformHostApiPigeonCodec(readerWriter: PlatformHostApiPigeonCodecReaderWriter())
 }
-
 
 /// Generated protocol from Pigeon that represents a handler of messages from Flutter.
-protocol MediaProcessingHostApi {
-  func generateThumbnail(request: ThumbnailRequest, completion: @escaping (Result<String?, Error>) -> Void)
-  func applyWatermark(request: WatermarkRequest, completion: @escaping (Result<String, Error>) -> Void)
-  func cancelWatermark(completion: @escaping (Result<Void, Error>) -> Void)
-  func exportRange(request: ExportRequest, completion: @escaping (Result<String, Error>) -> Void)
-  func exportProgress(completion: @escaping (Result<Int64, Error>) -> Void)
+protocol PlatformHostApi {
+  func generateThumbnail(request: ThumbnailRequest, completion: @escaping (Result<String, Error>) -> Void)
+  func applyWatermark(request: WatermarkRequest, completion: @escaping (Result<Void, Error>) -> Void)
+  func exportVideo(request: ExportRequest, completion: @escaping (Result<Void, Error>) -> Void)
+  func getVideoDecodeSupport() throws -> VideoDecodeSupportDto
+  func initializeCamera(request: CameraInitializeRequest, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void)
+  func disposeCamera() throws
+  func getAvailableLenses() throws -> [CameraLensDto]
+  func setZoomRatio(ratio: Double) throws
+  func switchCamera(cameraId: String, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void)
+  func startRecording(completion: @escaping (Result<CameraRecordingStartDto, Error>) -> Void)
+  func splitRecording(completion: @escaping (Result<CameraRecordingSplitDto, Error>) -> Void)
+  func stopRecording(completion: @escaping (Result<CameraRecordingStopDto, Error>) -> Void)
+  func setFlashMode(enabled: Bool) throws
+  func updateWatermarkTrackingNumber(trackingNumber: String) throws
+  func getOrderReceiverStatus() throws -> OrderReceiverStatusDto
+  func startOrderReceiver(port: Int64) throws -> OrderReceiverStatusDto
+  func stopOrderReceiver() throws -> OrderReceiverStatusDto
 }
 
-/// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
-class MediaProcessingHostApiSetup {
-  static var codec: FlutterStandardMessageCodec { PlatformApiPigeonCodec.shared }
-  /// Sets up an instance of `MediaProcessingHostApi` to handle messages through the `binaryMessenger`.
-  static func setUp(binaryMessenger: FlutterBinaryMessenger, api: MediaProcessingHostApi?, messageChannelSuffix: String = "") {
-    let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
-    let generateThumbnailChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.MediaProcessingHostApi.generateThumbnail\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+/// Generated setup class from Pigeon to handle messages coming from Flutter.
+class PlatformHostApiSetup {
+  static var codec: FlutterStandardMessageCodec { PlatformHostApiPigeonCodec.shared }
+
+  static func setUp(binaryMessenger: FlutterBinaryMessenger, api: PlatformHostApi?, messageChannelSuffix: String = "") {
+    let channelSuffix = messageChannelSuffix.isEmpty ? "" : ".\(messageChannelSuffix)"
+    
+    let generateThumbnailChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.generateThumbnail\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
       generateThumbnailChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
@@ -1797,15 +1022,16 @@ class MediaProcessingHostApiSetup {
     } else {
       generateThumbnailChannel.setMessageHandler(nil)
     }
-    let applyWatermarkChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.MediaProcessingHostApi.applyWatermark\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+
+    let applyWatermarkChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.applyWatermark\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
       applyWatermarkChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
         let requestArg = args[0] as! WatermarkRequest
         api.applyWatermark(request: requestArg) { result in
           switch result {
-          case .success(let res):
-            reply(wrapResult(res))
+          case .success:
+            reply(wrapResult(nil))
           case .failure(let error):
             reply(wrapError(error))
           }
@@ -1814,10 +1040,13 @@ class MediaProcessingHostApiSetup {
     } else {
       applyWatermarkChannel.setMessageHandler(nil)
     }
-    let cancelWatermarkChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.MediaProcessingHostApi.cancelWatermark\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+
+    let exportVideoChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.exportVideo\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
-      cancelWatermarkChannel.setMessageHandler { _, reply in
-        api.cancelWatermark { result in
+      exportVideoChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let requestArg = args[0] as! ExportRequest
+        api.exportVideo(request: requestArg) { result in
           switch result {
           case .success:
             reply(wrapResult(nil))
@@ -1827,341 +1056,29 @@ class MediaProcessingHostApiSetup {
         }
       }
     } else {
-      cancelWatermarkChannel.setMessageHandler(nil)
+      exportVideoChannel.setMessageHandler(nil)
     }
-    let exportRangeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.MediaProcessingHostApi.exportRange\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      exportRangeChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let requestArg = args[0] as! ExportRequest
-        api.exportRange(request: requestArg) { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      exportRangeChannel.setMessageHandler(nil)
-    }
-    let exportProgressChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.MediaProcessingHostApi.exportProgress\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      exportProgressChannel.setMessageHandler { _, reply in
-        api.exportProgress { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      exportProgressChannel.setMessageHandler(nil)
-    }
-  }
-}
-/// Generated protocol from Pigeon that represents a handler of messages from Flutter.
-protocol SystemMediaPresenterHostApi {
-  func getVideoTrackMime(path: String, completion: @escaping (Result<String?, Error>) -> Void)
-  func getVideoDecodeSupport(completion: @escaping (Result<VideoDecodeSupportDto?, Error>) -> Void)
-  func openWithSystemPlayer(path: String, completion: @escaping (Result<Void, Error>) -> Void)
-}
 
-/// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
-class SystemMediaPresenterHostApiSetup {
-  static var codec: FlutterStandardMessageCodec { PlatformApiPigeonCodec.shared }
-  /// Sets up an instance of `SystemMediaPresenterHostApi` to handle messages through the `binaryMessenger`.
-  static func setUp(binaryMessenger: FlutterBinaryMessenger, api: SystemMediaPresenterHostApi?, messageChannelSuffix: String = "") {
-    let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
-    let getVideoTrackMimeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.SystemMediaPresenterHostApi.getVideoTrackMime\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      getVideoTrackMimeChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let pathArg = args[0] as! String
-        api.getVideoTrackMime(path: pathArg) { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      getVideoTrackMimeChannel.setMessageHandler(nil)
-    }
-    let getVideoDecodeSupportChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.SystemMediaPresenterHostApi.getVideoDecodeSupport\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    let getVideoDecodeSupportChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.getVideoDecodeSupport\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
       getVideoDecodeSupportChannel.setMessageHandler { _, reply in
-        api.getVideoDecodeSupport { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
+        do {
+          let result = try api.getVideoDecodeSupport()
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
         }
       }
     } else {
       getVideoDecodeSupportChannel.setMessageHandler(nil)
     }
-    let openWithSystemPlayerChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.SystemMediaPresenterHostApi.openWithSystemPlayer\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      openWithSystemPlayerChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let pathArg = args[0] as! String
-        api.openWithSystemPlayer(path: pathArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      openWithSystemPlayerChannel.setMessageHandler(nil)
-    }
-  }
-}
-/// Generated protocol from Pigeon that represents a handler of messages from Flutter.
-protocol AlertAudioSessionHostApi {
-  func beginSession(completion: @escaping (Result<Void, Error>) -> Void)
-  func endSession(completion: @escaping (Result<Void, Error>) -> Void)
-  func disable(completion: @escaping (Result<Void, Error>) -> Void)
-  func boost(completion: @escaping (Result<Void, Error>) -> Void)
-}
 
-/// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
-class AlertAudioSessionHostApiSetup {
-  static var codec: FlutterStandardMessageCodec { PlatformApiPigeonCodec.shared }
-  /// Sets up an instance of `AlertAudioSessionHostApi` to handle messages through the `binaryMessenger`.
-  static func setUp(binaryMessenger: FlutterBinaryMessenger, api: AlertAudioSessionHostApi?, messageChannelSuffix: String = "") {
-    let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
-    let beginSessionChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.AlertAudioSessionHostApi.beginSession\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    let initializeCameraChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.initializeCamera\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
-      beginSessionChannel.setMessageHandler { _, reply in
-        api.beginSession { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      beginSessionChannel.setMessageHandler(nil)
-    }
-    let endSessionChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.AlertAudioSessionHostApi.endSession\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      endSessionChannel.setMessageHandler { _, reply in
-        api.endSession { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      endSessionChannel.setMessageHandler(nil)
-    }
-    let disableChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.AlertAudioSessionHostApi.disable\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      disableChannel.setMessageHandler { _, reply in
-        api.disable { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      disableChannel.setMessageHandler(nil)
-    }
-    let boostChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.AlertAudioSessionHostApi.boost\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      boostChannel.setMessageHandler { _, reply in
-        api.boost { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      boostChannel.setMessageHandler(nil)
-    }
-  }
-}
-/// Generated protocol from Pigeon that represents a handler of messages from Flutter.
-protocol OrderReceiverHostApi {
-  func startReceiver(backgroundDelivery: Bool) throws -> OrderReceiverStatusDto
-  func getReceiverStatus() throws -> OrderReceiverStatusDto
-  func lookup(trackingNumber: String) throws -> OrderInfoDto?
-  func updateBackgroundDelivery(enabled: Bool) throws
-  func stopReceiver() throws
-}
-
-/// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
-class OrderReceiverHostApiSetup {
-  static var codec: FlutterStandardMessageCodec { PlatformApiPigeonCodec.shared }
-  /// Sets up an instance of `OrderReceiverHostApi` to handle messages through the `binaryMessenger`.
-  static func setUp(binaryMessenger: FlutterBinaryMessenger, api: OrderReceiverHostApi?, messageChannelSuffix: String = "") {
-    let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
-    let startReceiverChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.OrderReceiverHostApi.startReceiver\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      startReceiverChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let backgroundDeliveryArg = args[0] as! Bool
-        do {
-          let result = try api.startReceiver(backgroundDelivery: backgroundDeliveryArg)
-          reply(wrapResult(result))
-        } catch {
-          reply(wrapError(error))
-        }
-      }
-    } else {
-      startReceiverChannel.setMessageHandler(nil)
-    }
-    let getReceiverStatusChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.OrderReceiverHostApi.getReceiverStatus\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      getReceiverStatusChannel.setMessageHandler { _, reply in
-        do {
-          let result = try api.getReceiverStatus()
-          reply(wrapResult(result))
-        } catch {
-          reply(wrapError(error))
-        }
-      }
-    } else {
-      getReceiverStatusChannel.setMessageHandler(nil)
-    }
-    let lookupChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.OrderReceiverHostApi.lookup\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      lookupChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let trackingNumberArg = args[0] as! String
-        do {
-          let result = try api.lookup(trackingNumber: trackingNumberArg)
-          reply(wrapResult(result))
-        } catch {
-          reply(wrapError(error))
-        }
-      }
-    } else {
-      lookupChannel.setMessageHandler(nil)
-    }
-    let updateBackgroundDeliveryChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.OrderReceiverHostApi.updateBackgroundDelivery\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      updateBackgroundDeliveryChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let enabledArg = args[0] as! Bool
-        do {
-          try api.updateBackgroundDelivery(enabled: enabledArg)
-          reply(wrapResult(nil))
-        } catch {
-          reply(wrapError(error))
-        }
-      }
-    } else {
-      updateBackgroundDeliveryChannel.setMessageHandler(nil)
-    }
-    let stopReceiverChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.OrderReceiverHostApi.stopReceiver\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      stopReceiverChannel.setMessageHandler { _, reply in
-        do {
-          try api.stopReceiver()
-          reply(wrapResult(nil))
-        } catch {
-          reply(wrapError(error))
-        }
-      }
-    } else {
-      stopReceiverChannel.setMessageHandler(nil)
-    }
-  }
-}
-
-/// Generated protocol from Pigeon that represents Flutter messages that can be called from Swift.
-protocol OrderReceiverEventApiProtocol {
-  func orderInfoReceived(items itemsArg: [OrderInfoDto], completion: @escaping (Result<Void, PigeonError>) -> Void)
-}
-class OrderReceiverEventApi: OrderReceiverEventApiProtocol {
-  private let binaryMessenger: FlutterBinaryMessenger
-  private let messageChannelSuffix: String
-  init(binaryMessenger: FlutterBinaryMessenger, messageChannelSuffix: String = "") {
-    self.binaryMessenger = binaryMessenger
-    self.messageChannelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
-  }
-  var codec: PlatformApiPigeonCodec {
-    return PlatformApiPigeonCodec.shared
-  }
-  func orderInfoReceived(items itemsArg: [OrderInfoDto], completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.OrderReceiverEventApi.orderInfoReceived\(messageChannelSuffix)"
-    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([itemsArg] as [Any?]) { response in
-      guard let listResponse = response as? [Any?] else {
-        completion(.failure(createConnectionError(withChannelName: channelName)))
-        return
-      }
-      if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
-        completion(.failure(PigeonError(code: code, message: message, details: details)))
-      } else {
-        completion(.success(()))
-      }
-    }
-  }
-}
-/// Generated protocol from Pigeon that represents a handler of messages from Flutter.
-protocol CameraHostApi {
-  func initialize(request: CameraInitializeRequest, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void)
-  func ensurePermissions(recordAudio: Bool, completion: @escaping (Result<Bool, Error>) -> Void)
-  func startWork(path: String, recordAudio: Bool, trackingNumber: String, completion: @escaping (Result<CameraRecordingStartDto, Error>) -> Void)
-  func split(nextPath: String, trackingNumber: String, completion: @escaping (Result<CameraRecordingSplitDto, Error>) -> Void)
-  func stopWork(completion: @escaping (Result<CameraRecordingStopDto, Error>) -> Void)
-  func getDiagnostics(completion: @escaping (Result<[String?: Any?]?, Error>) -> Void)
-  func setPairingScanEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void)
-  func setWorkScanEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void)
-  func setPreviewActive(active: Bool, completion: @escaping (Result<Void, Error>) -> Void)
-  func setTorchEnabled(enabled: Bool, completion: @escaping (Result<Bool, Error>) -> Void)
-  func switchCamera(completion: @escaping (Result<CameraInitializationDto, Error>) -> Void)
-  func listCameras(completion: @escaping (Result<[CameraLensDto], Error>) -> Void)
-  func switchToCamera(cameraId: String, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void)
-  func probeSequence(sequence: String, budgetMs: Int64, completion: @escaping (Result<[String?: Any?]?, Error>) -> Void)
-  func setCapabilityMode(mode: String) throws
-  func dispose(completion: @escaping (Result<Void, Error>) -> Void)
-}
-
-/// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
-class CameraHostApiSetup {
-  static var codec: FlutterStandardMessageCodec { PlatformApiPigeonCodec.shared }
-  /// Sets up an instance of `CameraHostApi` to handle messages through the `binaryMessenger`.
-  static func setUp(binaryMessenger: FlutterBinaryMessenger, api: CameraHostApi?, messageChannelSuffix: String = "") {
-    let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
-    #if os(iOS)
-      let taskQueue = binaryMessenger.makeBackgroundTaskQueue?()
-    #else
-      let taskQueue: FlutterTaskQueue? = nil
-    #endif
-    let initializeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.initialize\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      initializeChannel.setMessageHandler { message, reply in
+      initializeCameraChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
         let requestArg = args[0] as! CameraInitializeRequest
-        api.initialize(request: requestArg) { result in
+        api.initializeCamera(request: requestArg) { result in
           switch result {
           case .success(let res):
             reply(wrapResult(res))
@@ -2171,166 +1088,59 @@ class CameraHostApiSetup {
         }
       }
     } else {
-      initializeChannel.setMessageHandler(nil)
+      initializeCameraChannel.setMessageHandler(nil)
     }
-    let ensurePermissionsChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.ensurePermissions\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+
+    let disposeCameraChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.disposeCamera\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
-      ensurePermissionsChannel.setMessageHandler { message, reply in
+      disposeCameraChannel.setMessageHandler { _, reply in
+        do {
+          try api.disposeCamera()
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      disposeCameraChannel.setMessageHandler(nil)
+    }
+
+    let getAvailableLensesChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.getAvailableLenses\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      getAvailableLensesChannel.setMessageHandler { _, reply in
+        do {
+          let result = try api.getAvailableLenses()
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      getAvailableLensesChannel.setMessageHandler(nil)
+    }
+
+    let setZoomRatioChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.setZoomRatio\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setZoomRatioChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
-        let recordAudioArg = args[0] as! Bool
-        api.ensurePermissions(recordAudio: recordAudioArg) { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
+        let ratioArg = args[0] as! Double
+        do {
+          try api.setZoomRatio(ratio: ratioArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
         }
       }
     } else {
-      ensurePermissionsChannel.setMessageHandler(nil)
+      setZoomRatioChannel.setMessageHandler(nil)
     }
-    let startWorkChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.startWork\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+
+    let switchCameraChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.switchCamera\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
-      startWorkChannel.setMessageHandler { message, reply in
+      switchCameraChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
-        let pathArg = args[0] as! String
-        let recordAudioArg = args[1] as! Bool
-        let trackingNumberArg = args[2] as! String
-        api.startWork(path: pathArg, recordAudio: recordAudioArg, trackingNumber: trackingNumberArg) { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      startWorkChannel.setMessageHandler(nil)
-    }
-    let splitChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.split\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      splitChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let nextPathArg = args[0] as! String
-        let trackingNumberArg = args[1] as! String
-        api.split(nextPath: nextPathArg, trackingNumber: trackingNumberArg) { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      splitChannel.setMessageHandler(nil)
-    }
-    let stopWorkChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.stopWork\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      stopWorkChannel.setMessageHandler { _, reply in
-        api.stopWork { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      stopWorkChannel.setMessageHandler(nil)
-    }
-    let getDiagnosticsChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.getDiagnostics\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.getDiagnostics\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      getDiagnosticsChannel.setMessageHandler { _, reply in
-        api.getDiagnostics { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      getDiagnosticsChannel.setMessageHandler(nil)
-    }
-    let setPairingScanEnabledChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.setPairingScanEnabled\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      setPairingScanEnabledChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let enabledArg = args[0] as! Bool
-        api.setPairingScanEnabled(enabled: enabledArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      setPairingScanEnabledChannel.setMessageHandler(nil)
-    }
-    let setWorkScanEnabledChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.setWorkScanEnabled\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      setWorkScanEnabledChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let enabledArg = args[0] as! Bool
-        api.setWorkScanEnabled(enabled: enabledArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      setWorkScanEnabledChannel.setMessageHandler(nil)
-    }
-    let setPreviewActiveChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.setPreviewActive\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      setPreviewActiveChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let activeArg = args[0] as! Bool
-        api.setPreviewActive(active: activeArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      setPreviewActiveChannel.setMessageHandler(nil)
-    }
-    let setTorchEnabledChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.setTorchEnabled\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      setTorchEnabledChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let enabledArg = args[0] as! Bool
-        api.setTorchEnabled(enabled: enabledArg) { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      setTorchEnabledChannel.setMessageHandler(nil)
-    }
-    let switchCameraChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.switchCamera\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-    if let api = api {
-      switchCameraChannel.setMessageHandler { _, reply in
-        api.switchCamera { result in
+        let cameraIdArg = args[0] as! String
+        api.switchCamera(cameraId: cameraIdArg) { result in
           switch result {
           case .success(let res):
             reply(wrapResult(res))
@@ -2342,10 +1152,11 @@ class CameraHostApiSetup {
     } else {
       switchCameraChannel.setMessageHandler(nil)
     }
-    let listCamerasChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.listCameras\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+
+    let startRecordingChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.startRecording\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
-      listCamerasChannel.setMessageHandler { _, reply in
-        api.listCameras { result in
+      startRecordingChannel.setMessageHandler { _, reply in
+        api.startRecording { result in
           switch result {
           case .success(let res):
             reply(wrapResult(res))
@@ -2355,14 +1166,13 @@ class CameraHostApiSetup {
         }
       }
     } else {
-      listCamerasChannel.setMessageHandler(nil)
+      startRecordingChannel.setMessageHandler(nil)
     }
-    let switchToCameraChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.switchToCamera\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+
+    let splitRecordingChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.splitRecording\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
-      switchToCameraChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let cameraIdArg = args[0] as! String
-        api.switchToCamera(cameraId: cameraIdArg) { result in
+      splitRecordingChannel.setMessageHandler { _, reply in
+        api.splitRecording { result in
           switch result {
           case .success(let res):
             reply(wrapResult(res))
@@ -2372,15 +1182,13 @@ class CameraHostApiSetup {
         }
       }
     } else {
-      switchToCameraChannel.setMessageHandler(nil)
+      splitRecordingChannel.setMessageHandler(nil)
     }
-    let probeSequenceChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.probeSequence\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+
+    let stopRecordingChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.stopRecording\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
-      probeSequenceChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let sequenceArg = args[0] as! String
-        let budgetMsArg = args[1] as! Int64
-        api.probeSequence(sequence: sequenceArg, budgetMs: budgetMsArg) { result in
+      stopRecordingChannel.setMessageHandler { _, reply in
+        api.stopRecording { result in
           switch result {
           case .success(let res):
             reply(wrapResult(res))
@@ -2390,656 +1198,113 @@ class CameraHostApiSetup {
         }
       }
     } else {
-      probeSequenceChannel.setMessageHandler(nil)
+      stopRecordingChannel.setMessageHandler(nil)
     }
-    let setCapabilityModeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.setCapabilityMode\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+
+    let setFlashModeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.setFlashMode\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
-      setCapabilityModeChannel.setMessageHandler { message, reply in
+      setFlashModeChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
-        let modeArg = args[0] as! String
+        let enabledArg = args[0] as! Bool
         do {
-          try api.setCapabilityMode(mode: modeArg)
+          try api.setFlashMode(enabled: enabledArg)
           reply(wrapResult(nil))
         } catch {
           reply(wrapError(error))
         }
       }
     } else {
-      setCapabilityModeChannel.setMessageHandler(nil)
+      setFlashModeChannel.setMessageHandler(nil)
     }
-    let disposeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.CameraHostApi.dispose\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+
+    let updateWatermarkTrackingNumberChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.updateWatermarkTrackingNumber\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
-      disposeChannel.setMessageHandler { _, reply in
-        api.dispose { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
+      updateWatermarkTrackingNumberChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let trackingNumberArg = args[0] as! String
+        do {
+          try api.updateWatermarkTrackingNumber(trackingNumber: trackingNumberArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
         }
       }
     } else {
-      disposeChannel.setMessageHandler(nil)
+      updateWatermarkTrackingNumberChannel.setMessageHandler(nil)
+    }
+
+    let getOrderReceiverStatusChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.getOrderReceiverStatus\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      getOrderReceiverStatusChannel.setMessageHandler { _, reply in
+        do {
+          let result = try api.getOrderReceiverStatus()
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      getOrderReceiverStatusChannel.setMessageHandler(nil)
+    }
+
+    let startOrderReceiverChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.startOrderReceiver\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      startOrderReceiverChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let portArg = args[0] as! Int64
+        do {
+          let result = try api.startOrderReceiver(port: portArg)
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      startOrderReceiverChannel.setMessageHandler(nil)
+    }
+
+    let stopOrderReceiverChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.PlatformHostApi.stopOrderReceiver\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      stopOrderReceiverChannel.setMessageHandler { _, reply in
+        do {
+          let result = try api.stopOrderReceiver()
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      stopOrderReceiverChannel.setMessageHandler(nil)
     }
   }
 }
 
-/// Generated protocol from Pigeon that represents Flutter messages that can be called from Swift.
-protocol CameraEventApiProtocol {
-  func sessionStarted(event eventArg: CameraSessionStartedDto, completion: @escaping (Result<Void, PigeonError>) -> Void)
-  func segmentStarted(event eventArg: CameraSegmentStartedDto, completion: @escaping (Result<Void, PigeonError>) -> Void)
-  func segmentCompleted(event eventArg: CameraSegmentCompletedDto, completion: @escaping (Result<Void, PigeonError>) -> Void)
-  func segmentFailed(event eventArg: CameraSegmentFailedDto, completion: @escaping (Result<Void, PigeonError>) -> Void)
-  func sessionFailed(event eventArg: CameraSessionFailedDto, completion: @escaping (Result<Void, PigeonError>) -> Void)
-  func barcodeBatch(candidates candidatesArg: [BarcodeCandidateDto], completion: @escaping (Result<Void, PigeonError>) -> Void)
-  func nativeError(message messageArg: String, completion: @escaping (Result<Void, PigeonError>) -> Void)
-  func storageCritical(completion: @escaping (Result<Void, PigeonError>) -> Void)
-  func probeFinished(results resultsArg: [String?: Any?], completion: @escaping (Result<Void, PigeonError>) -> Void)
-  func recordingFallback(info infoArg: [String?: Any?], completion: @escaping (Result<Void, PigeonError>) -> Void)
-}
-class CameraEventApi: CameraEventApiProtocol {
+/// Generated class from Pigeon that represents Flutter events sent to Swift.
+class PlatformFlutterApi {
   private let binaryMessenger: FlutterBinaryMessenger
   private let messageChannelSuffix: String
+
   init(binaryMessenger: FlutterBinaryMessenger, messageChannelSuffix: String = "") {
     self.binaryMessenger = binaryMessenger
-    self.messageChannelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
+    self.messageChannelSuffix = messageChannelSuffix.isEmpty ? "" : ".\(messageChannelSuffix)"
   }
-  var codec: PlatformApiPigeonCodec {
-    return PlatformApiPigeonCodec.shared
-  }
-  func sessionStarted(event eventArg: CameraSessionStartedDto, completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.CameraEventApi.sessionStarted\(messageChannelSuffix)"
-    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([eventArg] as [Any?]) { response in
-      guard let listResponse = response as? [Any?] else {
-        completion(.failure(createConnectionError(withChannelName: channelName)))
-        return
-      }
-      if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
-        completion(.failure(PigeonError(code: code, message: message, details: details)))
-      } else {
-        completion(.success(()))
-      }
-    }
-  }
-  func segmentStarted(event eventArg: CameraSegmentStartedDto, completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.CameraEventApi.segmentStarted\(messageChannelSuffix)"
-    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([eventArg] as [Any?]) { response in
-      guard let listResponse = response as? [Any?] else {
-        completion(.failure(createConnectionError(withChannelName: channelName)))
-        return
-      }
-      if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
-        completion(.failure(PigeonError(code: code, message: message, details: details)))
-      } else {
-        completion(.success(()))
-      }
-    }
-  }
-  func segmentCompleted(event eventArg: CameraSegmentCompletedDto, completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.CameraEventApi.segmentCompleted\(messageChannelSuffix)"
-    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([eventArg] as [Any?]) { response in
-      guard let listResponse = response as? [Any?] else {
-        completion(.failure(createConnectionError(withChannelName: channelName)))
-        return
-      }
-      if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
-        completion(.failure(PigeonError(code: code, message: message, details: details)))
-      } else {
-        completion(.success(()))
-      }
-    }
-  }
-  func segmentFailed(event eventArg: CameraSegmentFailedDto, completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.CameraEventApi.segmentFailed\(messageChannelSuffix)"
-    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([eventArg] as [Any?]) { response in
-      guard let listResponse = response as? [Any?] else {
-        completion(.failure(createConnectionError(withChannelName: channelName)))
-        return
-      }
-      if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
-        completion(.failure(PigeonError(code: code, message: message, details: details)))
-      } else {
-        completion(.success(()))
-      }
-    }
-  }
-  func sessionFailed(event eventArg: CameraSessionFailedDto, completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.CameraEventApi.sessionFailed\(messageChannelSuffix)"
-    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([eventArg] as [Any?]) { response in
-      guard let listResponse = response as? [Any?] else {
-        completion(.failure(createConnectionError(withChannelName: channelName)))
-        return
-      }
-      if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
-        completion(.failure(PigeonError(code: code, message: message, details: details)))
-      } else {
-        completion(.success(()))
-      }
-    }
-  }
-  func barcodeBatch(candidates candidatesArg: [BarcodeCandidateDto], completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.CameraEventApi.barcodeBatch\(messageChannelSuffix)"
-    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([candidatesArg] as [Any?]) { response in
-      guard let listResponse = response as? [Any?] else {
-        completion(.failure(createConnectionError(withChannelName: channelName)))
-        return
-      }
-      if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
-        completion(.failure(PigeonError(code: code, message: message, details: details)))
-      } else {
-        completion(.success(()))
-      }
-    }
-  }
-  func nativeError(message messageArg: String, completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.CameraEventApi.nativeError\(messageChannelSuffix)"
-    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([messageArg] as [Any?]) { response in
-      guard let listResponse = response as? [Any?] else {
-        completion(.failure(createConnectionError(withChannelName: channelName)))
-        return
-      }
-      if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
-        completion(.failure(PigeonError(code: code, message: message, details: details)))
-      } else {
-        completion(.success(()))
-      }
-    }
-  }
-  func storageCritical(completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.CameraEventApi.storageCritical\(messageChannelSuffix)"
-    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage(nil) { response in
-      guard let listResponse = response as? [Any?] else {
-        completion(.failure(createConnectionError(withChannelName: channelName)))
-        return
-      }
-      if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
-        completion(.failure(PigeonError(code: code, message: message, details: details)))
-      } else {
-        completion(.success(()))
-      }
-    }
-  }
-  func probeFinished(results resultsArg: [String?: Any?], completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.CameraEventApi.probeFinished\(messageChannelSuffix)"
-    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([resultsArg] as [Any?]) { response in
-      guard let listResponse = response as? [Any?] else {
-        completion(.failure(createConnectionError(withChannelName: channelName)))
-        return
-      }
-      if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
-        completion(.failure(PigeonError(code: code, message: message, details: details)))
-      } else {
-        completion(.success(()))
-      }
-    }
-  }
-  func recordingFallback(info infoArg: [String?: Any?], completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.CameraEventApi.recordingFallback\(messageChannelSuffix)"
-    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([infoArg] as [Any?]) { response in
-      guard let listResponse = response as? [Any?] else {
-        completion(.failure(createConnectionError(withChannelName: channelName)))
-        return
-      }
-      if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
-        completion(.failure(PigeonError(code: code, message: message, details: details)))
-      } else {
-        completion(.success(()))
-      }
-    }
-  }
-}
-/// Generated protocol from Pigeon that represents a handler of messages from Flutter.
-protocol BackupNativeHostApi {
-  func summary(completion: @escaping (Result<BackupSummaryDto, Error>) -> Void)
-  func initialize(request: [String?: Any?], completion: @escaping (Result<BackupSummaryDto, Error>) -> Void)
-  func setAutoEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void)
-  func jobsForPaths(paths: [String], completion: @escaping (Result<BackupJobsByPathsDto, Error>) -> Void)
-  func cleanupEvents(afterRevision: Int64, limit: Int64, completion: @escaping (Result<BackupCleanupPageDto, Error>) -> Void)
-  func acknowledgeCleanupEvents(throughRevision: Int64, completion: @escaping (Result<Void, Error>) -> Void)
-  func hasPendingJobsOutsideDestination(computerId: String, completion: @escaping (Result<Bool, Error>) -> Void)
-  func loadAccessKey(completion: @escaping (Result<String?, Error>) -> Void)
-  func isWifiConnected(completion: @escaping (Result<Bool, Error>) -> Void)
-  func saveConnection(connection: [String?: Any?], completion: @escaping (Result<Void, Error>) -> Void)
-  func disconnect(completion: @escaping (Result<Void, Error>) -> Void)
-  func enqueueJob(request: [String?: Any?], completion: @escaping (Result<Void, Error>) -> Void)
-  func enqueueJobs(requests: [[String?: Any?]], completion: @escaping (Result<Void, Error>) -> Void)
-  func requeueJob(jobId: String, completion: @escaping (Result<Void, Error>) -> Void)
-  func cancelJob(jobId: String, completion: @escaping (Result<Void, Error>) -> Void)
-  func updateRetentionSchedule(request: [String?: Any?], completion: @escaping (Result<Void, Error>) -> Void)
-  func availableRecordingStorageBytes(completion: @escaping (Result<Int64?, Error>) -> Void)
-  func reclaimStorageIfNeeded(completion: @escaping (Result<[String?: Any?], Error>) -> Void)
-  func getNetworkDiagnostics(completion: @escaping (Result<[String?: Any?]?, Error>) -> Void)
-}
 
-/// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
-class BackupNativeHostApiSetup {
-  static var codec: FlutterStandardMessageCodec { PlatformApiPigeonCodec.shared }
-  /// Sets up an instance of `BackupNativeHostApi` to handle messages through the `binaryMessenger`.
-  static func setUp(binaryMessenger: FlutterBinaryMessenger, api: BackupNativeHostApi?, messageChannelSuffix: String = "") {
-    let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
-    #if os(iOS)
-      let taskQueue = binaryMessenger.makeBackgroundTaskQueue?()
-    #else
-      let taskQueue: FlutterTaskQueue? = nil
-    #endif
-    let summaryChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.summary\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.summary\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      summaryChannel.setMessageHandler { _, reply in
-        api.summary { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      summaryChannel.setMessageHandler(nil)
-    }
-    let initializeChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.initialize\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.initialize\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      initializeChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let requestArg = args[0] as! [String?: Any?]
-        api.initialize(request: requestArg) { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      initializeChannel.setMessageHandler(nil)
-    }
-    let setAutoEnabledChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.setAutoEnabled\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.setAutoEnabled\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      setAutoEnabledChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let enabledArg = args[0] as! Bool
-        api.setAutoEnabled(enabled: enabledArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      setAutoEnabledChannel.setMessageHandler(nil)
-    }
-    let jobsForPathsChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.jobsForPaths\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.jobsForPaths\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      jobsForPathsChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let pathsArg = args[0] as! [String]
-        api.jobsForPaths(paths: pathsArg) { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      jobsForPathsChannel.setMessageHandler(nil)
-    }
-    let cleanupEventsChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.cleanupEvents\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.cleanupEvents\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      cleanupEventsChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let afterRevisionArg = args[0] as! Int64
-        let limitArg = args[1] as! Int64
-        api.cleanupEvents(afterRevision: afterRevisionArg, limit: limitArg) { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      cleanupEventsChannel.setMessageHandler(nil)
-    }
-    let acknowledgeCleanupEventsChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.acknowledgeCleanupEvents\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.acknowledgeCleanupEvents\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      acknowledgeCleanupEventsChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let throughRevisionArg = args[0] as! Int64
-        api.acknowledgeCleanupEvents(throughRevision: throughRevisionArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      acknowledgeCleanupEventsChannel.setMessageHandler(nil)
-    }
-    let hasPendingJobsOutsideDestinationChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.hasPendingJobsOutsideDestination\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.hasPendingJobsOutsideDestination\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      hasPendingJobsOutsideDestinationChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let computerIdArg = args[0] as! String
-        api.hasPendingJobsOutsideDestination(computerId: computerIdArg) { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      hasPendingJobsOutsideDestinationChannel.setMessageHandler(nil)
-    }
-    let loadAccessKeyChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.loadAccessKey\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.loadAccessKey\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      loadAccessKeyChannel.setMessageHandler { _, reply in
-        api.loadAccessKey { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      loadAccessKeyChannel.setMessageHandler(nil)
-    }
-    let isWifiConnectedChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.isWifiConnected\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.isWifiConnected\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      isWifiConnectedChannel.setMessageHandler { _, reply in
-        api.isWifiConnected { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      isWifiConnectedChannel.setMessageHandler(nil)
-    }
-    let saveConnectionChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.saveConnection\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.saveConnection\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      saveConnectionChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let connectionArg = args[0] as! [String?: Any?]
-        api.saveConnection(connection: connectionArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      saveConnectionChannel.setMessageHandler(nil)
-    }
-    let disconnectChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.disconnect\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.disconnect\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      disconnectChannel.setMessageHandler { _, reply in
-        api.disconnect { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      disconnectChannel.setMessageHandler(nil)
-    }
-    let enqueueJobChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.enqueueJob\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.enqueueJob\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      enqueueJobChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let requestArg = args[0] as! [String?: Any?]
-        api.enqueueJob(request: requestArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      enqueueJobChannel.setMessageHandler(nil)
-    }
-    let enqueueJobsChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.enqueueJobs\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.enqueueJobs\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      enqueueJobsChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let requestsArg = args[0] as! [[String?: Any?]]
-        api.enqueueJobs(requests: requestsArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      enqueueJobsChannel.setMessageHandler(nil)
-    }
-    let requeueJobChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.requeueJob\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.requeueJob\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      requeueJobChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let jobIdArg = args[0] as! String
-        api.requeueJob(jobId: jobIdArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      requeueJobChannel.setMessageHandler(nil)
-    }
-    let cancelJobChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.cancelJob\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.cancelJob\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      cancelJobChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let jobIdArg = args[0] as! String
-        api.cancelJob(jobId: jobIdArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      cancelJobChannel.setMessageHandler(nil)
-    }
-    let updateRetentionScheduleChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.updateRetentionSchedule\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.updateRetentionSchedule\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      updateRetentionScheduleChannel.setMessageHandler { message, reply in
-        let args = message as! [Any?]
-        let requestArg = args[0] as! [String?: Any?]
-        api.updateRetentionSchedule(request: requestArg) { result in
-          switch result {
-          case .success:
-            reply(wrapResult(nil))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      updateRetentionScheduleChannel.setMessageHandler(nil)
-    }
-    let availableRecordingStorageBytesChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.availableRecordingStorageBytes\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.availableRecordingStorageBytes\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      availableRecordingStorageBytesChannel.setMessageHandler { _, reply in
-        api.availableRecordingStorageBytes { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      availableRecordingStorageBytesChannel.setMessageHandler(nil)
-    }
-    let reclaimStorageIfNeededChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.reclaimStorageIfNeeded\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.reclaimStorageIfNeeded\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      reclaimStorageIfNeededChannel.setMessageHandler { _, reply in
-        api.reclaimStorageIfNeeded { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      reclaimStorageIfNeededChannel.setMessageHandler(nil)
-    }
-    let getNetworkDiagnosticsChannel = taskQueue == nil
-      ? FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.getNetworkDiagnostics\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
-      : FlutterBasicMessageChannel(name: "dev.flutter.pigeon.packing_proof_mobile.BackupNativeHostApi.getNetworkDiagnostics\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec, taskQueue: taskQueue)
-    if let api = api {
-      getNetworkDiagnosticsChannel.setMessageHandler { _, reply in
-        api.getNetworkDiagnostics { result in
-          switch result {
-          case .success(let res):
-            reply(wrapResult(res))
-          case .failure(let error):
-            reply(wrapError(error))
-          }
-        }
-      }
-    } else {
-      getNetworkDiagnosticsChannel.setMessageHandler(nil)
-    }
+  var codec: FlutterStandardMessageCodec {
+    return PlatformHostApiPigeonCodec.shared
   }
-}
 
-/// Generated protocol from Pigeon that represents Flutter messages that can be called from Swift.
-protocol BackupNativeEventApiProtocol {
-  func summaryChanged(summary summaryArg: BackupSummaryDto, completion: @escaping (Result<Void, PigeonError>) -> Void)
-}
-class BackupNativeEventApi: BackupNativeEventApiProtocol {
-  private let binaryMessenger: FlutterBinaryMessenger
-  private let messageChannelSuffix: String
-  init(binaryMessenger: FlutterBinaryMessenger, messageChannelSuffix: String = "") {
-    self.binaryMessenger = binaryMessenger
-    self.messageChannelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
-  }
-  var codec: PlatformApiPigeonCodec {
-    return PlatformApiPigeonCodec.shared
-  }
-  func summaryChanged(summary summaryArg: BackupSummaryDto, completion: @escaping (Result<Void, PigeonError>) -> Void) {
-    let channelName: String = "dev.flutter.pigeon.packing_proof_mobile.BackupNativeEventApi.summaryChanged\(messageChannelSuffix)"
+  func onOrderReceived(orderInfo orderInfoArg: OrderInfoDto, completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName = "dev.flutter.pigeon.PlatformFlutterApi.onOrderReceived\(messageChannelSuffix)"
     let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([summaryArg] as [Any?]) { response in
+    channel.sendMessage([orderInfoArg] as [Any?]) { response in
       guard let listResponse = response as? [Any?] else {
         completion(.failure(createConnectionError(withChannelName: channelName)))
         return
       }
       if listResponse.count > 1 {
-        let code: String = listResponse[0] as! String
-        let message: String? = nilOrValue(listResponse[1])
-        let details: String? = nilOrValue(listResponse[2])
+        let code = listResponse[0] as! String
+        let message = listResponse[1] as? String
+        let details = listResponse[2] as? String
         completion(.failure(PigeonError(code: code, message: message, details: details)))
       } else {
         completion(.success(()))
