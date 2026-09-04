@@ -26,12 +26,12 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 0. 预先创建空文件兜底（防止 Xcode 找不到文件报错） =================
-    - name: Ensure PlatformApi.swift Exists
+    # ================= 0. 预先创建空文件兜底（指向正确的 Generated 目录） =================
+    - name: Ensure Generated PlatformApi.swift Exists
       run: |
-        mkdir -p ios/Runner
-        if [ ! -f ios/Runner/PlatformApi.swift ]; then
-          echo "// Auto-generated placeholder" > ios/Runner/PlatformApi.swift
+        mkdir -p ios/Runner/Generated
+        if [ ! -f ios/Runner/Generated/PlatformApi.swift ]; then
+          echo "// Auto-generated placeholder" > ios/Runner/Generated/PlatformApi.swift
         fi
 
     # ================= 1. 执行 Pigeon 代码生成 =================
