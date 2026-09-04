@@ -26,6 +26,21 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
+    # ================= 新增：生成 Pigeon 原生通讯代码 =================
+    - name: Generate Pigeon Code
+      run: |
+        if [ -f scripts/pigeon.sh ]; then
+          chmod +x scripts/pigeon.sh && ./scripts/pigeon.sh
+        elif [ -f lib/pigeons/pigeon_runner.dart ]; then
+          dart run lib/pigeons/pigeon_runner.dart
+        else
+          dart run pigeon --input pigeons/messages.dart
+        fi
+      env:
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+    # ===================================================================
+
     - name: Override Deployment Target to 14.0
       run: |
         sed -i '' 's/13\.0/14\.0/g' ios/Runner.xcodeproj/project.pbxproj
