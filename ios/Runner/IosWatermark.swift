@@ -347,8 +347,6 @@ struct IosLiveWatermarkRasterizer {
       ) else {
         return false
       }
-      // CGImage 与 CVPixelBuffer 的内存行顺序都从首行开始；这里若再套用
-      // UIKit 的翻转 CTM，会让开始录像后烧录的文字上下颠倒。
       context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
       return true
     }
@@ -436,8 +434,6 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     formatter.dateFormat = "yyyy/MM/dd HH:mm:ss"
   }
 
-  /// 在 writer 对外可见前同步准备首秒，并在专用队列提前生成下一秒。
-  /// 之后 capture 回调只读取已经发布的不可变计划，不执行文字排版或栅格化。
   func prepare(
     to pixelBuffer: CVPixelBuffer,
     orientation: String,
@@ -502,8 +498,6 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     }
   }
 
-  /// 极端情况下 writer 启动前还没有预览帧时，由首个采集帧只提交格式信息，
-  /// 栅格化仍完全在 watermarkQueue 执行。计划发布前不写入视频，避免保存无水印帧。
   func prepareAsynchronously(
     to pixelBuffer: CVPixelBuffer,
     orientation: String,
@@ -654,7 +648,6 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     cancelledCompletions.forEach { $0(.failure(IosLiveWatermarkError.planNotReady)) }
   }
 
-  /// 单个后台 worker 只保留最新的当前秒和下一秒，避免设备繁忙时逐秒积压排版任务。
   private func enqueuePlanRequests(_ requests: [IosLiveWatermarkPlanRequest]) {
     guard !requests.isEmpty else { return }
     var cancelledCompletions: [((Result<Void, Error>) -> Void)] = []
@@ -735,7 +728,6 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
           request.completion?(.failure(IosLiveWatermarkError.planNotReady))
         }
       } catch {
-        // broad-catch: 所有计划生成错误都由统一状态机记录并回调
         recordPlanFailure(
           error,
           second: request.second,
@@ -838,8 +830,6 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     return true
   }
 
-  /// 计划只围绕当前帧保留前一秒、当前秒和下一秒。前一秒仅用于秒边界
-  /// 的短暂容错；时钟回拨时会立即丢弃未来缓存和排队任务。
   private func updateRequestedPlanWindowLocked(
     centeredAt second: Int64
   ) -> [((Result<Void, Error>) -> Void)] {
@@ -1016,6 +1006,8 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     )
   }
 
+  // MARK: - 补全：像素计算与 Alpha 混合逻辑
+
   private func makeBlendPixels(
     _ raster: IosLiveWatermarkRaster,
     outputSize: CGSize,
@@ -1034,6 +1026,7 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     let originY = Int(origin.y.rounded(.down))
     var pixels: [IosLiveWatermarkBlendPixel] = []
     pixels.reserveCapacity(raster.width * raster.height / 2)
+
     raster.bgra.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
         return
@@ -1044,27 +1037,33 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
         for rasterX in 0..<raster.width {
           let outputX = originX + rasterX
           guard outputX >= 0, outputX < outputWidth else { continue }
+
           let sourceOffset = (rasterY * raster.width + rasterX) * 4
           let alpha = source[sourceOffset + 3]
-          if alpha == 0 { continue }
-          let mapped = IosLiveWatermarkGeometry.sourcePixel(
+          guard alpha > 0 else { continue } // 过滤透明像素
+
+          let blue = source[sourceOffset]
+          let green = source[sourceOffset + 1]
+          let red = source[sourceOffset + 2]
+
+          let (srcX, srcY) = IosLiveWatermarkGeometry.sourcePixel(
             outputX: outputX,
             outputY: outputY,
             sourceWidth: sourceWidth,
             sourceHeight: sourceHeight,
             orientation: orientation
           )
-          guard mapped.x >= 0, mapped.x < sourceWidth,
-                mapped.y >= 0, mapped.y < sourceHeight else {
-            continue
-          }
-          pixels.append(IosLiveWatermarkBlendPixel(
-            destinationOffset: mapped.y * bytesPerRow + mapped.x * 4,
-            blue: source[sourceOffset],
-            green: source[sourceOffset + 1],
-            red: source[sourceOffset + 2],
-            alpha: alpha
-          ))
+          let destOffset = srcY * bytesPerRow + srcX * 4
+
+          pixels.append(
+            IosLiveWatermarkBlendPixel(
+              destinationOffset: destOffset,
+              blue: blue,
+              green: green,
+              red: red,
+              alpha: alpha
+            )
+          )
         }
       }
     }
@@ -1075,46 +1074,36 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
     _ pixels: [IosLiveWatermarkBlendPixel],
     into pixelBuffer: CVPixelBuffer
   ) throws {
-    let lockResult = CVPixelBufferLockBaseAddress(pixelBuffer, [])
-    guard lockResult == kCVReturnSuccess else {
-      throw IosLiveWatermarkError.pixelBufferLockFailed(lockResult)
+    let lockStatus = CVPixelBufferLockBaseAddress(pixelBuffer, [])
+    guard lockStatus == kCVReturnSuccess else {
+      throw IosLiveWatermarkError.pixelBufferLockFailed(lockStatus)
     }
     defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
     guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
       throw IosLiveWatermarkError.missingBaseAddress
     }
-    let destination = baseAddress.assumingMemoryBound(to: UInt8.self)
-    blend(pixels, into: destination)
-  }
 
-  private func blend(
-    _ pixels: [IosLiveWatermarkBlendPixel],
-    into destination: UnsafeMutablePointer<UInt8>
-  ) {
+    let destPtr = baseAddress.assumingMemoryBound(to: UInt8.self)
+
     for pixel in pixels {
       let offset = pixel.destinationOffset
-      if pixel.alpha == 255 {
-        destination[offset] = pixel.blue
-        destination[offset + 1] = pixel.green
-        destination[offset + 2] = pixel.red
+      let alpha = UInt32(pixel.alpha)
+
+      if alpha == 255 {
+        destPtr[offset] = pixel.blue
+        destPtr[offset + 1] = pixel.green
+        destPtr[offset + 2] = pixel.red
       } else {
-        let inverseAlpha = 255 - Int(pixel.alpha)
-        destination[offset] = UInt8(min(
-          255,
-          Int(pixel.blue) + (Int(destination[offset]) * inverseAlpha + 127) / 255
-        ))
-        destination[offset + 1] = UInt8(min(
-          255,
-          Int(pixel.green) +
-            (Int(destination[offset + 1]) * inverseAlpha + 127) / 255
-        ))
-        destination[offset + 2] = UInt8(min(
-          255,
-          Int(pixel.red) +
-            (Int(destination[offset + 2]) * inverseAlpha + 127) / 255
-        ))
+        let invAlpha = 255 - alpha
+        let dstB = UInt32(destPtr[offset])
+        let dstG = UInt32(destPtr[offset + 1])
+        let dstR = UInt32(destPtr[offset + 2])
+
+        destPtr[offset] = UInt8((UInt32(pixel.blue) * alpha + dstB * invAlpha) / 255)
+        destPtr[offset + 1] = UInt8((UInt32(pixel.green) * alpha + dstG * invAlpha) / 255)
+        destPtr[offset + 2] = UInt8((UInt32(pixel.red) * alpha + dstR * invAlpha) / 255)
       }
-      destination[offset + 3] = 255
     }
   }
 }
