@@ -1,26 +1,33 @@
-- name: Install iOS pods
-      run: |
-        cd ios
-        pod install --repo-update
-      env:
-        PUB_HOSTED_URL: https://pub.flutter-io.cn
-        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+    # 1. 必须先通过 Flutter 生成 iOS 构建所需的产物
+    - name: Prepare Flutter iOS Assets
+      run: flutter build ios --release --no-codesign --target-platform ios
 
-    # 使用 Flutter 官方命令直接生成无签名的 IPA
-    - name: Build Unsigned IPA for TrollStore
-      run: flutter build ipa --release --no-codesign
-
-    # 重新压缩为 TrollStore 专用的通用格式（确保无签名兼容性）
-    - name: Package TrollStore IPA
+    # 2. 导出 xcarchive
+    # 增加 -allowProvisioningUpdates 且确保 Xcode 知道不需要签名
+    - name: Build iOS Archive (No Codesign)
       run: |
+        xcodebuild archive \
+          -workspace ios/Runner.xcworkspace \
+          -scheme Runner \
+          -sdk iphoneos \
+          -configuration Release \
+          -archivePath build/Runner.xcarchive \
+          CODE_SIGNING_ALLOWED=NO \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGN_ENTITLEMENTS="" \
+          GCC_PREPROCESSOR_DEFINITIONS='$(inherited) SKIP_CODESIGN=1'
+
+    # 3. 打包未签名的 IPA
+    - name: Export Unsigned IPA
+      run: |
+        # 创建 Payload 目录
         mkdir -p build/ipa/Payload
-        cp -r build/ios/archive/Runner.xcarchive/Products/Applications/*.app build/ipa/Payload/
+        
+        # 查找生成的 .app 文件并移动
+        # 使用 find 命令比 if 判断更通用，能直接找到目录下唯一的 .app
+        find build/Runner.xcarchive/Products/Applications/ -maxdepth 1 -name "*.app" -exec cp -r {} build/ipa/Payload/ \;
+        
+        # 打包
         cd build/ipa
-        zip -r ../../TrollStore-iOS-IPA.ipa Payload/
-
-    - name: Upload IPA artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: TrollStore-iOS-IPA
-        path: TrollStore-iOS-IPA.ipa
-        retention-days: 7
+        zip -r -y ../../TrollStore-iOS-IPA.ipa Payload/
