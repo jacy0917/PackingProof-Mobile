@@ -109,8 +109,8 @@ final class IosMediaProcessingCore {
     activeWatermarkOperation = operation
     operationLock.unlock()
 
-    processingQueue.async {
-      guard self.isActive(operation) else { return }
+    processingQueue.async { [weak self] in
+      guard let self, self.isActive(operation) else { return }
       do {
         let input = URL(fileURLWithPath: request.inputPath)
         try? FileManager.default.removeItem(at: output)
@@ -209,22 +209,29 @@ final class IosMediaProcessingCore {
           ? max(0, asset.duration.seconds)
           : 0
         let keyframeSeconds = timeline.keyframeSeconds(duration: duration)
-        if duration > 0, keyframeSeconds.count > 1 {
+        
+        // 增加对极短视频或异常 duration 的容错处理
+        if duration > 0.05, keyframeSeconds.count > 1 {
           let values = keyframeSeconds.map {
             IosWatermarkStyle.attributedText(
               timeline.text(at: $0),
               fontSize: fontSize
             )
           }
-          let keyTimes = keyframeSeconds.map {
-            NSNumber(value: min(1, $0 / duration))
+          let keyTimes = keyframeSeconds.compactMap { sec -> NSNumber? in
+            let progress = sec / duration
+            guard progress.isFinite else { return nil }
+            return NSNumber(value: min(1.0, max(0.0, progress)))
           }
-          IosWatermarkStyle.addTextAnimation(
-            to: text,
-            values: values,
-            keyTimes: keyTimes,
-            duration: duration
-          )
+          
+          if values.count == keyTimes.count {
+            IosWatermarkStyle.addTextAnimation(
+              to: text,
+              values: values,
+              keyTimes: keyTimes,
+              duration: duration
+            )
+          }
         }
         parentLayer.addSublayer(text)
         videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
@@ -245,6 +252,8 @@ final class IosMediaProcessingCore {
         session.outputURL = output
         session.outputFileType = .mp4
         session.videoComposition = videoComposition
+
+        // 绑定 session 并在启动导出前提早释放锁
         self.operationLock.lock()
         guard self.activeWatermarkOperation === operation else {
           self.operationLock.unlock()
@@ -253,7 +262,11 @@ final class IosMediaProcessingCore {
           return
         }
         operation.session = session
-        session.exportAsynchronously {
+        self.operationLock.unlock()
+
+        // 异步导出过程使用 [weak self] 规避循环强引用
+        session.exportAsynchronously { [weak self] in
+          guard let self else { return }
           switch session.status {
           case .completed:
             do {
@@ -279,8 +292,7 @@ final class IosMediaProcessingCore {
           case .failed:
             self.finish(
               operation,
-              result:
-              .failure(
+              result: .failure(
                 session.error
                   ?? IosMediaProcessingCoreError(message: "水印视频生成失败")
               )
@@ -288,8 +300,7 @@ final class IosMediaProcessingCore {
           case .cancelled:
             self.finish(
               operation,
-              result:
-              .failure(
+              result: .failure(
                 IosMediaProcessingCoreError(
                   message: "水印导出被系统中断，原片已保留",
                   code: "watermark_interrupted"
@@ -305,7 +316,6 @@ final class IosMediaProcessingCore {
             )
           }
         }
-        self.operationLock.unlock()
       } catch {
         self.finish(operation, result: .failure(error))
       }
@@ -355,10 +365,11 @@ final class IosMediaProcessingCore {
   private func removeOutputUnlessReused(by operation: WatermarkOperation) {
     operationLock.lock()
     let reused = activeWatermarkOperation?.output == operation.output
+    operationLock.unlock()
+    
     if !reused {
       try? FileManager.default.removeItem(at: operation.output)
     }
-    operationLock.unlock()
   }
 
   private static func cancelledError() -> IosMediaProcessingCoreError {
