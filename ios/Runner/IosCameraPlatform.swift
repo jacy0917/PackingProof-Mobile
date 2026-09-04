@@ -1,36 +1,52 @@
-self.eventApi.segmentStarted(
-          path: path,
-          segmentId: self.currentSegmentId,
-          startedAtMs: startedAt,
-          completion: { _ in }
-        )
-        request.complete()
-        self.finishPerformanceOperation(
-          timing,
-          signpostID: signpostID,
-          signpostName: "CameraRecordingStart",
-          succeeded: true
-        )
-        completion(.success(CameraRecordingStartDto(
-          segmentId: self.currentSegmentId,
-          startedAtMs: startedAt,
-          recordingPath: path
-        )))
-      } catch {
-        self.recordingActivityState.setActive(
-          false, owner: self.recordingActivityOwner
-        )
-        request.cancel()
-        self.finishPerformanceOperation(
-          timing,
-          signpostID: signpostID,
-          signpostName: "CameraRecordingStart",
-          succeeded: false
-        )
-        completion(.failure(error))
-      }
+import AVFoundation
+import Vision
+import os.signpost
+
+class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate, AVCaptureMetadataOutputObjectsDelegate {
+  
+  // MARK: - Safe Performance Operations
+  
+  private func finishPerformanceOperation(
+    _ timing: IosCameraOperationTiming,
+    signpostID: OSSignpostID,
+    signpostName: StaticString,
+    succeeded: Bool
+  ) {
+    if let result = timing.finish(succeeded: succeeded) {
+      performanceLock.lock()
+      lastOperationTiming = result
+      performanceLock.unlock()
+      os_signpost(
+        .end,
+        log: Self.performanceLog,
+        name: signpostName,
+        signpostID: signpostID,
+        "operation=%{public}@ succeeded=%{public}d",
+        timing.operation,
+        succeeded ? 1 : 0
+      )
     }
   }
+
+  private static func finishDetachedPerformanceOperation(
+    _ timing: IosCameraOperationTiming,
+    signpostID: OSSignpostID,
+    signpostName: StaticString,
+    succeeded: Bool
+  ) {
+    _ = timing.finish(succeeded: succeeded)
+    os_signpost(
+      .end,
+      log: Self.performanceLog,
+      name: signpostName,
+      signpostID: signpostID,
+      "operation=%{public}@ succeeded=%{public}d",
+      timing.operation,
+      succeeded ? 1 : 0
+    )
+  }
+
+  // MARK: - Recording Actions
 
   func stopWork(
     completion: @escaping (Result<CameraRecordingStopDto, Error>) -> Void
@@ -44,8 +60,8 @@ self.eventApi.segmentStarted(
       signpostID: signpostID
     )
     sessionQueue.async { [weak self] in
-      guard let self, !self.isDisposed else {
-        if let self {
+      guard let self = self, !self.isDisposed else {
+        if let self = self {
           self.finishPerformanceOperation(
             timing,
             signpostID: signpostID,
@@ -67,7 +83,7 @@ self.eventApi.segmentStarted(
       switch self.recordingLifecycle.begin(
         .stop,
         onCancelled: { [weak self] in
-          if let self {
+          if let self = self {
             self.finishPerformanceOperation(
               timing,
               signpostID: signpostID,
@@ -140,8 +156,8 @@ self.eventApi.segmentStarted(
       signpostID: signpostID
     )
     sessionQueue.async { [weak self] in
-      guard let self, !self.isDisposed else {
-        if let self {
+      guard let self = self, !self.isDisposed else {
+        if let self = self {
           self.finishPerformanceOperation(
             timing,
             signpostID: signpostID,
@@ -163,7 +179,7 @@ self.eventApi.segmentStarted(
       switch self.recordingLifecycle.begin(
         .split,
         onCancelled: { [weak self] in
-          if let self {
+          if let self = self {
             self.finishPerformanceOperation(
               timing,
               signpostID: signpostID,
@@ -259,7 +275,7 @@ self.eventApi.segmentStarted(
 
   func setScanningEnabled(pairing: Bool, work: Bool) {
     sessionQueue.async { [weak self] in
-      guard let self else { return }
+      guard let self = self else { return }
       self.pairingScanEnabled = pairing
       self.workScanEnabled = work
       let enabled = pairing || work
@@ -273,7 +289,7 @@ self.eventApi.segmentStarted(
 
   func setPreviewActive(active: Bool) {
     sessionQueue.async { [weak self] in
-      guard let self else { return }
+      guard let self = self else { return }
       self.previewActive = active
       if active && !self.session.isRunning && !self.isDisposed {
         self.session.startRunning()
@@ -283,7 +299,7 @@ self.eventApi.segmentStarted(
 
   func updateWatermark(text: String, completion: @escaping (Result<Void, Error>) -> Void) {
     sessionQueue.async { [weak self] in
-      guard let self else {
+      guard let self = self else {
         completion(.failure(pigeonError("摄像头已经关闭")))
         return
       }
@@ -310,7 +326,7 @@ self.eventApi.segmentStarted(
 
   func dispose() {
     sessionQueue.async { [weak self] in
-      guard let self else { return }
+      guard let self = self else { return }
       self.markDisposed()
       self.recordingActivityState.setActive(false, owner: self.recordingActivityOwner)
       self.recordingLifecycle.dispose()
@@ -418,7 +434,7 @@ self.eventApi.segmentStarted(
 
   private func configureSession() {
     sessionQueue.async { [weak self] in
-      guard let self else { return }
+      guard let self = self else { return }
       self.session.beginConfiguration()
       self.session.sessionPreset = .hd1920x1080
       
@@ -464,7 +480,7 @@ self.eventApi.segmentStarted(
       supportsMedium: session.canSetSessionPreset(.medium),
       supportsLow: session.canSetSessionPreset(.low)
     )
-    if let selection {
+    if let selection = selection {
       session.beginConfiguration()
       switch selection.name {
       case "hd4K3840x2160": session.sessionPreset = .hd4K3840x2160
@@ -622,7 +638,7 @@ self.eventApi.segmentStarted(
     let stoppedAt = Int64(Date().timeIntervalSince1970 * 1000)
 
     writer.finishWriting { [weak self] in
-      guard let self else { return }
+      guard let self = self else { return }
       let result = IosCameraWriterFinishPolicy.result(
         status: writer.status,
         writerError: writer.error?.localizedDescription
@@ -666,7 +682,7 @@ self.eventApi.segmentStarted(
     latestPixelBuffer = pixelBuffer
     bufferLock.unlock()
 
-    if let textureId = Optional(textureId), textureId >= 0 {
+    if textureId >= 0 {
       textures.textureFrameAvailable(textureId)
     }
 
@@ -729,12 +745,12 @@ self.eventApi.segmentStarted(
     guard shouldSchedule, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
     visionQueue.async { [weak self] in
-      guard let self else { return }
+      guard let self = self else { return }
       let startTime = ProcessInfo.processInfo.systemUptime
       
       let requestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
       let request = VNDetectBarcodesRequest { [weak self] request, error in
-        guard let self else { return }
+        guard let self = self else { return }
         let durationMs = Int64((ProcessInfo.processInfo.systemUptime - startTime) * 1000)
         
         self.visionStateLock.lock()
@@ -743,7 +759,7 @@ self.eventApi.segmentStarted(
         self.visionLastDurationMs = durationMs
         self.visionTotalDurationMs += durationMs
         self.visionMaxDurationMs = max(self.visionMaxDurationMs, durationMs)
-        if let error {
+        if let error = error {
           self.visionLastError = error.localizedDescription
         }
         self.visionStateLock.unlock()
@@ -784,7 +800,7 @@ self.eventApi.segmentStarted(
       eventApi.barcodesDetected(
         candidates: candidates,
         completion: { [weak self] _ in
-          guard let self else { return }
+          guard let self = self else { return }
           let now = ProcessInfo.processInfo.systemUptime
           self.visionStateLock.lock()
           let nextAction = self.barcodeBatchGate.complete(now: now)
@@ -794,7 +810,7 @@ self.eventApi.segmentStarted(
       )
     case .schedule(let delay):
       sessionQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-        guard let self else { return }
+        guard let self = self else { return }
         let now = ProcessInfo.processInfo.systemUptime
         self.visionStateLock.lock()
         let nextAction = self.barcodeBatchGate.wake(now: now)
@@ -808,7 +824,7 @@ self.eventApi.segmentStarted(
     let url = URL(fileURLWithPath: path)
     let asset = AVURLAsset(url: url)
     asset.loadValuesAsynchronously(forKeys: ["tracks"]) { [weak self] in
-      guard let self else { return }
+      guard let self = self else { return }
       var error: NSError?
       let status = asset.statusOfValue(forKey: "tracks", error: &error)
       if status == .loaded {
@@ -840,63 +856,6 @@ self.eventApi.segmentStarted(
     case .notStarted:
       return pigeonError("录像尚未开始", code: "camera_recording_not_started")
     }
-  }
-
-  private func recordPerformanceStage(
-    _ stage: String,
-    operation: String,
-    signpostName: StaticString,
-    timing: IosCameraOperationTiming,
-    action: () throws -> Void
-  ) rethrows {
-    let stageStart = DispatchTime.now().uptimeNanoseconds
-    let signpostID = OSSignpostID(log: Self.performanceLog)
-    os_signpost(.begin, log: Self.performanceLog, name: signpostName, signpostID: signpostID)
-    defer {
-      os_signpost(.end, log: Self.performanceLog, name: signpostName, signpostID: signpostID)
-      timing.record(stage: stage, since: stageStart)
-    }
-    try action()
-  }
-
-  private func finishPerformanceOperation(
-    _ timing: IosCameraOperationTiming,
-    signpostID: OSSignpostID,
-    signpostName: StaticString,
-    succeeded: Bool
-  ) {
-    if let result = timing.finish(succeeded: succeeded) {
-      performanceLock.lock()
-      lastOperationTiming = result
-      performanceLock.unlock()
-      os_signpost(
-        .end,
-        log: Self.performanceLog,
-        name: signpostName,
-        signpostID: signpostID,
-        "operation=%{public}@ succeeded=%{public}d",
-        timing.operation,
-        succeeded ? 1 : 0
-      )
-    }
-  }
-
-  private static func finishDetachedPerformanceOperation(
-    _ timing: IosCameraOperationTiming,
-    signpostID: OSSignpostID,
-    signpostName: StaticString,
-    succeeded: Bool
-  ) {
-    _ = timing.finish(succeeded: succeeded)
-    os_signpost(
-      .end,
-      log: Self.performanceLog,
-      name: signpostName,
-      signpostID: signpostID,
-      "operation=%{public}@ succeeded=%{public}d",
-      timing.operation,
-      succeeded ? 1 : 0
-    )
   }
 
   private func clearOutputDelegates() {
