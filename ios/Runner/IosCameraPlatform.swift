@@ -1,9 +1,10 @@
 import AVFoundation
 import Vision
 import os.signpost
+import Flutter
 
 class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate, AVCaptureMetadataOutputObjectsDelegate {
-  
+
   // MARK: - Safe Performance Operations
   
   private func finishPerformanceOperation(
@@ -363,9 +364,9 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     didOutput sampleBuffer: CMSampleBuffer,
     from connection: AVCaptureConnection
   ) {
-    if output == videoOutput {
+    if let vOutput = self.videoOutput, output == vOutput {
       handleVideoBuffer(sampleBuffer, connection: connection)
-    } else if output == audioOutput {
+    } else if let aOutput = self.audioOutput, output == aOutput {
       handleAudioBuffer(sampleBuffer)
     }
   }
@@ -682,8 +683,8 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     latestPixelBuffer = pixelBuffer
     bufferLock.unlock()
 
-    if textureId >= 0 {
-      textures.textureFrameAvailable(textureId)
+    if textureId >= 0, let registry = self.textures {
+      registry.textureFrameAvailable(textureId)
     }
 
     guard let writer = self.writer, let videoInput = self.videoInput else { return }
@@ -835,9 +836,10 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
           inspectionError: nil
         )
       } else {
+        let optionalTrackCount: Int64? = nil
         self.lastSegmentDiagnostics.recordTrackResult(
           serial: serial,
-          trackCount: nil as Int64?,
+          trackCount: optionalTrackCount,
           inspectionError: error?.localizedDescription ?? "未知轨迹加载错误"
         )
       }
@@ -847,7 +849,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
   private func recordingRequestError(
     _ rejection: IosCameraRecordingLifecycle.Rejection,
     for operation: IosCameraRecordingLifecycle.Operation
-  ) -> PigeonError {
+  ) -> FlutterError {
     switch rejection {
     case .inFlight:
       return pigeonError("录像操作正在进行中", code: "camera_recording_busy")
@@ -859,12 +861,100 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
   }
 
   private func clearOutputDelegates() {
-    videoOutput?.setSampleBufferDelegate(nil, queue: nil)
-    audioOutput?.setSampleBufferDelegate(nil, queue: nil)
-    metadataOutput?.setMetadataObjectsDelegate(nil, queue: nil)
+    let nilVideoDelegate: AVCaptureVideoDataOutputSampleBufferDelegate? = nil
+    let nilAudioDelegate: AVCaptureAudioDataOutputSampleBufferDelegate? = nil
+    let nilMetadataDelegate: AVCaptureMetadataOutputObjectsDelegate? = nil
+
+    videoOutput?.setSampleBufferDelegate(nilVideoDelegate, queue: nil)
+    audioOutput?.setSampleBufferDelegate(nilAudioDelegate, queue: nil)
+    metadataOutput?.setMetadataObjectsDelegate(nilMetadataDelegate, queue: nil)
   }
+
+  // MARK: - Stored Properties Declaration
+  
+  private static let performanceLog = OSLog(subsystem: "com.camera", category: "Performance")
+  private let performanceLock = NSLock()
+  private let stateLock = NSLock()
+  private let bufferLock = NSLock()
+  private let visionStateLock = NSLock()
+  
+  private var disposed = false
+  private var textureId: Int64 = -1
+  private var previewActive = false
+  private var pairingScanEnabled = false
+  private var workScanEnabled = false
+  private var recordAudio = true
+  private var cameraAudioSessionHeld = false
+  
+  private var sessionPresetName = "hd1920x1080"
+  private var portraitSize = CGSize(width: 1080, height: 1920)
+  private var captureSize = (width: 1080, height: 1920)
+  private var recordingSpecName = "1080p"
+  private var preferredVideoCodec = "h264"
+  private var codecFallbackReason: String? = nil
+  
+  private var currentPath: String?
+  private var currentTrackingNumber: String?
+  private var currentSegmentId = ""
+  private var currentStartedAtMs: Int64 = 0
+  private var currentSegmentSerial: Int64 = 0
+  private var writerSessionStarted = false
+  private var preservesWatermarkDuringSplit = false
+  private var currentWatermarkFailed = false
+  private var currentWatermarkError: String?
+  
+  private var currentAudioSampleCount: Int64 = 0
+  private var currentAudioEnergyProbeCount: Int64 = 0
+  private var currentAudioLowEnergyProbeCount: Int64 = 0
+  private var currentAudioPeak: Double = 0.0
+  
+  private var metadataCallbackCount: Int64 = 0
+  private var metadataLastCallbackAt: Double = 0.0
+  private var metadataCandidateCount: Int64 = 0
+  private var metadataLastCandidateAt: Double = 0.0
+  
+  private var visionScanInFlight = false
+  private var visionLastCandidateAt: Double = 0.0
+  private var visionLastSubmittedAt: Double = 0.0
+  private var visionFrameCount: Int64 = 0
+  private var visionLastDurationMs: Int64 = 0
+  private var visionTotalDurationMs: Int64 = 0
+  private var visionMaxDurationMs: Int64 = 0
+  private var visionLastError: String?
+  private var visionCandidateCount: Int64 = 0
+  
+  private var lastOperationTiming: [String: Any]?
+  private var latestPixelBuffer: CVPixelBuffer?
+  
+  private let session = AVCaptureSession()
+  private let sessionQueue = DispatchQueue(label: "com.camera.sessionQueue")
+  private let metadataQueue = DispatchQueue(label: "com.camera.metadataQueue")
+  private let visionQueue = DispatchQueue(label: "com.camera.visionQueue")
+  
+  private var videoDeviceInput: AVCaptureDeviceInput?
+  private var audioDeviceInput: AVCaptureDeviceInput?
+  private var videoOutput: AVCaptureVideoDataOutput?
+  private var audioOutput: AVCaptureAudioDataOutput?
+  private var metadataOutput: AVCaptureMetadataOutput?
+  
+  private var writer: AVAssetWriter?
+  private var videoInput: AVAssetWriterInput?
+  private var audioInput: AVAssetWriterInput?
+  private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+  
+  weak var textures: FlutterTextureRegistry?
+  
+  private let recordingLifecycle = IosCameraRecordingLifecycle()
+  private let recordingActivityState = IosCameraActivityState()
+  private let recordingActivityOwner = "CameraOwner"
+  private let audioSessionCoordinator = IosAudioSessionCoordinator()
+  private let lastSegmentDiagnostics = IosLastSegmentDiagnostics()
+  private let firstWrittenFrameTiming = IosFirstWrittenFrameTiming()
+  private let liveWatermarkRenderer = IosLiveWatermarkRenderer()
+  private let barcodeBatchGate = IosLatestPendingGate<[BarcodeCandidateDto]>()
+  private let eventApi = IosCameraEventApiImplementation()
 }
 
-private func pigeonError(_ message: String, code: String = "camera_error") -> PigeonError {
-  return PigeonError(code: code, message: message, details: nil)
+private func pigeonError(_ message: String, code: String = "camera_error") -> FlutterError {
+  return FlutterError(code: code, message: message, details: nil)
 }
