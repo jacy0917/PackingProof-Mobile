@@ -26,7 +26,6 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # 👇 关键修复 1：将项目文件和生成环境里的 13.0 强行替换为 14.0
     - name: Override Deployment Target to 14.0
       run: |
         sed -i '' 's/13\.0/14\.0/g' ios/Runner.xcodeproj/project.pbxproj
@@ -43,10 +42,18 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # 👇 关键修复 2：构建时显式传入参数强制锁定 14.0
+    # 👇 只需要替换这里
     - name: Build iOS App (No Codesign)
       run: |
         xcodebuild archive \
+          -workspace ios/Runner.xcworkspace \
+          -scheme Runner \
+          -sdk iphoneos \
+          -configuration Release \
+          -archivePath build/Runner.xcarchive \
+          CODE_SIGNING_ALLOWED=NO \
+          IPHONEOS_DEPLOYMENT_TARGET=14.0 \
+          COMPILER_INDEX_STORE_ENABLE=NO | xcbeautify || xcodebuild archive \
           -workspace ios/Runner.xcworkspace \
           -scheme Runner \
           -sdk iphoneos \
