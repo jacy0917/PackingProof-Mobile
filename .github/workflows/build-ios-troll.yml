@@ -26,10 +26,12 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 1. 执行 Pigeon 代码生成 =================
+    # ================= 1. 强制生成真正的 Pigeon 接口代码 =================
     - name: Generate Pigeon Code
       run: |
         mkdir -p ios/Runner/Generated
+        
+        # 显式尝试项目所有可能的 Pigeon 命令行进行强行生成
         if [ -f scripts/pigeon.sh ]; then
           chmod +x scripts/pigeon.sh && ./scripts/pigeon.sh
         elif [ -f lib/pigeons/pigeon_runner.dart ]; then
@@ -37,37 +39,45 @@ jobs:
         elif [ -f pigeons/pigeon_runner.dart ]; then
           dart run pigeons/pigeon_runner.dart
         else
-          dart run build_runner build --delete-conflicting-outputs || true
+          # 直接调用官方命令行直接指定生成 Swift 输出目标
+          dart run pigeon \
+            --input pigeons/messages.dart \
+            --swift_out ios/Runner/Generated/PlatformApi.swift || \
+          dart run pigeon \
+            --input lib/pigeons/messages.dart \
+            --swift_out ios/Runner/Generated/PlatformApi.swift || true
         fi
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 2. 强行双重满足 Xcode 路径需求 =================
+    # ================= 2. 物理同步至 Runner 目录 =================
     - name: Synchronize PlatformApi.swift Paths
       run: |
         mkdir -p ios/Runner/Generated
         
-        # 情况 A：如果 Pigeon 生成在了 Generated 目录下，复制一份到 ios/Runner/ 满足旧引用
+        # 如果 Generated 里面生成出了实际文件，同步到 Runner 目录满足原生 Swift 依赖
         if [ -f ios/Runner/Generated/PlatformApi.swift ]; then
           cp ios/Runner/Generated/PlatformApi.swift ios/Runner/PlatformApi.swift
-        # 情况 B：如果两边都没有，创建一个空的 Swift 类文件填补，防止 Xcode 报错
-        elif [ ! -f ios/Runner/PlatformApi.swift ]; then
-          echo "// Auto-generated placeholder" > ios/Runner/PlatformApi.swift
-          echo "// Auto-generated placeholder" > ios/Runner/Generated/PlatformApi.swift
         fi
 
-    # ================= 3. 统一 iOS Deployment Target 到 15.0 =================
-    - name: Override Deployment Target to 15.0
+    # ================= 3. 兼容调整 Deployment Target 到 15.0 =================
+    - name: Safe Override Deployment Target to 15.0
       run: |
-        sed -i '' 's/13\.0/15\.0/g' ios/Runner.xcodeproj/project.pbxproj
-        sed -i '' 's/14\.0/15\.0/g' ios/Runner.xcodeproj/project.pbxproj
-        sed -i '' 's/13\.0/15\.0/g' ios/Podfile
-        sed -i '' 's/14\.0/15\.0/g' ios/Podfile
-        if [ -f ios/Flutter/Generated.xcconfig ]; then
-          sed -i '' 's/13\.0/15\.0/g' ios/Flutter/Generated.xcconfig
-          sed -i '' 's/14\.0/15\.0/g' ios/Flutter/Generated.xcconfig
-        fi
+        ruby -e '
+          files = [
+            "ios/Runner.xcodeproj/project.pbxproj",
+            "ios/Podfile",
+            "ios/Flutter/Generated.xcconfig"
+          ]
+          files.each do |f|
+            next unless File.exist?(f)
+            text = File.read(f)
+            new_text = text.gsub("13.0", "15.0").gsub("14.0", "15.0")
+            File.open(f, "w") { |file| file.puts new_text }
+            puts "Updated #{f} target to 15.0"
+          end
+        '
 
     - name: Install iOS pods
       run: |
