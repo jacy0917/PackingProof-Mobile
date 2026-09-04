@@ -21,7 +21,11 @@ jobs:
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
     - name: Install dependencies
-      run: flutter pub get
+      run: |
+        cd $GITHUB_WORKSPACE
+        pwd
+        ls -la
+        flutter pub get
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
@@ -69,7 +73,7 @@ jobs:
           echo "// Fallback placeholder" > ios/Runner/PlatformApi.swift
         fi
 
-    # ❌ 这里删除了 Safe Override Deployment Target to 15.0 步骤
+    # ❌ Safe Override Deployment Target to 15.0 已删除
 
     - name: Install iOS pods
       run: |
