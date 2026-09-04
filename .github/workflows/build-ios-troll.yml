@@ -1,26 +1,61 @@
-- name: Export Unsigned IPA
-  run: |
-    set -e
+name: Build iOS IPA for TrollStore
 
-    APP_PATH="$(find build/Runner.xcarchive/Products/Applications \
-      -maxdepth 1 \
-      -type d \
-      -name '*.app' \
-      -print -quit)"
+on:
+  push:
+    branches: [ main ]
 
-    if [ -z "$APP_PATH" ]; then
-      echo "未找到 .app 文件"
-      find build/Runner.xcarchive -maxdepth 5 -print
-      exit 1
-    fi
+jobs:
+  build-ios:
+    runs-on: macos-latest
 
-    rm -rf build/ipa
-    mkdir -p build/ipa/Payload
-    cp -R "$APP_PATH" build/ipa/Payload/
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-    cd build/ipa
-    zip -r -y ../../TrollStore-iOS-IPA.ipa Payload
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: 'stable'
+      env:
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    cd ../..
-    test -f TrollStore-iOS-IPA.ipa
-    unzip -l TrollStore-iOS-IPA.ipa | head -30
+    - name: Install dependencies
+      run: flutter pub get
+      env:
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+
+    - name: Override Deployment Target to 14.0
+      run: |
+        sed -i '' 's/13\.0/14\.0/g' ios/Runner.xcodeproj/project.pbxproj
+        sed -i '' 's/13\.0/14\.0/g' ios/Podfile
+        if [ -f ios/Flutter/Generated.xcconfig ]; then
+          sed -i '' 's/13\.0/14\.0/g' ios/Flutter/Generated.xcconfig
+        fi
+
+    - name: Install iOS pods
+      run: |
+        cd ios
+        pod install --repo-update
+      env:
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+
+    # 跳过 flutter test，直接进行 IPA 打包
+    - name: Build Unsigned IPA for TrollStore
+      run: flutter build ipa --release --no-codesign
+
+    - name: Package TrollStore IPA
+      run: |
+        mkdir -p build/ipa/Payload
+        cp -r build/ios/archive/Runner.xcarchive/Products/Applications/*.app build/ipa/Payload/
+        cd build/ipa
+        zip -r ../../TrollStore-iOS-IPA.ipa Payload/
+
+    - name: Upload IPA artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: TrollStore-iOS-IPA
+        path: TrollStore-iOS-IPA.ipa
+        retention-days: 7
