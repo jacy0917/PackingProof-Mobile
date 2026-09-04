@@ -49,6 +49,8 @@ dependencies:
     hosted: https://pub.dev
     version: 13.3.0
   qr_flutter: ^4.1.0
+  # 条码扫描（指定 0.14.2 版本以支持 iOS 14.0）
+  google_mlkit_barcode_scanning: ^0.14.2
 
 dev_dependencies:
   flutter_test:
