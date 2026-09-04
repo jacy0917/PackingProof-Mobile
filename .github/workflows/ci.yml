@@ -34,7 +34,10 @@ jobs:
       - name: Check large-file line limits
         shell: bash
         run: ./tool/check_large_file_limits.sh
-      - run: flutter pub get
+      - name: Install dependencies
+        run: |
+          cd $GITHUB_WORKSPACE
+          flutter pub get
       - run: flutter analyze
       - name: Run non-visual Flutter tests
         run: |
@@ -67,7 +70,10 @@ jobs:
           channel: stable
           flutter-version: '3.44.1'
           cache: true
-      - run: flutter pub get
+      - name: Install dependencies
+        run: |
+          cd $GITHUB_WORKSPACE
+          flutter pub get
       - name: Run non-visual Flutter tests
         run: |
           mkdir -p build/test-results
