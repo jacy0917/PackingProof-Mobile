@@ -5,6 +5,90 @@ import Flutter
 
 class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate, AVCaptureMetadataOutputObjectsDelegate {
 
+  // MARK: - Stored Properties (Must be defined inside class body)
+  
+  private static let performanceLog = OSLog(subsystem: "com.camera", category: "Performance")
+  private let performanceLock = NSLock()
+  private let stateLock = NSLock()
+  private let bufferLock = NSLock()
+  private let visionStateLock = NSLock()
+  
+  private var disposed = false
+  private var textureId: Int64 = -1
+  private var previewActive = false
+  private var pairingScanEnabled = false
+  private var workScanEnabled = false
+  private var recordAudio = true
+  private var cameraAudioSessionHeld = false
+  
+  private var sessionPresetName = "hd1920x1080"
+  private var portraitSize = CGSize(width: 1080, height: 1920)
+  private var captureSize = (width: 1080, height: 1920)
+  private var recordingSpecName = "1080p"
+  private var preferredVideoCodec = "h264"
+  private var codecFallbackReason: String? = nil
+  
+  private var currentPath: String?
+  private var currentTrackingNumber: String?
+  private var currentSegmentId = ""
+  private var currentStartedAtMs: Int64 = 0
+  private var currentSegmentSerial: Int64 = 0
+  private var writerSessionStarted = false
+  private var preservesWatermarkDuringSplit = false
+  private var currentWatermarkFailed = false
+  private var currentWatermarkError: String?
+  
+  private var currentAudioSampleCount: Int64 = 0
+  private var currentAudioEnergyProbeCount: Int64 = 0
+  private var currentAudioLowEnergyProbeCount: Int64 = 0
+  private var currentAudioPeak: Double = 0.0
+  
+  private var metadataCallbackCount: Int64 = 0
+  private var metadataLastCallbackAt: Double = 0.0
+  private var metadataCandidateCount: Int64 = 0
+  private var metadataLastCandidateAt: Double = 0.0
+  
+  private var visionScanInFlight = false
+  private var visionLastCandidateAt: Double = 0.0
+  private var visionLastSubmittedAt: Double = 0.0
+  private var visionFrameCount: Int64 = 0
+  private var visionLastDurationMs: Int64 = 0
+  private var visionTotalDurationMs: Int64 = 0
+  private var visionMaxDurationMs: Int64 = 0
+  private var visionLastError: String?
+  private var visionCandidateCount: Int64 = 0
+  
+  private var lastOperationTiming: [String: Any]?
+  private var latestPixelBuffer: CVPixelBuffer?
+  
+  let session = AVCaptureSession()
+  let sessionQueue = DispatchQueue(label: "com.camera.sessionQueue")
+  let metadataQueue = DispatchQueue(label: "com.camera.metadataQueue")
+  let visionQueue = DispatchQueue(label: "com.camera.visionQueue")
+  
+  private var videoDeviceInput: AVCaptureDeviceInput?
+  private var audioDeviceInput: AVCaptureDeviceInput?
+  private var videoOutput: AVCaptureVideoDataOutput?
+  private var audioOutput: AVCaptureAudioDataOutput?
+  private var metadataOutput: AVCaptureMetadataOutput?
+  
+  private var writer: AVAssetWriter?
+  private var videoInput: AVAssetWriterInput?
+  private var audioInput: AVAssetWriterInput?
+  private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+  
+  weak var textures: FlutterTextureRegistry?
+  
+  private let recordingLifecycle = IosCameraRecordingLifecycle()
+  private let recordingActivityState = IosCameraActivityState()
+  private let recordingActivityOwner = "CameraOwner"
+  private let audioSessionCoordinator = IosAudioSessionCoordinator()
+  private let lastSegmentDiagnostics = IosLastSegmentDiagnostics()
+  private let firstWrittenFrameTiming = IosFirstWrittenFrameTiming()
+  private let liveWatermarkRenderer = IosLiveWatermarkRenderer()
+  private let barcodeBatchGate = IosLatestPendingGate<[BarcodeCandidateDto]>()
+  private let eventApi = IosCameraEventApiImplementation()
+
   // MARK: - Safe Performance Operations
   
   private func finishPerformanceOperation(
@@ -348,16 +432,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     }
   }
 
-  // MARK: - FlutterTexture
-
-  func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
-    bufferLock.lock()
-    defer { bufferLock.unlock() }
-    guard previewActive, let pixelBuffer = latestPixelBuffer else { return nil }
-    return Unmanaged.passRetained(pixelBuffer)
-  }
-
-  // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate & AVCaptureAudioDataOutputSampleBufferDelegate
+  // MARK: - AVCapture Video & Audio Output Delegate
 
   func captureOutput(
     _ output: AVCaptureOutput,
@@ -371,7 +446,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     }
   }
 
-  // MARK: - AVCaptureMetadataOutputObjectsDelegate
+  // MARK: - AVCapture Metadata Output Delegate
 
   func metadataOutput(
     _ output: AVCaptureMetadataOutput,
@@ -407,7 +482,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     }
   }
 
-  // MARK: - Private Helpers
+  // MARK: - Private Methods & Helpers
 
   private var isDisposed: Bool {
     stateLock.lock()
@@ -433,126 +508,10 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     bufferLock.unlock()
   }
 
-  private func configureSession() {
-    sessionQueue.async { [weak self] in
-      guard let self = self else { return }
-      self.session.beginConfiguration()
-      self.session.sessionPreset = .hd1920x1080
-      
-      guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-            let videoInput = try? AVCaptureDeviceInput(device: videoDevice),
-            self.session.canAddInput(videoInput) else {
-        self.session.commitConfiguration()
-        return
-      }
-      self.session.addInput(videoInput)
-      self.videoDeviceInput = videoInput
-
-      let videoOutput = AVCaptureVideoDataOutput()
-      videoOutput.alwaysDiscardsLateVideoFrames = true
-      videoOutput.videoSettings = [
-        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-      ]
-      videoOutput.setSampleBufferDelegate(self, queue: self.sessionQueue)
-      if self.session.canAddOutput(videoOutput) {
-        self.session.addOutput(videoOutput)
-        self.videoOutput = videoOutput
-      }
-
-      let metadataOutput = AVCaptureMetadataOutput()
-      if self.session.canAddOutput(metadataOutput) {
-        self.session.addOutput(metadataOutput)
-        metadataOutput.setMetadataObjectsDelegate(self, queue: self.metadataQueue)
-        metadataOutput.metadataObjectTypes = metadataOutput.availableMetadataObjectTypes
-        self.metadataOutput = metadataOutput
-      }
-
-      self.session.commitConfiguration()
-    }
-  }
-
-  private func applyCapturePreset(requestedSpec: String) {
-    let selection = IosCapturePresetSelection.select(
-      requestedSpec: requestedSpec,
-      supports4K: session.canSetSessionPreset(.hd4K3840x2160),
-      supportsHd1080: session.canSetSessionPreset(.hd1920x1080),
-      supportsHd720: session.canSetSessionPreset(.hd1280x720),
-      supportsHigh: session.canSetSessionPreset(.high),
-      supportsMedium: session.canSetSessionPreset(.medium),
-      supportsLow: session.canSetSessionPreset(.low)
-    )
-    if let selection = selection {
-      session.beginConfiguration()
-      switch selection.name {
-      case "hd4K3840x2160": session.sessionPreset = .hd4K3840x2160
-      case "hd1280x720": session.sessionPreset = .hd1280x720
-      case "high": session.sessionPreset = .high
-      case "medium": session.sessionPreset = .medium
-      case "low": session.sessionPreset = .low
-      default: session.sessionPreset = .hd1920x1080
-      }
-      session.commitConfiguration()
-      sessionPresetName = selection.name
-      captureSize = (width: selection.portraitWidth, height: selection.portraitHeight)
-      recordingSpecName = selection.recordingSpecName
-    }
-  }
-
-  private func acquireRecordingAudioSessionIfNeeded() throws {
-    guard recordAudio, !cameraAudioSessionHeld else { return }
-    try audioSessionCoordinator.acquire(.camera)
-    cameraAudioSessionHeld = true
-  }
-
-  private func addAudioInputIfNeeded() throws {
-    guard recordAudio, audioDeviceInput == nil else { return }
-    guard let audioDevice = AVCaptureDevice.default(for: .audio),
-          let audioInput = try? AVCaptureDeviceInput(device: audioDevice) else { return }
-    session.beginConfiguration()
-    if session.canAddInput(audioInput) {
-      session.addInput(audioInput)
-      self.audioDeviceInput = audioInput
-    }
-    let audioOutput = AVCaptureAudioDataOutput()
-    audioOutput.setSampleBufferDelegate(self, queue: sessionQueue)
-    if session.canAddOutput(audioOutput) {
-      session.addOutput(audioOutput)
-      self.audioOutput = audioOutput
-    }
-    session.commitConfiguration()
-  }
-
-  private func startSessionWithRetry(completion: @escaping (Bool) -> Void) {
-    if !session.isRunning {
-      session.startRunning()
-    }
-    completion(session.isRunning)
-  }
-
-  private func recoverCamera(completion: @escaping (Bool) -> Void) {
-    startSessionWithRetry(completion: completion)
-  }
-
-  private func finishInitialize(_ completion: @escaping (Result<CameraInitializationDto, Error>) -> Void) {
-    completion(.success(CameraInitializationDto(
-      textureId: textureId,
-      previewWidth: Int64(portraitSize.width),
-      previewHeight: Int64(portraitSize.height),
-      recordingSpec: recordingSpecName,
-      videoCodec: preferredVideoCodec,
-      codecFallbackReason: codecFallbackReason,
-      capabilities: CameraCapabilitiesDto(
-        supportsSmooth720p30: session.canSetSessionPreset(.hd1280x720),
-        supportsHd1080p30: session.canSetSessionPreset(.hd1920x1080),
-        supportsUhd4k30: session.canSetSessionPreset(.hd4K3840x2160)
-      )
-    )))
-  }
-
-  private func ensureRunningForWork() throws {
-    if !session.isRunning {
-      session.startRunning()
-    }
+  private func clearOutputDelegates() {
+    videoOutput?.setSampleBufferDelegate(nil, queue: nil)
+    audioOutput?.setSampleBufferDelegate(nil, queue: nil)
+    metadataOutput?.setMetadataObjectsDelegate(nil, queue: nil)
   }
 
   private func startWriter(
@@ -851,7 +810,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     for operation: IosCameraRecordingLifecycle.Operation
   ) -> FlutterError {
     switch rejection {
-    case .inFlight:
+    case .busy:
       return pigeonError("录像操作正在进行中", code: "camera_recording_busy")
     case .alreadyStarted:
       return pigeonError("录像已经开始", code: "camera_recording_already_started")
@@ -859,100 +818,6 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
       return pigeonError("录像尚未开始", code: "camera_recording_not_started")
     }
   }
-
-  private func clearOutputDelegates() {
-    let nilVideoDelegate: AVCaptureVideoDataOutputSampleBufferDelegate? = nil
-    let nilAudioDelegate: AVCaptureAudioDataOutputSampleBufferDelegate? = nil
-    let nilMetadataDelegate: AVCaptureMetadataOutputObjectsDelegate? = nil
-
-    videoOutput?.setSampleBufferDelegate(nilVideoDelegate, queue: nil)
-    audioOutput?.setSampleBufferDelegate(nilAudioDelegate, queue: nil)
-    metadataOutput?.setMetadataObjectsDelegate(nilMetadataDelegate, queue: nil)
-  }
-
-  // MARK: - Stored Properties Declaration
-  
-  private static let performanceLog = OSLog(subsystem: "com.camera", category: "Performance")
-  private let performanceLock = NSLock()
-  private let stateLock = NSLock()
-  private let bufferLock = NSLock()
-  private let visionStateLock = NSLock()
-  
-  private var disposed = false
-  private var textureId: Int64 = -1
-  private var previewActive = false
-  private var pairingScanEnabled = false
-  private var workScanEnabled = false
-  private var recordAudio = true
-  private var cameraAudioSessionHeld = false
-  
-  private var sessionPresetName = "hd1920x1080"
-  private var portraitSize = CGSize(width: 1080, height: 1920)
-  private var captureSize = (width: 1080, height: 1920)
-  private var recordingSpecName = "1080p"
-  private var preferredVideoCodec = "h264"
-  private var codecFallbackReason: String? = nil
-  
-  private var currentPath: String?
-  private var currentTrackingNumber: String?
-  private var currentSegmentId = ""
-  private var currentStartedAtMs: Int64 = 0
-  private var currentSegmentSerial: Int64 = 0
-  private var writerSessionStarted = false
-  private var preservesWatermarkDuringSplit = false
-  private var currentWatermarkFailed = false
-  private var currentWatermarkError: String?
-  
-  private var currentAudioSampleCount: Int64 = 0
-  private var currentAudioEnergyProbeCount: Int64 = 0
-  private var currentAudioLowEnergyProbeCount: Int64 = 0
-  private var currentAudioPeak: Double = 0.0
-  
-  private var metadataCallbackCount: Int64 = 0
-  private var metadataLastCallbackAt: Double = 0.0
-  private var metadataCandidateCount: Int64 = 0
-  private var metadataLastCandidateAt: Double = 0.0
-  
-  private var visionScanInFlight = false
-  private var visionLastCandidateAt: Double = 0.0
-  private var visionLastSubmittedAt: Double = 0.0
-  private var visionFrameCount: Int64 = 0
-  private var visionLastDurationMs: Int64 = 0
-  private var visionTotalDurationMs: Int64 = 0
-  private var visionMaxDurationMs: Int64 = 0
-  private var visionLastError: String?
-  private var visionCandidateCount: Int64 = 0
-  
-  private var lastOperationTiming: [String: Any]?
-  private var latestPixelBuffer: CVPixelBuffer?
-  
-  private let session = AVCaptureSession()
-  private let sessionQueue = DispatchQueue(label: "com.camera.sessionQueue")
-  private let metadataQueue = DispatchQueue(label: "com.camera.metadataQueue")
-  private let visionQueue = DispatchQueue(label: "com.camera.visionQueue")
-  
-  private var videoDeviceInput: AVCaptureDeviceInput?
-  private var audioDeviceInput: AVCaptureDeviceInput?
-  private var videoOutput: AVCaptureVideoDataOutput?
-  private var audioOutput: AVCaptureAudioDataOutput?
-  private var metadataOutput: AVCaptureMetadataOutput?
-  
-  private var writer: AVAssetWriter?
-  private var videoInput: AVAssetWriterInput?
-  private var audioInput: AVAssetWriterInput?
-  private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
-  
-  weak var textures: FlutterTextureRegistry?
-  
-  private let recordingLifecycle = IosCameraRecordingLifecycle()
-  private let recordingActivityState = IosCameraActivityState()
-  private let recordingActivityOwner = "CameraOwner"
-  private let audioSessionCoordinator = IosAudioSessionCoordinator()
-  private let lastSegmentDiagnostics = IosLastSegmentDiagnostics()
-  private let firstWrittenFrameTiming = IosFirstWrittenFrameTiming()
-  private let liveWatermarkRenderer = IosLiveWatermarkRenderer()
-  private let barcodeBatchGate = IosLatestPendingGate<[BarcodeCandidateDto]>()
-  private let eventApi = IosCameraEventApiImplementation()
 }
 
 private func pigeonError(_ message: String, code: String = "camera_error") -> FlutterError {
