@@ -26,30 +26,43 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 1. 自动生成 Pigeon 代码 =================
+    # ================= 1. 执行 Pigeon 生成 =================
     - name: Generate Pigeon Code
       run: |
         if [ -f scripts/pigeon.sh ]; then
           chmod +x scripts/pigeon.sh && ./scripts/pigeon.sh
         elif [ -f lib/pigeons/pigeon_runner.dart ]; then
           dart run lib/pigeons/pigeon_runner.dart
-        elif [ -f pigeons/messages.dart ]; then
-          dart run pigeon --input pigeons/messages.dart
+        elif [ -f pigeons/pigeon_runner.dart ]; then
+          dart run pigeons/pigeon_runner.dart
         else
-          # 如果使用了 build_runner 自动生成
           dart run build_runner build --delete-conflicting-outputs || true
         fi
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 2. 自动把新生成的 Swift 文件补进 Xcode 工程配置 =================
-    - name: Inject Generated Swift files into Xcode Project
+    # ================= 2. 补全 Xcode 工程文件引用 =================
+    - name: Inject Generated Files into Xcode Project
       run: |
         cd ios
-        # 查找 ios/Runner 目录下所有未在 project.pbxproj 中注册的 .swift 文件并打印
-        echo "Checking for generated Swift files..."
-        ls -la Runner/
+        # 若存在 XcodeProj 工具则直接用其链接文件，否则尝试使用 xcodeproj 命令行
+        sudo gem install xcodeproj
+        ruby -e "
+        require 'xcodeproj'
+        project_path = 'Runner.xcodeproj'
+        project = Xcodeproj::Project.open(project_path)
+        target = project.targets.first
+        runner_group = project.main_group['Runner']
+        
+        Dir.glob('Runner/**/*.swift').each do |file|
+          next if target.source_build_phase.files_references.any? { |ref| ref && ref.path == File.basename(file) }
+          file_ref = runner_group.new_file(File.basename(file))
+          target.add_file_references([file_ref])
+          puts \"Injected #{file} to Xcode Project\"
+        end
+        project.save
+        "
 
     - name: Override Deployment Target to 14.0
       run: |
