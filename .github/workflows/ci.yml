@@ -35,8 +35,16 @@ jobs:
         shell: bash
         run: ./tool/check_large_file_limits.sh
       - name: Install dependencies
+        shell: bash
         run: |
           cd $GITHUB_WORKSPACE
+          echo "Current directory: $(pwd)"
+          ls -la pubspec.yaml || true
+          echo "Flutter version:"
+          flutter --version
+          echo "Flutter path:"
+          which flutter
+          rm -rf build
           rm -f pubspec.lock
           flutter clean
           flutter pub get
@@ -73,8 +81,16 @@ jobs:
           flutter-version: '3.44.1'
           cache: true
       - name: Install dependencies
+        shell: bash
         run: |
           cd $GITHUB_WORKSPACE
+          echo "Current directory: $(pwd)"
+          ls -la pubspec.yaml || true
+          echo "Flutter version:"
+          flutter --version
+          echo "Flutter path:"
+          which flutter
+          rm -rf build ios/Pods
           rm -f pubspec.lock
           flutter clean
           flutter pub get
