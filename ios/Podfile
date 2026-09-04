@@ -1,7 +1,6 @@
-# Uncomment this line to define a global platform for your project
-platform :ios, '12.0'
+# global platform 提升至 13.0
+platform :ios, '13.0'
 
-# CocoaPods analytics sends network stats which slows down stats collection. Disables this feature.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
 project 'Runner', {
@@ -39,15 +38,37 @@ target 'Runner' do
 end
 
 post_install do |installer|
+  # 1. 修正 Pods 子项目的设置
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
     
     target.build_configurations.each do |config|
-      # 设置 AVFoundation 为弱链接 (-weak_framework AVFoundation)
-      # 避免低版本 iOS (如 iOS 15.3) 启动时因缺失部分高版本 API 符号而强行闪退
-      config.build_settings['OTHER_LDFLAGS'] ||= ['$(inherited)']
-      config.build_settings['OTHER_LDFLAGS'] << '-weak_framework'
-      config.build_settings['OTHER_LDFLAGS'] << 'AVFoundation'
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+      
+      # 确保 OTHER_LDFLAGS 为数组格式
+      flags = config.build_settings['OTHER_LDFLAGS']
+      flags = [flags] if flags.is_a?(String)
+      flags ||= ['$(inherited)']
+      
+      # ✅ 正确写法：作为一个组合字符串整体追加
+      flags << '-weak_framework AVFoundation' unless flags.include?('-weak_framework AVFoundation')
+      config.build_settings['OTHER_LDFLAGS'] = flags
     end
   end
+
+  # 2. 强行将弱链接注入到主工程 Runner 自身
+  user_project = installer.aggregate_targets.first.user_project
+  user_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+      
+      flags = config.build_settings['OTHER_LDFLAGS']
+      flags = [flags] if flags.is_a?(String)
+      flags ||= ['$(inherited)']
+      
+      flags << '-weak_framework AVFoundation' unless flags.include?('-weak_framework AVFoundation')
+      config.build_settings['OTHER_LDFLAGS'] = flags
+    end
+  end
+  user_project.save
 end
