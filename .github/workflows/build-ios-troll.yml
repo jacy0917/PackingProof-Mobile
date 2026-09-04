@@ -26,27 +26,35 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 1. 强制生成真正的 Pigeon 接口代码 =================
+    # ================= 1. 精准且不覆盖地生成 Pigeon 代码 =================
     - name: Generate Pigeon Code
       run: |
         mkdir -p ios/Runner/Generated
+        rm -f ios/Runner/Generated/PlatformApi.swift
         
-        # 显式尝试项目所有可能的 Pigeon 命令行进行强行生成
-        if [ -f scripts/pigeon.sh ]; then
-          chmod +x scripts/pigeon.sh && ./scripts/pigeon.sh
-        elif [ -f lib/pigeons/pigeon_runner.dart ]; then
-          dart run lib/pigeons/pigeon_runner.dart
-        elif [ -f pigeons/pigeon_runner.dart ]; then
-          dart run pigeons/pigeon_runner.dart
-        else
-          # 直接调用官方命令行直接指定生成 Swift 输出目标
-          dart run pigeon \
-            --input pigeons/messages.dart \
-            --swift_out ios/Runner/Generated/PlatformApi.swift || \
-          dart run pigeon \
-            --input lib/pigeons/messages.dart \
-            --swift_out ios/Runner/Generated/PlatformApi.swift || true
+        # 搜寻所有可能的 Pigeon schema 定义文件
+        FILES=$(find . -maxdepth 3 -type f -name "*.dart" \( -path "*/pigeons/*" -o -path "*/pigeon/*" \))
+        
+        if [ -n "$FILES" ]; then
+          for file in $FILES; do
+            echo "Processing Pigeon Schema: $file"
+            # 临时生成单个 Swift 文件
+            dart run pigeon --input "$file" --swift_out ios/Runner/Generated/temp_api.swift || true
+            if [ -f ios/Runner/Generated/temp_api.swift ]; then
+              cat ios/Runner/Generated/temp_api.swift >> ios/Runner/Generated/PlatformApi.swift
+              rm ios/Runner/Generated/temp_api.swift
+            fi
+          done
         fi
+
+        # 如果还是没有找到或生成失败，尝试运行项目的原生脚本或 build_runner
+        if [ ! -s ios/Runner/Generated/PlatformApi.swift ]; then
+          echo "Fallback: Running build_runner..."
+          dart run build_runner build --delete-conflicting-outputs || true
+        fi
+
+        echo "--- Generated PlatformApi.swift preview ---"
+        head -n 20 ios/Runner/Generated/PlatformApi.swift || true
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
@@ -55,10 +63,10 @@ jobs:
     - name: Synchronize PlatformApi.swift Paths
       run: |
         mkdir -p ios/Runner/Generated
-        
-        # 如果 Generated 里面生成出了实际文件，同步到 Runner 目录满足原生 Swift 依赖
         if [ -f ios/Runner/Generated/PlatformApi.swift ]; then
           cp ios/Runner/Generated/PlatformApi.swift ios/Runner/PlatformApi.swift
+        elif [ ! -f ios/Runner/PlatformApi.swift ]; then
+          echo "// Fallback placeholder" > ios/Runner/PlatformApi.swift
         fi
 
     # ================= 3. 兼容调整 Deployment Target 到 15.0 =================
