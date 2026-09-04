@@ -37,6 +37,8 @@ jobs:
       - name: Install dependencies
         run: |
           cd $GITHUB_WORKSPACE
+          rm -f pubspec.lock
+          flutter clean
           flutter pub get
       - run: flutter analyze
       - name: Run non-visual Flutter tests
@@ -73,6 +75,8 @@ jobs:
       - name: Install dependencies
         run: |
           cd $GITHUB_WORKSPACE
+          rm -f pubspec.lock
+          flutter clean
           flutter pub get
       - name: Run non-visual Flutter tests
         run: |
