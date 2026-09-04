@@ -837,7 +837,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
       } else {
         self.lastSegmentDiagnostics.recordTrackResult(
           serial: serial,
-          trackCount: nil,
+          trackCount: nil as Int64?,
           inspectionError: error?.localizedDescription ?? "未知轨迹加载错误"
         )
       }
