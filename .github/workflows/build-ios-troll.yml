@@ -39,55 +39,23 @@ jobs:
         else
           dart run build_runner build --delete-conflicting-outputs || true
         fi
-        
-        # 保底：若生成完依然没有 PlatformApi.swift，则补一个占位文件
-        if [ ! -f ios/Runner/Generated/PlatformApi.swift ]; then
-          echo "// Auto-generated placeholder" > ios/Runner/Generated/PlatformApi.swift
-        fi
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 2. 深度清理 Xcode 项目记录并重新关联 =================
-    - name: Sanitize and Fix Xcode Project
+    # ================= 2. 强行双重满足 Xcode 路径需求 =================
+    - name: Synchronize PlatformApi.swift Paths
       run: |
-        cd ios
-        sudo gem install xcodeproj
-        ruby -e "
-        require 'xcodeproj'
-        project_path = 'Runner.xcodeproj'
-        project = Xcodeproj::Project.open(project_path)
-        target = project.targets.first
-
-        # 1. 深度清理所有指向旧路径 Runner/PlatformApi.swift 的废弃引用
-        project.files.each do |file_ref|
-          if file_ref.path == 'PlatformApi.swift' || file_ref.path == 'Runner/PlatformApi.swift'
-            puts \"Removing stale PBXFileReference: #{file_ref.path}\"
-            file_ref.remove_from_project
-          end
-        end
-
-        # 2. 将 Generated 目录及生成的 PlatformApi.swift 重新正确挂载到项目
-        runner_group = project.main_group['Runner']
-        generated_group = runner_group['Generated'] || runner_group.new_group('Generated', 'Generated')
-
-        Dir.glob('Runner/Generated/*.swift').each do |file_path|
-          filename = File.basename(file_path)
-          
-          # 判断 target 中是否已经存在关联
-          already_linked = target.source_build_phase.files_references.any? do |ref|
-            ref && ref.path == filename
-          end
-
-          unless already_linked
-            file_ref = generated_group.new_file(filename)
-            target.add_file_references([file_ref])
-            puts \"Successfully added #{file_path} to Xcode Project\"
-          end
-        end
-
-        project.save
-        "
+        mkdir -p ios/Runner/Generated
+        
+        # 情况 A：如果 Pigeon 生成在了 Generated 目录下，复制一份到 ios/Runner/ 满足旧引用
+        if [ -f ios/Runner/Generated/PlatformApi.swift ]; then
+          cp ios/Runner/Generated/PlatformApi.swift ios/Runner/PlatformApi.swift
+        # 情况 B：如果两边都没有，创建一个空的 Swift 类文件填补，防止 Xcode 报错
+        elif [ ! -f ios/Runner/PlatformApi.swift ]; then
+          echo "// Auto-generated placeholder" > ios/Runner/PlatformApi.swift
+          echo "// Auto-generated placeholder" > ios/Runner/Generated/PlatformApi.swift
+        fi
 
     # ================= 3. 统一 iOS Deployment Target 到 15.0 =================
     - name: Override Deployment Target to 15.0
