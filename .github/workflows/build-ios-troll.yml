@@ -6,34 +6,15 @@
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # 1. 必须先通过 Flutter 生成 iOS 构建所需的产物（App.framework 等）
-    - name: Prepare Flutter iOS Assets
-      run: flutter build ios --release --no-codesign
+    # 使用 Flutter 官方命令直接生成无签名的 IPA
+    - name: Build Unsigned IPA for TrollStore
+      run: flutter build ipa --release --no-codesign
 
-    # 2. 导出 xcarchive
-    - name: Build iOS Archive (No Codesign)
-      run: |
-        xcodebuild archive \
-          -workspace ios/Runner.xcworkspace \
-          -scheme Runner \
-          -sdk iphoneos \
-          -configuration Release \
-          -archivePath build/Runner.xcarchive \
-          CODE_SIGNING_ALLOWED=NO \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGN_IDENTITY="" \
-          IPHONEOS_DEPLOYMENT_TARGET=14.0
-
-    # 3. 打包未签名的 IPA
-    - name: Export Unsigned IPA
+    # 重新压缩为 TrollStore 专用的通用格式（确保无签名兼容性）
+    - name: Package TrollStore IPA
       run: |
         mkdir -p build/ipa/Payload
-        # 使用 *.app 防止名称不匹配，并加入逻辑检查
-        if [ -d "build/Runner.xcarchive/Products/Applications/Runner.app" ]; then
-          cp -r build/Runner.xcarchive/Products/Applications/Runner.app build/ipa/Payload/
-        else
-          cp -r build/Runner.xcarchive/Products/Applications/*.app build/ipa/Payload/
-        fi
+        cp -r build/ios/archive/Runner.xcarchive/Products/Applications/*.app build/ipa/Payload/
         cd build/ipa
         zip -r ../../TrollStore-iOS-IPA.ipa Payload/
 
