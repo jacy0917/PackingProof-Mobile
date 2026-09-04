@@ -33,21 +33,27 @@ jobs:
 
     - name: Install dependencies
       run: |
-        cd $GITHUB_WORKSPACE
-        echo "=== Current directory after cd ==="
-        pwd
-        echo "=== Check pubspec.yaml ==="
-        ls -la pubspec.yaml
-        echo "=== First 10 lines of pubspec.yaml ==="
-        head -n 10 pubspec.yaml
-        echo "=== Flutter doctor ==="
-        flutter doctor -v
-        echo "=== Clean and reset ==="
-        flutter clean
-        rm -f pubspec.lock
-        rm -rf ~/.pub-cache
-        echo "=== Run flutter pub get with verbose ==="
-        flutter pub get --verbose
+        echo "=== GITHUB_WORKSPACE = $GITHUB_WORKSPACE ==="
+        echo "=== Check if pubspec.yaml exists at absolute path ==="
+        ls -la $GITHUB_WORKSPACE/pubspec.yaml || true
+        if [ -f $GITHUB_WORKSPACE/pubspec.yaml ]; then
+          echo "=== pubspec.yaml found, changing to workspace ==="
+          cd $GITHUB_WORKSPACE
+          pwd
+          echo "=== Run flutter clean ==="
+          flutter clean
+          echo "=== Remove pubspec.lock ==="
+          rm -f pubspec.lock
+          echo "=== Remove pub cache ==="
+          rm -rf ~/.pub-cache
+          echo "=== Run flutter pub get --verbose ==="
+          flutter pub get --verbose
+        else
+          echo "=== ERROR: pubspec.yaml NOT found at $GITHUB_WORKSPACE ==="
+          echo "=== Listing all files in workspace ==="
+          ls -la $GITHUB_WORKSPACE
+          exit 1
+        fi
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
