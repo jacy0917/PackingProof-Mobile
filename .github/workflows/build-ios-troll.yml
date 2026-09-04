@@ -26,20 +26,14 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # 👇 关键修复 1：在 Podfile 尾部注入强制将所有 Target 版本提升至 14.0 的脚本
-    - name: Force iOS 14.0 Deployment Target in Podfile
+    # 👇 关键修复 1：将项目文件和生成环境里的 13.0 强行替换为 14.0
+    - name: Override Deployment Target to 14.0
       run: |
-        cat << 'EOF' >> ios/Podfile
-
-        post_install do |installer|
-          installer.pods_project.targets.each do |target|
-            flutter_additional_ios_build_settings(target)
-            target.build_configurations.each do |config|
-              config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
-            end
-          end
-        end
-        EOF
+        sed -i '' 's/13\.0/14\.0/g' ios/Runner.xcodeproj/project.pbxproj
+        sed -i '' 's/13\.0/14\.0/g' ios/Podfile
+        if [ -f ios/Flutter/Generated.xcconfig ]; then
+          sed -i '' 's/13\.0/14\.0/g' ios/Flutter/Generated.xcconfig
+        fi
 
     - name: Install iOS pods
       run: |
@@ -49,7 +43,7 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # 👇 关键修复 2：在 xcodebuild 命令中显式传入 IPHONEOS_DEPLOYMENT_TARGET=14.0
+    # 👇 关键修复 2：构建时显式传入参数强制锁定 14.0
     - name: Build iOS App (No Codesign)
       run: |
         xcodebuild archive \
