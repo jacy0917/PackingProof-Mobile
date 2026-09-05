@@ -67,13 +67,14 @@ final class PigeonPlatform {
       binaryMessenger: messenger,
       api: backupHost
     )
-    let cameraHost = IosCameraHostApi(
+    // ✅ 关键修改：使用 IosCameraHostApiImpl 代替 IosCameraHostApi
+    let cameraHost = IosCameraHostApiImpl(
       eventApi: CameraEventApi(binaryMessenger: messenger),
       textures: registrar.textures(),
       audioSessionCoordinator: audioSessionCoordinator
     )
     self.cameraHost = cameraHost
-    // ⭐ 关键修改：CameraHostApiSetup -> IosCameraHostApiSetup
+    // ✅ 使用 Pigeon 生成的 IosCameraHostApiSetup（已确认）
     IosCameraHostApiSetup.setUp(
       binaryMessenger: messenger,
       api: cameraHost
