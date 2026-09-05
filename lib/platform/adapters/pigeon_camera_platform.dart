@@ -3,16 +3,86 @@ import '../../models/recording_orientation.dart';
 import '../contracts/camera_platform.dart';
 import '../generated/platform_api.g.dart';
 
-// ⭐ 临时 stub：确保 CameraHostApi 类型存在，让编译器通过
-// 实际运行时，如果 Pigeon 正确生成，会使用 Pigeon 生成的类
-// 如果 Pigeon 没有生成，这个 stub 可以让编译继续
-abstract class CameraHostApi {
-  factory CameraHostApi() {
-    // 这个 stub 不会被实际调用，只是为了类型检查
-    throw UnsupportedError('Stub CameraHostApi - should be replaced by Pigeon generated class at runtime');
+// ⭐ 完整的 CameraHostApi stub，包含所有被调用的方法
+// 如果 Pigeon 生成成功，运行时会使用 Pigeon 生成的类
+// 如果 Pigeon 生成失败，这个 stub 可以让编译通过
+class CameraHostApi {
+  // 所有方法都抛出异常，实际运行时如果使用了 stub 会崩溃
+  // 但至少编译能通过
+  
+  Future<CameraInitializationDto> initialize(CameraInitializeRequest request) {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
-  // 为了类型兼容，声明所有需要的方法（但不需要实现）
-  // 实际调用会通过 Pigeon 生成的类进行
+  
+  Future<bool> ensurePermissions(bool recordAudio) {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<CameraRecordingStartDto> startWork(
+    String path,
+    bool recordAudio,
+    String trackingNumber,
+  ) {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<CameraRecordingSplitDto> split(
+    String nextPath,
+    String trackingNumber,
+  ) {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<CameraRecordingStopDto> stopWork() {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<Map<String?, Object?>?> getDiagnostics() {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<void> setPairingScanEnabled(bool enabled) {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<void> setWorkScanEnabled(bool enabled) {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<void> setPreviewActive(bool active) {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<bool> setTorchEnabled(bool enabled) {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<CameraInitializationDto> switchCamera() {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<List<CameraLensDto>> listCameras() {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<CameraInitializationDto> switchToCamera(String cameraId) {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<Map<String?, Object?>?> probeSequence(
+    String sequence,
+    int budgetMs,
+  ) {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  void setCapabilityMode(String mode) {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
+  
+  Future<void> dispose() {
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  }
 }
 
 class PigeonCameraPlatform implements CameraPlatform {
