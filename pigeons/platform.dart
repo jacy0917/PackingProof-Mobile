@@ -285,7 +285,7 @@ abstract class OrderReceiverEventApi {
 }
 
 @HostApi()
-abstract class CameraHostApi {
+abstract class IosCameraHostApi {
   @async
   CameraInitializationDto initialize(CameraInitializeRequest request);
   @async
