@@ -615,7 +615,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         if hasFile {
           self.inspectAudioTrack(path: path, serial: serial)
         }
-        // ⭐ 修改：使用 Pigeon 生成的 CameraRecordingStopDto
+        // ⭐ 使用 Pigeon 生成的 CameraRecordingStopDto
         completion(.success(CameraRecordingStopDto(
           path: path,
           startedAtMs: startedAt,
