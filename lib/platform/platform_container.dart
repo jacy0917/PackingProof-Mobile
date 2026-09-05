@@ -18,6 +18,7 @@ import 'contracts/thumbnail_platform.dart';
 import 'contracts/order_receiver_platform.dart';
 import 'contracts/media_platform.dart';
 import 'platform_capabilities.dart';
+import 'adapters/pigeon_camera_platform.dart';
 
 /// 应用启动时创建一次的平台实现容器。
 ///
