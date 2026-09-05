@@ -2,7 +2,7 @@ import Foundation
 import Flutter
 import AVFoundation
 
-// ⭐ 只提供 Pigeon 未生成的类型
+// ⭐ 只提供 Pigeon 未生成的类型（避免与 Pigeon 生成的代码冲突）
 
 class IosCameraActivityState {
     func setActive(_ active: Bool, owner: String) {}
@@ -110,4 +110,4 @@ class IosSharedAudioSessionCoordinator {
     func abandon(_ reason: Any) {}
 }
 
-// ⭐ 删除 IosCameraHostApi、CameraRecordingStopDto 等重复定义
+// ⭐ 注意：不再定义 IosCameraHostApi 和 CameraRecordingStopDto，它们由 Pigeon 生成
