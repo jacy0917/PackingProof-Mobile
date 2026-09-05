@@ -2,7 +2,7 @@ import Foundation
 import Flutter
 import AVFoundation
 
-// ⭐ 只提供 Pigeon 未生成的类型（绝不包含 IosCameraHostApi 或 CameraRecordingStopDto）
+// ⭐ ========== IosCameraPlatform.swift 缺失的类型（Pigeon 未生成） ==========
 
 class IosCameraActivityState {
     func setActive(_ active: Bool, owner: String) {}
@@ -57,6 +57,7 @@ class IosCameraEventApiImplementation {
 
 struct IosCameraOperationTiming {
     let operation: String
+    init(operation: String) { self.operation = operation }
     func finish(succeeded: Bool) -> [String: Any]? { return ["operation": operation, "succeeded": succeeded] }
 }
 
@@ -120,5 +121,8 @@ class IosPromptAudioHost: NSObject {
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {}
 }
 
-// ⭐ IosCameraHostApi、CameraRecordingStopDto、BarcodeCandidateDto
-//   由 Pigeon 生成，不要在这里定义！
+// ⭐ ========== 重要提醒 ==========
+// IosCameraHostApi 由 Pigeon 生成协议，不要在这里定义！
+// CameraRecordingStopDto 由 Pigeon 生成，不要在这里定义！
+// BarcodeCandidateDto 由 Pigeon 生成，不要在这里定义！
+// IosCameraHostApiSetup 由 Pigeon 生成，不要在这里定义！
