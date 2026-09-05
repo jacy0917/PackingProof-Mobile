@@ -1,24 +1,58 @@
 import Foundation
+import Flutter
 
-// ⭐ 临时 stub：补充 Pigeon 缺失的类型
-// 这些定义只为了让编译通过，实际运行时如果调用了会崩溃
+// ⭐ 为 IosCameraPlatform.swift 缺失的类型提供存根
 
-enum IosCameraVideoAppendPolicy {
-    case appendWhenReady(_ callback: () -> Void)
+class IosCameraActivityState {}
+class IosAudioSessionCoordinator {}
+class IosLastSegmentDiagnostics {
+    func snapshot() -> IosLastSegmentDiagnosticsState {
+        return IosLastSegmentDiagnosticsState()
+    }
+}
+class IosFirstWrittenFrameTiming {
+    func recordWrittenFrameIfNeeded() {}
 }
 
-enum IosAudioSampleEnergyProbe {
-    static func normalizedPeak(in sampleBuffer: Any) -> Float? {
+class IosLatestPendingGate<T> {
+    func process(_ action: IosLatestPendingGate<T>.Action) {}
+    enum Action {}
+}
+
+class IosCameraEventApiImplementation {}
+
+struct IosCameraOperationTiming {
+    init(operation: String) {}
+}
+
+struct IosLastSegmentDiagnosticsState {}
+
+struct IosRecordingSpecEncodingPolicy {
+    static func averageBitRate(spec: String, codec: String) -> Int { return 0 }
+}
+
+enum IosCameraWriterFinishPolicy {
+    static func missingWriterError() -> Error {
+        return NSError(domain: "IosCamera", code: -1, userInfo: [NSLocalizedDescriptionKey: "Writer missing"])
+    }
+    static func result(completion: @escaping (Result<Void, Error>) -> Void) -> Any? {
         return nil
     }
 }
 
-enum IosBarcodeVisionFallbackPolicy {
-    static func shouldSchedule(_ callback: @escaping () -> Void) -> Bool {
-        return false
-    }
+enum IosCameraVideoAppendPolicy {
+    static func appendWhenReady(_ closure: @escaping () -> Void) {}
 }
 
+enum IosAudioSampleEnergyProbe {
+    static func normalizedPeak(in sampleBuffer: Any) -> Float? { return nil }
+}
+
+enum IosBarcodeVisionFallbackPolicy {
+    static func shouldSchedule(_ closure: @escaping () -> Void) -> Bool { return false }
+}
+
+// ⭐ IosCameraRecordingLifecycle 补充 Rejection 成员
 enum IosCameraRecordingLifecycle {
     enum Rejection {
         case busy
@@ -28,13 +62,12 @@ enum IosCameraRecordingLifecycle {
     }
 }
 
-// 其他可能缺失的类型
-extension IosCameraPlatform {
-    var firstWrittenFrameTiming: FirstWrittenFrameTiming {
-        return FirstWrittenFrameTiming()
-    }
+// ⭐ PigeonPlatform 需要的类型（如果生成的代码里已有，这里会冲突）
+// 但实际上生成的 PlatformApi.swift 中并没有定义这些，所以我们提供存根
+class IosCameraHostApi {
+    init(binaryMessenger: FlutterBinaryMessenger) {}
+    func prepareForTermination() {}
 }
 
-class FirstWrittenFrameTiming {
-    func recordWrittenFrameIfNeeded() {}
-}
+// 注意：CameraHostApiSetup 实际上由 Pigeon 生成，但 Pigeon 生成的是 IosCameraHostApiSetup
+// 所以我们需要在 PigeonPlatform.swift 中修改调用
