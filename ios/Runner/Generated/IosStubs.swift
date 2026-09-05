@@ -96,9 +96,15 @@ enum IosBarcodeVisionFallbackPolicy {
     }
 }
 
+// ⭐ 修正：补全 IosCameraRecordingLifecycle.Rejection 的 case
 enum IosCameraRecordingLifecycle {
     enum Operation { case stop, split }
-    enum Rejection { case busy, alreadyStarted, notStarted, unknown }
+    enum Rejection {
+        case busy
+        case alreadyStarted
+        case notStarted
+        case unknown
+    }
     class Request { func complete() {}; func cancel() {} }
     func begin(_ operation: Operation, onCancelled: @escaping () -> Void, completion: (Result<Request, Rejection>) -> Void) { completion(.success(Request())) }
     func dispose() {}
@@ -121,67 +127,137 @@ class IosPromptAudioHost: NSObject {
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {}
 }
 
-// ⭐ ========== 关键修改 ==========
-// 实现 IosCameraHostApi 协议的具体类，而不是定义同名类
-// 注意：此类需要实现 IosCameraHostApi 协议中的所有方法
-// 由于 Pigeon 生成的协议方法很多，这里提供一个最小化实现
+// ⭐ ========== 实现 IosCameraHostApi 协议的具体类 ==========
+// 注意：IosCameraHostApi 是 Pigeon 生成的协议，我们需要实现它
 class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
-    // 实现所有协议方法（空实现）
-    func initialize(request: CameraInitializeRequest, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void) {
-        completion(.success(CameraInitializationDto(textureId: 0, previewWidth: 0, previewHeight: 0, sensorOrientation: 0, fps: 0, videoMime: "", codecFallbackReason: nil, flashAvailable: false, lensDirection: "", canSwitchCamera: false, cameraId: nil, zoomRatio: 1.0)))
+    // ⭐ 存储属性以匹配 PigeonPlatform.swift 中的调用
+    let eventApi: Any
+    let textures: FlutterTextureRegistry
+    let audioSessionCoordinator: IosSharedAudioSessionCoordinator
+
+    init(
+        eventApi: Any,
+        textures: FlutterTextureRegistry,
+        audioSessionCoordinator: IosSharedAudioSessionCoordinator
+    ) {
+        self.eventApi = eventApi
+        self.textures = textures
+        self.audioSessionCoordinator = audioSessionCoordinator
+        super.init()
     }
+
+    // ⭐ 实现协议中的所有方法（空实现，仅让编译通过）
+    func initialize(request: CameraInitializeRequest, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void) {
+        completion(.success(CameraInitializationDto(
+            textureId: 0,
+            previewWidth: 0,
+            previewHeight: 0,
+            sensorOrientation: 0,
+            fps: 0,
+            videoMime: "",
+            codecFallbackReason: nil,
+            flashAvailable: false,
+            lensDirection: "",
+            canSwitchCamera: false,
+            cameraId: nil,
+            zoomRatio: 1.0
+        )))
+    }
+
     func ensurePermissions(recordAudio: Bool, completion: @escaping (Result<Bool, Error>) -> Void) {
         completion(.success(true))
     }
+
     func startWork(path: String, recordAudio: Bool, trackingNumber: String, completion: @escaping (Result<CameraRecordingStartDto, Error>) -> Void) {
-        completion(.success(CameraRecordingStartDto(segmentId: "", startedAtMs: 0, recordingPath: "")))
+        completion(.success(CameraRecordingStartDto(
+            segmentId: "",
+            startedAtMs: 0,
+            recordingPath: ""
+        )))
     }
+
     func split(nextPath: String, trackingNumber: String, completion: @escaping (Result<CameraRecordingSplitDto, Error>) -> Void) {
         completion(.failure(NSError(domain: "IosCamera", code: -1)))
     }
+
     func stopWork(completion: @escaping (Result<CameraRecordingStopDto, Error>) -> Void) {
         completion(.failure(NSError(domain: "IosCamera", code: -1)))
     }
+
     func getDiagnostics(completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
         completion(.success(nil))
     }
+
     func setPairingScanEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.success(()))
     }
+
     func setWorkScanEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.success(()))
     }
+
     func setPreviewActive(active: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.success(()))
     }
+
     func setTorchEnabled(enabled: Bool, completion: @escaping (Result<Bool, Error>) -> Void) {
         completion(.success(false))
     }
+
     func switchCamera(completion: @escaping (Result<CameraInitializationDto, Error>) -> Void) {
-        completion(.success(CameraInitializationDto(textureId: 0, previewWidth: 0, previewHeight: 0, sensorOrientation: 0, fps: 0, videoMime: "", codecFallbackReason: nil, flashAvailable: false, lensDirection: "", canSwitchCamera: false, cameraId: nil, zoomRatio: 1.0)))
+        completion(.success(CameraInitializationDto(
+            textureId: 0,
+            previewWidth: 0,
+            previewHeight: 0,
+            sensorOrientation: 0,
+            fps: 0,
+            videoMime: "",
+            codecFallbackReason: nil,
+            flashAvailable: false,
+            lensDirection: "",
+            canSwitchCamera: false,
+            cameraId: nil,
+            zoomRatio: 1.0
+        )))
     }
+
     func listCameras(completion: @escaping (Result<[CameraLensDto], Error>) -> Void) {
         completion(.success([]))
     }
+
     func switchToCamera(cameraId: String, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void) {
-        completion(.success(CameraInitializationDto(textureId: 0, previewWidth: 0, previewHeight: 0, sensorOrientation: 0, fps: 0, videoMime: "", codecFallbackReason: nil, flashAvailable: false, lensDirection: "", canSwitchCamera: false, cameraId: nil, zoomRatio: 1.0)))
+        completion(.success(CameraInitializationDto(
+            textureId: 0,
+            previewWidth: 0,
+            previewHeight: 0,
+            sensorOrientation: 0,
+            fps: 0,
+            videoMime: "",
+            codecFallbackReason: nil,
+            flashAvailable: false,
+            lensDirection: "",
+            canSwitchCamera: false,
+            cameraId: nil,
+            zoomRatio: 1.0
+        )))
     }
+
     func probeSequence(sequence: String, budgetMs: Int64, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
         completion(.success(nil))
     }
+
     func setCapabilityMode(mode: String, completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.success(()))
     }
+
     func dispose(completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.success(()))
     }
-    func prepareForTermination() {}
+
+    // ⭐ 额外方法：prepareForTermination（不是协议要求，但我们单独提供）
+    func prepareForTermination() {
+        // 清理逻辑
+    }
 }
 
-// ⭐ 修正：IosCameraHostApiSetup 是 Pigeon 生成的，用于注册上面的实现类
-// 它期望的参数是 (binaryMessenger: FlutterBinaryMessenger, api: IosCameraHostApi)
-// 所以我们传入 IosCameraHostApiImpl 实例
-
-// ⭐ 注意：IosCameraHostApi 协议由 Pigeon 生成，不要在这里定义
-// ⭐ 注意：CameraRecordingStopDto 由 Pigeon 生成，不要在这里定义
-// ⭐ 注意：BarcodeCandidateDto 由 Pigeon 生成，不要在这里定义
+// ⭐ 注意：IosCameraHostApi 协议、CameraRecordingStopDto、BarcodeCandidateDto 等都由 Pigeon 生成，不要重复定义
