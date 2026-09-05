@@ -34,12 +34,8 @@ jobs:
     - name: Install dependencies
       run: |
         echo "=== GITHUB_WORKSPACE = $GITHUB_WORKSPACE ==="
-        echo "=== Check if pubspec.yaml exists at absolute path ==="
-        ls -la $GITHUB_WORKSPACE/pubspec.yaml || true
         if [ -f $GITHUB_WORKSPACE/pubspec.yaml ]; then
-          echo "=== pubspec.yaml found, changing to workspace ==="
           cd $GITHUB_WORKSPACE
-          pwd
           echo "=== Run flutter clean ==="
           flutter clean
           echo "=== Remove pubspec.lock ==="
@@ -48,7 +44,6 @@ jobs:
           flutter pub get
         else
           echo "=== ERROR: pubspec.yaml NOT found at $GITHUB_WORKSPACE ==="
-          echo "=== Listing all files in workspace ==="
           ls -la $GITHUB_WORKSPACE
           exit 1
         fi
@@ -56,19 +51,34 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 1. 生成 Pigeon 代码（每个 schema 独立输出） =================
-    - name: Generate Pigeon Code
+    # ================= 调试：列出 pigeons 目录内容 =================
+    - name: List pigeons directory
       run: |
         cd $GITHUB_WORKSPACE
         echo "=== Current directory ==="
         pwd
-        
-        # 创建输出目录
+        echo "=== Contents of pigeons/ (if exists) ==="
+        if [ -d pigeons ]; then
+          ls -la pigeons/
+          find pigeons -type f -name "*.dart" | while read -r file; do
+            echo "--- $file ---"
+            head -n 20 "$file"
+          done
+        else
+          echo "⚠️ pigeons/ directory not found!"
+          echo "=== Searching for other pigeon files ==="
+          find . -name "*.dart" | grep -i pigeon || echo "No pigeon files found"
+        fi
+
+    # ================= 1. 生成 Pigeon 代码（每个 schema 独立输出） =================
+    - name: Generate Pigeon Code
+      run: |
+        cd $GITHUB_WORKSPACE
         mkdir -p ios/Runner/Generated
         mkdir -p lib/generated
         rm -f ios/Runner/Generated/*.swift
         
-        # 查找所有 Pigeon schema 文件
+        # 查找所有 Pigeon schema 文件（支持多种路径）
         PIGEON_FILES=$(find . -maxdepth 3 -type f -name "*.dart" \( -path "*/pigeons/*" -o -path "*/pigeon/*" \) 2>/dev/null)
         
         if [ -z "$PIGEON_FILES" ]; then
@@ -82,9 +92,6 @@ jobs:
           for file in $PIGEON_FILES; do
             echo "=== Generating from: $file ==="
             BASENAME=$(basename "$file" .dart)
-            # 将文件名转换为 PascalCase（首字母大写）作为类名参考
-            CLASS_NAME=$(echo "$BASENAME" | sed 's/_\?\([a-z]\)/\U\1/g' | sed 's/^./\U&/')
-            
             SWIFT_OUT="ios/Runner/Generated/${BASENAME}.swift"
             DART_OUT="lib/generated/${BASENAME}.dart"
             
@@ -96,7 +103,12 @@ jobs:
             
             if [ -f "$SWIFT_OUT" ]; then
               echo "✅ Generated Swift: $SWIFT_OUT"
-              head -n 5 "$SWIFT_OUT"
+              echo "--- First 20 lines ---"
+              head -n 20 "$SWIFT_OUT"
+              echo "--- Grep for IosCameraHostApi ---"
+              grep -i "IosCameraHostApi" "$SWIFT_OUT" || echo "❌ IosCameraHostApi NOT found in $SWIFT_OUT"
+              echo "--- Grep for IosCameraOperationTiming ---"
+              grep -i "IosCameraOperationTiming" "$SWIFT_OUT" || echo "❌ IosCameraOperationTiming NOT found in $SWIFT_OUT"
             else
               echo "❌ Failed to generate Swift: $SWIFT_OUT"
             fi
@@ -109,16 +121,16 @@ jobs:
           done
         fi
         
-        echo "=== Generated Swift files ==="
+        echo "=== All generated Swift files ==="
         ls -la ios/Runner/Generated/ || echo "No Swift files generated"
         
-        # 将所有生成的文件复制到 Runner 根目录（Xcode 已引用这些文件）
+        # 复制到 Runner 根目录
         cp -v ios/Runner/Generated/*.swift ios/Runner/ 2>/dev/null || true
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 2. 同步生成的文件到 Runner =================
+    # ================= 2. 同步生成的文件 =================
     - name: Synchronize Generated Swift Files
       run: |
         cd $GITHUB_WORKSPACE
@@ -128,6 +140,8 @@ jobs:
         fi
         echo "=== Swift files in ios/Runner/ ==="
         ls -la ios/Runner/*.swift || echo "No Swift files found"
+        echo "=== Checking for IosCameraHostApi in ios/Runner/ ==="
+        grep -ri "IosCameraHostApi" ios/Runner/ || echo "❌ IosCameraHostApi not found in any Swift file"
 
     # ❌ Safe Override Deployment Target to 15.0 已删除（Podfile 已处理）
 
