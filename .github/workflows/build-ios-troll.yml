@@ -1,406 +1,166 @@
-import 'package:pigeon/pigeon.dart';
+name: Build iOS IPA for TrollStore
 
-@ConfigurePigeon(
-  PigeonOptions(
-    dartOut: 'lib/platform/generated/platform_api.g.dart',
-    dartPackageName: 'packing_proof_mobile',
-    kotlinOut:
-        'android/app/src/main/kotlin/app/packingproof/mobile/generated/PlatformApi.kt',
-    kotlinOptions: KotlinOptions(
-      package: 'app.packingproof.mobile.generated',
-      includeErrorClass: true,
-    ),
-    swiftOut: 'ios/Runner/Generated/PlatformApi.swift',
-    swiftOptions: SwiftOptions(includeErrorClass: true),
-  ),
-)
-class ThumbnailRequest {
-  String path;
-}
+on:
+  push:
+    branches: [ main ]
 
-class WatermarkRequest {
-  String inputPath;
-  String outputPath;
-  int startedAtMs;
-  String trackingNumber;
-  String videoCodec;
-  String recordingOrientation;
-}
+jobs:
+  build-ios:
+    runs-on: macos-latest
 
-class ExportRequest {
-  String inputPath;
-  String outputPath;
-  int startMs;
-  int endMs;
-  bool passthrough;
-}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-class VideoDecodeSupportDto {
-  String manufacturer;
-  String brand;
-  String model;
-  int sdkInt;
-  String release;
-  bool hasHevcDecoder;
-  bool hasAvcDecoder;
-  bool hasHevcEncoder;
-  bool hasAvcEncoder;
-  bool forceSoftwareDecode;
-}
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: 'stable'
+      env:
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-class OrderInfoDto {
-  String trackingNumber;
-  String orderId;
-  String buyerMessage;
-  String sellerMemo;
-  String productInfo;
-  bool hasRefund;
-  bool isPrintedRefund;
-  String refundStatus;
-  String refundProductInfo;
-  int? pushTimeMs;
-  bool isTest;
-}
+    - name: Verify Flutter installation
+      run: |
+        echo "=== Flutter version ==="
+        flutter --version
+        echo "=== Flutter path ==="
+        which flutter
+        echo "=== Current directory ==="
+        pwd
+        echo "=== List root files ==="
+        ls -la $GITHUB_WORKSPACE
 
-class OrderReceiverStatusDto {
-  bool running;
-  String ipAddress;
-  String url;
-  int port;
-  String errorMessage;
-}
+    - name: Install dependencies
+      run: |
+        echo "=== GITHUB_WORKSPACE = $GITHUB_WORKSPACE ==="
+        if [ -f $GITHUB_WORKSPACE/pubspec.yaml ]; then
+          cd $GITHUB_WORKSPACE
+          echo "=== Run flutter clean ==="
+          flutter clean
+          echo "=== Remove pubspec.lock ==="
+          rm -f pubspec.lock
+          echo "=== Run flutter pub get ==="
+          flutter pub get
+        else
+          echo "=== ERROR: pubspec.yaml NOT found at $GITHUB_WORKSPACE ==="
+          ls -la $GITHUB_WORKSPACE
+          exit 1
+        fi
+      env:
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-class CameraInitializeRequest {
-  String videoCodec;
-  String recordingSpec;
-  String capabilityMode;
-  String recordingOrientation;
-}
+    # ================= 1. 生成 Pigeon 代码 =================
+    - name: Generate Pigeon Code
+      run: |
+        cd $GITHUB_WORKSPACE
+        mkdir -p ios/Runner/Generated
+        mkdir -p lib/generated
+        rm -f ios/Runner/Generated/*.swift
+        
+        PIGEON_FILES=$(find . -maxdepth 3 -type f -name "*.dart" \( -path "*/pigeons/*" -o -path "*/pigeon/*" \) 2>/dev/null)
+        
+        if [ -z "$PIGEON_FILES" ]; then
+          echo "⚠️ No Pigeon schema files found"
+          dart run build_runner build --delete-conflicting-outputs || true
+        else
+          echo "=== Found Pigeon schemas: ==="
+          echo "$PIGEON_FILES"
+          
+          for file in $PIGEON_FILES; do
+            echo "=== Generating from: $file ==="
+            BASENAME=$(basename "$file" .dart)
+            SWIFT_OUT="ios/Runner/Generated/${BASENAME}.swift"
+            DART_OUT="lib/generated/${BASENAME}.dart"
+            
+            dart run pigeon \
+              --input "$file" \
+              --swift_out "$SWIFT_OUT" \
+              --dart_out "$DART_OUT" \
+              || echo "⚠️ Failed to generate from $file"
+            
+            if [ -f "$SWIFT_OUT" ]; then
+              echo "✅ Generated Swift: $SWIFT_OUT"
+            else
+              echo "❌ Failed to generate Swift: $SWIFT_OUT"
+            fi
+          done
+        fi
+        
+        echo "=== All generated Swift files ==="
+        ls -la ios/Runner/Generated/ || echo "No Swift files generated"
+        
+        cp -v ios/Runner/Generated/*.swift ios/Runner/ 2>/dev/null || true
+      env:
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-class CameraInitializationDto {
-  int textureId;
-  int previewWidth;
-  int previewHeight;
-  int sensorOrientation;
-  int fps;
-  String videoMime;
-  String? codecFallbackReason;
-  bool flashAvailable;
-  String lensDirection;
-  bool canSwitchCamera;
-  String? cameraId;
-  double zoomRatio;
-}
+    # ================= 2. 同步生成的文件 =================
+    - name: Synchronize Generated Swift Files
+      run: |
+        cd $GITHUB_WORKSPACE
+        if [ -d ios/Runner/Generated ]; then
+          cp -v ios/Runner/Generated/*.swift ios/Runner/ 2>/dev/null || true
+        fi
+        echo "=== Swift files in ios/Runner/ ==="
+        ls -la ios/Runner/*.swift || echo "No Swift files found"
 
-class CameraLensDto {
-  String cameraId;
-  double focalLength;
-  double zoomRatio;
-  bool isMain;
-}
+    - name: Install iOS pods
+      run: |
+        cd $GITHUB_WORKSPACE/ios
+        pod install --repo-update
+      env:
+        PUB_HOSTED_URL: https://pub.flutter-io.cn
+        FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-class CameraRecordingStartDto {
-  String path;
-  int startedAtMs;
-}
+    # ================= 3. 直接使用 xcodebuild 构建（无签名） =================
+    - name: Build Unsigned App with xcodebuild
+      run: |
+        cd $GITHUB_WORKSPACE
+        echo "=== Building with xcodebuild (no codesign) ==="
+        set -e
+        xcodebuild -workspace ios/Runner.xcworkspace \
+          -scheme Runner \
+          -configuration Release \
+          -sdk iphoneos \
+          -derivedDataPath build/ios \
+          build \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          OTHER_CODE_SIGN_FLAGS="--signature=0x0"
+        echo "=== xcodebuild completed successfully ==="
 
-enum CameraWatermarkDisposition {
-  completed,
-  postProcessRequired,
-  failedPartial,
-}
+    - name: List build products
+      run: |
+        cd $GITHUB_WORKSPACE
+        echo "=== Build products directory ==="
+        ls -la build/ios/Build/Products/Release-iphoneos/ || echo "Directory not found"
+        echo "=== Searching for Runner.app ==="
+        find build -name "Runner.app" -type d || echo "Runner.app not found"
 
-class CameraRecordingSplitDto {
-  String completedPath;
-  String nextPath;
-  int completedStartedAtMs;
-  int boundaryAtMs;
-  CameraWatermarkDisposition watermarkDisposition;
-}
+    # ================= 4. 打包为 IPA =================
+    - name: Package TrollStore IPA
+      run: |
+        cd $GITHUB_WORKSPACE
+        APP_PATH=$(find build -name "Runner.app" -type d | head -n 1)
+        if [ -z "$APP_PATH" ]; then
+          echo "❌ Runner.app not found in build/"
+          echo "=== Full build directory tree ==="
+          find build -type f -name "*.app" || true
+          exit 1
+        fi
+        echo "✅ Found .app at: $APP_PATH"
+        mkdir -p build/ipa/Payload
+        cp -r "$APP_PATH" build/ipa/Payload/
+        cd build/ipa
+        zip -r ../../TrollStore-iOS-IPA.ipa Payload/
+        echo "✅ IPA created: TrollStore-iOS-IPA.ipa"
 
-class CameraRecordingStopDto {
-  String path;
-  int startedAtMs;
-  int endedAtMs;
-  CameraWatermarkDisposition watermarkDisposition;
-}
-
-class BarcodeCandidateDto {
-  String value;
-  int area;
-  String? format;
-  int detectedAtMs;
-}
-
-class BackupJobDto {
-  int revision;
-  String id;
-  String filePath;
-  String state;
-  int uploadedBytes;
-  int totalBytes;
-  int? lastModifiedMs;
-  String? contentSha256;
-  String? errorMessage;
-  String? failureKind;
-  int? fileCreatedAtMs;
-  int? backupCompletedAtMs;
-  int? scheduledCleanupAtMs;
-  int? localDeletedAtMs;
-  bool waitingCleanup;
-  int? remoteRecordId;
-  String destinationComputerId;
-  String? cleanupReason;
-}
-
-class BackupSummaryDto {
-  int schemaVersion;
-  int revision;
-  int completedRevision;
-  int cleanupHighWatermark;
-  String deviceId;
-  String deviceName;
-  String? baseUrl;
-  String? computerId;
-  String? computerName;
-  int? lastConnectedAtMs;
-  String? preferredHostId;
-  String? preferredHostName;
-  int totalCount;
-  int pendingCount;
-  int uploadingCount;
-  int pausedCount;
-  int completedCount;
-  int failedCount;
-  int waitingCleanupCount;
-  int localDeletedCount;
-  int unfinishedUploadedBytes;
-  int unfinishedTotalBytes;
-  String? dominantFailureKind;
-  BackupJobDto? activeJob;
-  BackupJobDto? problemJob;
-}
-
-class BackupJobsByPathsDto {
-  int revision;
-  List<BackupJobDto> jobs;
-  List<String> missingPaths;
-}
-
-class BackupCleanupEventDto {
-  int revision;
-  String eventId;
-  String jobId;
-  String filePath;
-  int fileSizeBytes;
-  int deletedAtMs;
-  String reason;
-}
-
-class BackupCleanupPageDto {
-  int latestRevision;
-  int nextAfterRevision;
-  bool hasMore;
-  List<BackupCleanupEventDto> events;
-}
-
-class CameraSessionStartedDto {
-  String sessionId;
-  int startedAtMs;
-}
-
-class CameraSegmentStartedDto {
-  String sessionId;
-  String segmentId;
-  int startedAtMs;
-}
-
-class CameraSegmentCompletedDto {
-  String sessionId;
-  String segmentId;
-  String path;
-  int startedAtMs;
-  int endedAtMs;
-}
-
-class CameraSegmentFailedDto {
-  String sessionId;
-  String segmentId;
-  String reason;
-}
-
-class CameraSessionFailedDto {
-  String sessionId;
-  String reason;
-}
-
-@HostApi()
-abstract class MediaProcessingHostApi {
-  @async
-  String? generateThumbnail(ThumbnailRequest request);
-  @async
-  String applyWatermark(WatermarkRequest request);
-  @async
-  void cancelWatermark();
-  @async
-  String exportRange(ExportRequest request);
-  @async
-  int exportProgress();
-}
-
-@HostApi()
-abstract class SystemMediaPresenterHostApi {
-  @async
-  String? getVideoTrackMime(String path);
-  @async
-  VideoDecodeSupportDto? getVideoDecodeSupport();
-  @async
-  void openWithSystemPlayer(String path);
-}
-
-@HostApi()
-abstract class AlertAudioSessionHostApi {
-  @async
-  void beginSession();
-  @async
-  void endSession();
-  @async
-  void disable();
-  @async
-  void boost();
-}
-
-@HostApi()
-abstract class OrderReceiverHostApi {
-  OrderReceiverStatusDto startReceiver(bool backgroundDelivery);
-  OrderReceiverStatusDto getReceiverStatus();
-  OrderInfoDto? lookup(String trackingNumber);
-  void updateBackgroundDelivery(bool enabled);
-  void stopReceiver();
-}
-
-@FlutterApi()
-abstract class OrderReceiverEventApi {
-  void orderInfoReceived(List<OrderInfoDto> items);
-}
-
-// ⭐ 关键修改：添加 name 参数，使 Swift 生成 IosCameraHostApi，Dart 类名保持 CameraHostApi
-@HostApi(name: 'IosCameraHostApi')
-abstract class CameraHostApi {
-  @async
-  CameraInitializationDto initialize(CameraInitializeRequest request);
-  @async
-  bool ensurePermissions(bool recordAudio);
-  @async
-  CameraRecordingStartDto startWork(
-    String path,
-    bool recordAudio,
-    String trackingNumber,
-  );
-  @async
-  CameraRecordingSplitDto split(String nextPath, String trackingNumber);
-  @async
-  CameraRecordingStopDto stopWork();
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  Map<String?, Object?>? getDiagnostics();
-  @async
-  void setPairingScanEnabled(bool enabled);
-  @async
-  void setWorkScanEnabled(bool enabled);
-  @async
-  void setPreviewActive(bool active);
-  @async
-  bool setTorchEnabled(bool enabled);
-  @async
-  CameraInitializationDto switchCamera();
-  @async
-  List<CameraLensDto> listCameras();
-  @async
-  CameraInitializationDto switchToCamera(String cameraId);
-  @async
-  Map<String?, Object?>? probeSequence(String sequence, int budgetMs);
-  void setCapabilityMode(String mode);
-  @async
-  void dispose();
-}
-
-@FlutterApi()
-abstract class CameraEventApi {
-  void sessionStarted(CameraSessionStartedDto event);
-  void segmentStarted(CameraSegmentStartedDto event);
-  void segmentCompleted(CameraSegmentCompletedDto event);
-  void segmentFailed(CameraSegmentFailedDto event);
-  void sessionFailed(CameraSessionFailedDto event);
-  void barcodeBatch(List<BarcodeCandidateDto> candidates);
-  void nativeError(String message);
-  void storageCritical();
-  void probeFinished(Map<String?, Object?> results);
-  void recordingFallback(Map<String?, Object?> info);
-}
-
-@HostApi()
-abstract class BackupNativeHostApi {
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  BackupSummaryDto summary();
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  BackupSummaryDto initialize(Map<String?, Object?> request);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  void setAutoEnabled(bool enabled);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  BackupJobsByPathsDto jobsForPaths(List<String> paths);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  BackupCleanupPageDto cleanupEvents(int afterRevision, int limit);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  void acknowledgeCleanupEvents(int throughRevision);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  bool hasPendingJobsOutsideDestination(String computerId);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  String? loadAccessKey();
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  bool isWifiConnected();
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  void saveConnection(Map<String?, Object?> connection);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  void disconnect();
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  void enqueueJob(Map<String?, Object?> request);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  void enqueueJobs(List<Map<String?, Object?>> requests);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  void requeueJob(String jobId);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  void cancelJob(String jobId);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  void updateRetentionSchedule(Map<String?, Object?> request);
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  int? availableRecordingStorageBytes();
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  Map<String?, Object?> reclaimStorageIfNeeded();
-  @async
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
-  Map<String?, Object?>? getNetworkDiagnostics();
-}
-
-@FlutterApi()
-abstract class BackupNativeEventApi {
-  void summaryChanged(BackupSummaryDto summary);
-}
+    - name: Upload IPA artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: TrollStore-iOS-IPA
+        path: TrollStore-iOS-IPA.ipa
+        retention-days: 7
