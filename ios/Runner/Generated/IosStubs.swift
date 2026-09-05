@@ -120,6 +120,5 @@ class IosPromptAudioHost: NSObject {
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {}
 }
 
-// ⭐ 注意：IosCameraHostApi 由 Pigeon 生成（协议），不要在这里定义
-// ⭐ 注意：CameraRecordingStopDto 由 Pigeon 生成，不要在这里定义
-// ⭐ 注意：BarcodeCandidateDto 由 Pigeon 生成，不要在这里定义
+// ⭐ IosCameraHostApi、CameraRecordingStopDto、BarcodeCandidateDto
+//   由 Pigeon 生成，不要在这里定义！
