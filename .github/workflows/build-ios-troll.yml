@@ -44,10 +44,8 @@ jobs:
           flutter clean
           echo "=== Remove pubspec.lock ==="
           rm -f pubspec.lock
-          echo "=== Remove pub cache ==="
-          rm -rf ~/.pub-cache
-          echo "=== Run flutter pub get --verbose ==="
-          flutter pub get --verbose
+          echo "=== Run flutter pub get ==="
+          flutter pub get
         else
           echo "=== ERROR: pubspec.yaml NOT found at $GITHUB_WORKSPACE ==="
           echo "=== Listing all files in workspace ==="
@@ -58,52 +56,80 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 1. 精准且不覆盖地生成 Pigeon 代码 =================
+    # ================= 1. 生成 Pigeon 代码（每个 schema 独立输出） =================
     - name: Generate Pigeon Code
       run: |
         cd $GITHUB_WORKSPACE
+        echo "=== Current directory ==="
+        pwd
+        
+        # 创建输出目录
         mkdir -p ios/Runner/Generated
-        rm -f ios/Runner/Generated/PlatformApi.swift
+        mkdir -p lib/generated
+        rm -f ios/Runner/Generated/*.swift
         
-        # 搜寻所有可能的 Pigeon schema 定义文件
-        FILES=$(find . -maxdepth 3 -type f -name "*.dart" \( -path "*/pigeons/*" -o -path "*/pigeon/*" \))
+        # 查找所有 Pigeon schema 文件
+        PIGEON_FILES=$(find . -maxdepth 3 -type f -name "*.dart" \( -path "*/pigeons/*" -o -path "*/pigeon/*" \) 2>/dev/null)
         
-        if [ -n "$FILES" ]; then
-          for file in $FILES; do
-            echo "Processing Pigeon Schema: $file"
-            # 临时生成单个 Swift 文件
-            dart run pigeon --input "$file" --swift_out ios/Runner/Generated/temp_api.swift || true
-            if [ -f ios/Runner/Generated/temp_api.swift ]; then
-              cat ios/Runner/Generated/temp_api.swift >> ios/Runner/Generated/PlatformApi.swift
-              rm ios/Runner/Generated/temp_api.swift
+        if [ -z "$PIGEON_FILES" ]; then
+          echo "⚠️ No Pigeon schema files found in pigeons/ or pigeon/ directories"
+          echo "Fallback: Running build_runner..."
+          dart run build_runner build --delete-conflicting-outputs || true
+        else
+          echo "=== Found Pigeon schemas: ==="
+          echo "$PIGEON_FILES"
+          
+          for file in $PIGEON_FILES; do
+            echo "=== Generating from: $file ==="
+            BASENAME=$(basename "$file" .dart)
+            # 将文件名转换为 PascalCase（首字母大写）作为类名参考
+            CLASS_NAME=$(echo "$BASENAME" | sed 's/_\?\([a-z]\)/\U\1/g' | sed 's/^./\U&/')
+            
+            SWIFT_OUT="ios/Runner/Generated/${BASENAME}.swift"
+            DART_OUT="lib/generated/${BASENAME}.dart"
+            
+            dart run pigeon \
+              --input "$file" \
+              --swift_out "$SWIFT_OUT" \
+              --dart_out "$DART_OUT" \
+              || echo "⚠️ Failed to generate from $file"
+            
+            if [ -f "$SWIFT_OUT" ]; then
+              echo "✅ Generated Swift: $SWIFT_OUT"
+              head -n 5 "$SWIFT_OUT"
+            else
+              echo "❌ Failed to generate Swift: $SWIFT_OUT"
+            fi
+            
+            if [ -f "$DART_OUT" ]; then
+              echo "✅ Generated Dart: $DART_OUT"
+            else
+              echo "❌ Failed to generate Dart: $DART_OUT"
             fi
           done
         fi
-
-        # 如果还是没有找到或生成失败，尝试运行项目的原生脚本或 build_runner
-        if [ ! -s ios/Runner/Generated/PlatformApi.swift ]; then
-          echo "Fallback: Running build_runner..."
-          dart run build_runner build --delete-conflicting-outputs || true
-        fi
-
-        echo "--- Generated PlatformApi.swift preview ---"
-        head -n 20 ios/Runner/Generated/PlatformApi.swift || true
+        
+        echo "=== Generated Swift files ==="
+        ls -la ios/Runner/Generated/ || echo "No Swift files generated"
+        
+        # 将所有生成的文件复制到 Runner 根目录（Xcode 已引用这些文件）
+        cp -v ios/Runner/Generated/*.swift ios/Runner/ 2>/dev/null || true
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ================= 2. 物理同步至 Runner 目录 =================
-    - name: Synchronize PlatformApi.swift Paths
+    # ================= 2. 同步生成的文件到 Runner =================
+    - name: Synchronize Generated Swift Files
       run: |
         cd $GITHUB_WORKSPACE
-        mkdir -p ios/Runner/Generated
-        if [ -f ios/Runner/Generated/PlatformApi.swift ]; then
-          cp ios/Runner/Generated/PlatformApi.swift ios/Runner/PlatformApi.swift
-        elif [ ! -f ios/Runner/PlatformApi.swift ]; then
-          echo "// Fallback placeholder" > ios/Runner/PlatformApi.swift
+        echo "=== Copying all generated Swift files to Runner ==="
+        if [ -d ios/Runner/Generated ]; then
+          cp -v ios/Runner/Generated/*.swift ios/Runner/ 2>/dev/null || true
         fi
+        echo "=== Swift files in ios/Runner/ ==="
+        ls -la ios/Runner/*.swift || echo "No Swift files found"
 
-    # ❌ Safe Override Deployment Target to 15.0 已删除
+    # ❌ Safe Override Deployment Target to 15.0 已删除（Podfile 已处理）
 
     - name: Install iOS pods
       run: |
