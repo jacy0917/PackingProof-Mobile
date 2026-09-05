@@ -1,7 +1,7 @@
 import '../../services/continuous_camera_service.dart';
 import '../../models/recording_orientation.dart';
 import '../contracts/camera_platform.dart';
-// ⭐ 只导入 DTO 类，不导入 CameraHostApi
+// ⭐ 只导入 DTO 类（不导入 CameraHostApi）
 import '../generated/platform_api.g.dart' show
     CameraInitializeRequest,
     CameraInitializationDto,
@@ -18,66 +18,312 @@ import '../generated/platform_api.g.dart' show
     CameraSegmentFailedDto,
     CameraSessionFailedDto;
 
-// ⭐ 完整的 CameraHostApi stub（包含所有方法）
+// ⭐ 完整的 CameraHostApi stub（包含所有被调用的方法）
 class CameraHostApi {
   Future<CameraInitializationDto> initialize(CameraInitializeRequest request) {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<bool> ensurePermissions(bool recordAudio) {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<CameraRecordingStartDto> startWork(
     String path,
     bool recordAudio,
     String trackingNumber,
   ) {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<CameraRecordingSplitDto> split(
     String nextPath,
     String trackingNumber,
   ) {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<CameraRecordingStopDto> stopWork() {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<Map<String?, Object?>?> getDiagnostics() {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<void> setPairingScanEnabled(bool enabled) {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<void> setWorkScanEnabled(bool enabled) {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<void> setPreviewActive(bool active) {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<bool> setTorchEnabled(bool enabled) {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<CameraInitializationDto> switchCamera() {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<List<CameraLensDto>> listCameras() {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<CameraInitializationDto> switchToCamera(String cameraId) {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<Map<String?, Object?>?> probeSequence(
     String sequence,
     int budgetMs,
   ) {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   void setCapabilityMode(String mode) {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<void> dispose() {
-    throw UnsupportedError('Stub method');
+    throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
 }
 
-// ... 其余代码保持不变（PigeonCameraPlatform 类等）
+class PigeonCameraPlatform implements CameraPlatform {
+  PigeonCameraPlatform({CameraHostApi? hostApi})
+    : _hostApi = hostApi ?? CameraHostApi() {
+    _eventSink = _CameraEventSink(this);
+    CameraEventApi.setUp(_eventSink);
+  }
+
+  final CameraHostApi _hostApi;
+  late final _CameraEventSink _eventSink;
+
+  @override
+  void Function(List<NativeBarcodeCandidate> candidates)? onBarcodeBatch;
+
+  @override
+  void Function(String message)? onError;
+
+  @override
+  void Function()? onStorageCritical;
+
+  @override
+  void Function(Map<Object?, Object?> results)? onProbeFinished;
+
+  @override
+  void Function(Map<Object?, Object?> info)? onRecordingFallback;
+
+  @override
+  Future<ContinuousCameraInitialization> initialize({
+    String videoCodec = 'hevc',
+    String recordingSpec = 'hd1080p30',
+    String capabilityMode = 'unverified',
+    RecordingOrientation recordingOrientation = RecordingOrientation.portrait,
+  }) async {
+    return _initializationFromDto(
+      await _hostApi.initialize(
+        CameraInitializeRequest(
+          videoCodec: videoCodec,
+          recordingSpec: recordingSpec,
+          capabilityMode: capabilityMode,
+          recordingOrientation: recordingOrientation.storageValue,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<bool> ensurePermissions({required bool recordAudio}) =>
+      _hostApi.ensurePermissions(recordAudio);
+
+  @override
+  Future<NativeRecordingStart> startWork(
+    String path, {
+    required bool recordAudio,
+    required String trackingNumber,
+  }) async {
+    final CameraRecordingStartDto value = await _hostApi.startWork(
+      path,
+      recordAudio,
+      trackingNumber,
+    );
+    return NativeRecordingStart.fromMap(<Object?, Object?>{
+      'path': value.path,
+      'startedAtMs': value.startedAtMs,
+    });
+  }
+
+  @override
+  Future<NativeRecordingSplit> split(
+    String nextPath, {
+    required String trackingNumber,
+  }) async {
+    final CameraRecordingSplitDto value = await _hostApi.split(
+      nextPath,
+      trackingNumber,
+    );
+    return NativeRecordingSplit.fromMap(<Object?, Object?>{
+      'completedPath': value.completedPath,
+      'nextPath': value.nextPath,
+      'completedStartedAtMs': value.completedStartedAtMs,
+      'boundaryAtMs': value.boundaryAtMs,
+      'watermarkDisposition': _nativeWatermarkDisposition(
+        value.watermarkDisposition,
+      ),
+    });
+  }
+
+  @override
+  Future<NativeRecordingStop> stopWork() async {
+    final CameraRecordingStopDto value = await _hostApi.stopWork();
+    return NativeRecordingStop.fromMap(<Object?, Object?>{
+      'path': value.path,
+      'startedAtMs': value.startedAtMs,
+      'endedAtMs': value.endedAtMs,
+      'watermarkDisposition': _nativeWatermarkDisposition(
+        value.watermarkDisposition,
+      ),
+    });
+  }
+
+  @override
+  Future<CameraDiagnosticsSnapshot?> getDiagnostics() async {
+    final Map<String?, Object?>? values = await _hostApi.getDiagnostics();
+    if (values == null) return null;
+    return CameraDiagnosticsSnapshot.fromMap(
+      Map<Object?, Object?>.from(values),
+    );
+  }
+
+  @override
+  Future<void> setPairingScanEnabled(bool enabled) =>
+      _hostApi.setPairingScanEnabled(enabled);
+
+  @override
+  Future<void> setWorkScanEnabled(bool enabled) =>
+      _hostApi.setWorkScanEnabled(enabled);
+
+  @override
+  Future<void> setPreviewActive(bool active) =>
+      _hostApi.setPreviewActive(active);
+
+  @override
+  Future<bool> setTorchEnabled(bool enabled) =>
+      _hostApi.setTorchEnabled(enabled);
+
+  @override
+  Future<ContinuousCameraInitialization> switchCamera() async =>
+      _initializationFromDto(await _hostApi.switchCamera());
+
+  @override
+  Future<List<NativeCameraLens>> listCameras() async {
+    final List<CameraLensDto> values = await _hostApi.listCameras();
+    return values.map(_lensFromDto).toList(growable: false);
+  }
+
+  @override
+  Future<ContinuousCameraInitialization> switchToCamera(
+    String cameraId,
+  ) async => _initializationFromDto(await _hostApi.switchToCamera(cameraId));
+
+  @override
+  Future<Map<Object?, Object?>?> probeSequence(
+    String sequence, {
+    required int budgetMs,
+  }) async {
+    final Map<String?, Object?>? values = await _hostApi.probeSequence(
+      sequence,
+      budgetMs,
+    );
+    if (values == null) return null;
+    return Map<Object?, Object?>.from(values);
+  }
+
+  @override
+  Future<void> setCapabilityMode(String mode) =>
+      _hostApi.setCapabilityMode(mode);
+
+  @override
+  Future<void> dispose() async {
+    await _hostApi.dispose();
+  }
+}
+
+class _CameraEventSink extends CameraEventApi {
+  _CameraEventSink(this._platform);
+
+  final PigeonCameraPlatform _platform;
+
+  @override
+  void sessionStarted(CameraSessionStartedDto event) {}
+
+  @override
+  void segmentStarted(CameraSegmentStartedDto event) {}
+
+  @override
+  void segmentCompleted(CameraSegmentCompletedDto event) {}
+
+  @override
+  void segmentFailed(CameraSegmentFailedDto event) {}
+
+  @override
+  void sessionFailed(CameraSessionFailedDto event) {}
+
+  @override
+  void barcodeBatch(List<BarcodeCandidateDto> candidates) {
+    _platform.onBarcodeBatch?.call(
+      candidates
+          .map(
+            (BarcodeCandidateDto value) =>
+                NativeBarcodeCandidate.fromMap(<Object?, Object?>{
+                  'value': value.value,
+                  'area': value.area,
+                  'format': value.format,
+                  'detectedAtMs': value.detectedAtMs,
+                }),
+          )
+          .toList(growable: false),
+    );
+  }
+
+  @override
+  void nativeError(String message) => _platform.onError?.call(message);
+
+  @override
+  void storageCritical() => _platform.onStorageCritical?.call();
+
+  @override
+  void probeFinished(Map<String?, Object?> results) =>
+      _platform.onProbeFinished?.call(results);
+
+  @override
+  void recordingFallback(Map<String?, Object?> info) =>
+      _platform.onRecordingFallback?.call(info);
+}
+
+ContinuousCameraInitialization _initializationFromDto(
+  CameraInitializationDto value,
+) => ContinuousCameraInitialization.fromMap(<Object?, Object?>{
+  'textureId': value.textureId,
+  'previewWidth': value.previewWidth,
+  'previewHeight': value.previewHeight,
+  'sensorOrientation': value.sensorOrientation,
+  'fps': value.fps,
+  'videoMime': value.videoMime,
+  'codecFallbackReason': value.codecFallbackReason,
+  'flashAvailable': value.flashAvailable,
+  'lensDirection': value.lensDirection,
+  'canSwitchCamera': value.canSwitchCamera,
+  'cameraId': value.cameraId,
+  'zoomRatio': value.zoomRatio,
+});
+
+NativeCameraLens _lensFromDto(CameraLensDto value) =>
+    NativeCameraLens.fromMap(<Object?, Object?>{
+      'cameraId': value.cameraId,
+      'focalLength': value.focalLength,
+      'zoomRatio': value.zoomRatio,
+      'isMain': value.isMain,
+    });
+
+NativeWatermarkDisposition _nativeWatermarkDisposition(
+  CameraWatermarkDisposition disposition,
+) => switch (disposition) {
+  CameraWatermarkDisposition.completed => NativeWatermarkDisposition.completed,
+  CameraWatermarkDisposition.postProcessRequired =>
+    NativeWatermarkDisposition.postProcessRequired,
+  CameraWatermarkDisposition.failedPartial =>
+    NativeWatermarkDisposition.failedPartial,
+};
