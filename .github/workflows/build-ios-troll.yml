@@ -114,20 +114,42 @@ jobs:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
-    # ⚠️ 关键修改：用 flutter build ios 替代 flutter build ipa
-    - name: Build Unsigned App for TrollStore
+    # ================= 3. 直接使用 xcodebuild 构建（无签名） =================
+    - name: Build Unsigned App with xcodebuild
       run: |
         cd $GITHUB_WORKSPACE
-        flutter build ios --release --no-codesign
+        echo "=== Building with xcodebuild (no codesign) ==="
+        xcodebuild -workspace ios/Runner.xcworkspace \
+          -scheme Runner \
+          -configuration Release \
+          -sdk iphoneos \
+          -derivedDataPath build/ios \
+          build \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          || { echo "xcodebuild failed"; exit 1; }
 
-    # ⚠️ 关键修改：从 iphoneos 目录复制 .app
+    # ================= 4. 打包为 IPA =================
     - name: Package TrollStore IPA
       run: |
         cd $GITHUB_WORKSPACE
+        APP_PATH="build/ios/Build/Products/Release-iphoneos/Runner.app"
+        if [ ! -d "$APP_PATH" ]; then
+          echo "❌ Runner.app not found at $APP_PATH"
+          # 尝试使用 find 查找
+          APP_PATH=$(find build -name "Runner.app" -type d | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ Runner.app not found anywhere in build/"
+            exit 1
+          fi
+        fi
+        echo "✅ Found .app at: $APP_PATH"
         mkdir -p build/ipa/Payload
-        cp -r build/ios/iphoneos/Runner.app build/ipa/Payload/
+        cp -r "$APP_PATH" build/ipa/Payload/
         cd build/ipa
         zip -r ../../TrollStore-iOS-IPA.ipa Payload/
+        echo "✅ IPA created: TrollStore-iOS-IPA.ipa"
 
     - name: Upload IPA artifact
       uses: actions/upload-artifact@v4
