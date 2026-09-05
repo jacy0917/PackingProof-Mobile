@@ -465,10 +465,12 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     for object in metadataObjects {
       guard let codeObject = object as? AVMetadataMachineReadableCodeObject,
             let value = codeObject.stringValue, !value.isEmpty else { continue }
+      // ✅ 修正：使用正确的参数名
       candidates.append(BarcodeCandidateDto(
-        rawValue: value,
-        formatName: codeObject.type.rawValue,
-        source: "metadata"
+        value: value,
+        area: 0,
+        format: codeObject.type.rawValue,
+        detectedAtMs: Int64(Date().timeIntervalSince1970 * 1000)
       ))
     }
 
@@ -615,7 +617,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         if hasFile {
           self.inspectAudioTrack(path: path, serial: serial)
         }
-        // ⭐ 使用 Pigeon 生成的 CameraRecordingStopDto
+        // ✅ 使用 Pigeon 生成的 CameraRecordingStopDto
         completion(.success(CameraRecordingStopDto(
           path: path,
           startedAtMs: startedAt,
@@ -729,10 +731,12 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         var candidates: [BarcodeCandidateDto] = []
         for result in results {
           if let value = result.payloadStringValue, !value.isEmpty {
+            // ✅ 修正：使用正确的参数名
             candidates.append(BarcodeCandidateDto(
-              rawValue: value,
-              formatName: result.symbology.rawValue,
-              source: "vision"
+              value: value,
+              area: 0,
+              format: result.symbology.rawValue,
+              detectedAtMs: Int64(Date().timeIntervalSince1970 * 1000)
             ))
           }
         }
