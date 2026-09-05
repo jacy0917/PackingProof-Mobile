@@ -1,8 +1,10 @@
 import Foundation
 import Flutter
 import AVFoundation
+import UIKit
+import Vision
 
-// ⭐ ========== IosCameraPlatform.swift 缺失的类型（Pigeon 未生成） ==========
+// ⭐ ========== IosCameraPlatform.swift 中缺失的类型（Pigeon 未生成） ==========
 
 class IosCameraActivityState {
     func setActive(_ active: Bool, owner: String) {}
@@ -51,6 +53,7 @@ class IosLatestPendingGate<T> {
 
 class IosCameraEventApiImplementation {
     func segmentStarted(path: String, segmentId: String, startedAtMs: Int64, completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
+    // ⭐ 使用 Any 避免与 Pigeon 生成的类型冲突
     func segmentEnded(stopDto: Any, completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
     func barcodesDetected(candidates: [Any], completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
 }
@@ -111,6 +114,21 @@ class IosSharedAudioSessionCoordinator {
     func abandon(_ reason: Any) {}
 }
 
+// ⭐ ========== PigeonPlatform.swift 需要的类型 ==========
+
+// 注意：Pigeon 生成的是 IosCameraHostApi 协议，我们需要提供一个类实现它
+// 但为了编译通过，只需提供存根类（运行时实际使用 Pigeon 生成的协议实现类？）
+// 实际上，在 PigeonPlatform.swift 中，IosCameraHostApi(...) 是构造一个对象，
+// 所以必须是一个类。这里定义类，使其与协议同名，但类优先于协议（构造时使用类）
+class IosCameraHostApi {
+    init(
+        eventApi: Any,
+        textures: FlutterTextureRegistry,
+        audioSessionCoordinator: IosSharedAudioSessionCoordinator
+    ) {}
+    func prepareForTermination() {}
+}
+
 class IosBackupHostApi {
     init(eventApi: Any, hostForeground: Bool) {}
     func onHostForeground() {}
@@ -121,8 +139,6 @@ class IosPromptAudioHost: NSObject {
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {}
 }
 
-// ⭐ ========== 重要提醒 ==========
-// IosCameraHostApi 由 Pigeon 生成协议，不要在这里定义！
-// CameraRecordingStopDto 由 Pigeon 生成，不要在这里定义！
-// BarcodeCandidateDto 由 Pigeon 生成，不要在这里定义！
-// IosCameraHostApiSetup 由 Pigeon 生成，不要在这里定义！
+// ⭐ IosCameraHostApiSetup 由 Pigeon 生成，不需要定义
+// ⭐ CameraRecordingStopDto 由 Pigeon 生成，不需要定义
+// ⭐ BarcodeCandidateDto 由 Pigeon 生成，不需要定义
