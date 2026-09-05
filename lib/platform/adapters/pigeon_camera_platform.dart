@@ -72,8 +72,8 @@ class CameraHostApi {
   ) {
     throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
-  void setCapabilityMode(String mode) {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
+  Future<void> setCapabilityMode(String mode) {
+  throw UnsupportedError('Stub method - should be replaced by Pigeon');
   }
   Future<void> dispose() {
     throw UnsupportedError('Stub method - should be replaced by Pigeon');
