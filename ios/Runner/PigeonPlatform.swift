@@ -103,7 +103,8 @@ final class PigeonPlatform {
   /// `UISceneDidDisconnectNotification` 中销毁引擎；若相机回调仍调用
   /// `textureFrameAvailable`，会触发 use-after-free 崩溃。
   static func shutdownForTermination() {
-    cameraHost?.prepareForTermination()
+    // ✅ 修正：安全向下转型并调用 prepareForTermination
+    (cameraHost as? IosCameraHostApiImpl)?.prepareForTermination()
   }
 
   static func onHostForeground() {
