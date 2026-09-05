@@ -1,10 +1,8 @@
 import Foundation
 import Flutter
 import AVFoundation
-import UIKit
-import Vision
 
-// ⭐ ========== IosCameraPlatform.swift 中缺失的类型（Pigeon 未生成） ==========
+// ⭐ ========== IosCameraPlatform.swift 缺失的类型 ==========
 
 class IosCameraActivityState {
     func setActive(_ active: Bool, owner: String) {}
@@ -53,7 +51,6 @@ class IosLatestPendingGate<T> {
 
 class IosCameraEventApiImplementation {
     func segmentStarted(path: String, segmentId: String, startedAtMs: Int64, completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
-    // ⭐ 使用 Any 避免与 Pigeon 生成的类型冲突
     func segmentEnded(stopDto: Any, completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
     func barcodesDetected(candidates: [Any], completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
 }
@@ -114,21 +111,6 @@ class IosSharedAudioSessionCoordinator {
     func abandon(_ reason: Any) {}
 }
 
-// ⭐ ========== PigeonPlatform.swift 需要的类型 ==========
-
-// 注意：Pigeon 生成的是 IosCameraHostApi 协议，我们需要提供一个类实现它
-// 但为了编译通过，只需提供存根类（运行时实际使用 Pigeon 生成的协议实现类？）
-// 实际上，在 PigeonPlatform.swift 中，IosCameraHostApi(...) 是构造一个对象，
-// 所以必须是一个类。这里定义类，使其与协议同名，但类优先于协议（构造时使用类）
-class IosCameraHostApi {
-    init(
-        eventApi: Any,
-        textures: FlutterTextureRegistry,
-        audioSessionCoordinator: IosSharedAudioSessionCoordinator
-    ) {}
-    func prepareForTermination() {}
-}
-
 class IosBackupHostApi {
     init(eventApi: Any, hostForeground: Bool) {}
     func onHostForeground() {}
@@ -139,6 +121,67 @@ class IosPromptAudioHost: NSObject {
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {}
 }
 
-// ⭐ IosCameraHostApiSetup 由 Pigeon 生成，不需要定义
-// ⭐ CameraRecordingStopDto 由 Pigeon 生成，不需要定义
-// ⭐ BarcodeCandidateDto 由 Pigeon 生成，不需要定义
+// ⭐ ========== 关键修改 ==========
+// 实现 IosCameraHostApi 协议的具体类，而不是定义同名类
+// 注意：此类需要实现 IosCameraHostApi 协议中的所有方法
+// 由于 Pigeon 生成的协议方法很多，这里提供一个最小化实现
+class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
+    // 实现所有协议方法（空实现）
+    func initialize(request: CameraInitializeRequest, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void) {
+        completion(.success(CameraInitializationDto(textureId: 0, previewWidth: 0, previewHeight: 0, sensorOrientation: 0, fps: 0, videoMime: "", codecFallbackReason: nil, flashAvailable: false, lensDirection: "", canSwitchCamera: false, cameraId: nil, zoomRatio: 1.0)))
+    }
+    func ensurePermissions(recordAudio: Bool, completion: @escaping (Result<Bool, Error>) -> Void) {
+        completion(.success(true))
+    }
+    func startWork(path: String, recordAudio: Bool, trackingNumber: String, completion: @escaping (Result<CameraRecordingStartDto, Error>) -> Void) {
+        completion(.success(CameraRecordingStartDto(segmentId: "", startedAtMs: 0, recordingPath: "")))
+    }
+    func split(nextPath: String, trackingNumber: String, completion: @escaping (Result<CameraRecordingSplitDto, Error>) -> Void) {
+        completion(.failure(NSError(domain: "IosCamera", code: -1)))
+    }
+    func stopWork(completion: @escaping (Result<CameraRecordingStopDto, Error>) -> Void) {
+        completion(.failure(NSError(domain: "IosCamera", code: -1)))
+    }
+    func getDiagnostics(completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        completion(.success(nil))
+    }
+    func setPairingScanEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func setWorkScanEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func setPreviewActive(active: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func setTorchEnabled(enabled: Bool, completion: @escaping (Result<Bool, Error>) -> Void) {
+        completion(.success(false))
+    }
+    func switchCamera(completion: @escaping (Result<CameraInitializationDto, Error>) -> Void) {
+        completion(.success(CameraInitializationDto(textureId: 0, previewWidth: 0, previewHeight: 0, sensorOrientation: 0, fps: 0, videoMime: "", codecFallbackReason: nil, flashAvailable: false, lensDirection: "", canSwitchCamera: false, cameraId: nil, zoomRatio: 1.0)))
+    }
+    func listCameras(completion: @escaping (Result<[CameraLensDto], Error>) -> Void) {
+        completion(.success([]))
+    }
+    func switchToCamera(cameraId: String, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void) {
+        completion(.success(CameraInitializationDto(textureId: 0, previewWidth: 0, previewHeight: 0, sensorOrientation: 0, fps: 0, videoMime: "", codecFallbackReason: nil, flashAvailable: false, lensDirection: "", canSwitchCamera: false, cameraId: nil, zoomRatio: 1.0)))
+    }
+    func probeSequence(sequence: String, budgetMs: Int64, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        completion(.success(nil))
+    }
+    func setCapabilityMode(mode: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func dispose(completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func prepareForTermination() {}
+}
+
+// ⭐ 修正：IosCameraHostApiSetup 是 Pigeon 生成的，用于注册上面的实现类
+// 它期望的参数是 (binaryMessenger: FlutterBinaryMessenger, api: IosCameraHostApi)
+// 所以我们传入 IosCameraHostApiImpl 实例
+
+// ⭐ 注意：IosCameraHostApi 协议由 Pigeon 生成，不要在这里定义
+// ⭐ 注意：CameraRecordingStopDto 由 Pigeon 生成，不要在这里定义
+// ⭐ 注意：BarcodeCandidateDto 由 Pigeon 生成，不要在这里定义
