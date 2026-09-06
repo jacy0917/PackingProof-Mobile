@@ -9,7 +9,7 @@ import UIKit
 import UniformTypeIdentifiers
 import VideoToolbox
 
-// ⭐ ========== 所有缺失的类型定义 ==========
+// ⭐ ========== 所有缺失的类型定义（集中在此） ==========
 
 // IosAudioSessionCoordinator 使用的枚举
 enum IosAudioSessionReason {
@@ -229,7 +229,7 @@ class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
         do {
             if !audioSessionKeys.contains(key) {
                 if audioSessionKeys.isEmpty {
-                    try audioSessionCoordinator.acquire(.prompt)
+                    try audioSessionCoordinator.acquire(IosAudioSessionReason.prompt)
                 }
                 audioSessionKeys.insert(key)
                 addedAudioSessionKey = true
@@ -270,14 +270,14 @@ class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
     private func releaseAudioSession(for key: String) throws {
         guard audioSessionKeys.contains(key) else { return }
         if audioSessionKeys.count == 1 {
-            try audioSessionCoordinator.release(.prompt)
+            try audioSessionCoordinator.release(IosAudioSessionReason.prompt)
         }
         audioSessionKeys.remove(key)
     }
 
     private func releaseAllAudioSessions() throws {
         guard !audioSessionKeys.isEmpty else { return }
-        try audioSessionCoordinator.release(.prompt)
+        try audioSessionCoordinator.release(IosAudioSessionReason.prompt)
         audioSessionKeys.removeAll()
     }
 
@@ -319,6 +319,14 @@ class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
         super.init()
     }
 
+    // ⭐ 修正：CameraRecordingStartDto 只有 path 和 startedAtMs
+    func startWork(path: String, recordAudio: Bool, trackingNumber: String, completion: @escaping (Result<CameraRecordingStartDto, Error>) -> Void) {
+        completion(.success(CameraRecordingStartDto(
+            path: path,
+            startedAtMs: 0
+        )))
+    }
+
     func initialize(request: CameraInitializeRequest, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void) {
         completion(.success(CameraInitializationDto(
             textureId: 0,
@@ -338,14 +346,6 @@ class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
 
     func ensurePermissions(recordAudio: Bool, completion: @escaping (Result<Bool, Error>) -> Void) {
         completion(.success(true))
-    }
-
-    func startWork(path: String, recordAudio: Bool, trackingNumber: String, completion: @escaping (Result<CameraRecordingStartDto, Error>) -> Void) {
-        completion(.success(CameraRecordingStartDto(
-            segmentId: "",
-            startedAtMs: 0,
-            recordingPath: ""
-        )))
     }
 
     func split(nextPath: String, trackingNumber: String, completion: @escaping (Result<CameraRecordingSplitDto, Error>) -> Void) {
@@ -485,9 +485,10 @@ final class PigeonPlatform {
       hostForeground: UIApplication.shared.applicationState != .background
     )
     self.backupHost = backupHost
+    // ⭐ 修复类型不匹配：强制转换为 BackupNativeHostApi
     BackupNativeHostApiSetup.setUp(
       binaryMessenger: messenger,
-      api: backupHost
+      api: backupHost as! BackupNativeHostApi
     )
     let cameraHost = IosCameraHostApiImpl(
       eventApi: CameraEventApi(binaryMessenger: messenger),
@@ -761,7 +762,7 @@ final class IosAlertAudioSessionHostApi: AlertAudioSessionHostApi {
   func beginSession(completion: @escaping (Result<Void, Error>) -> Void) {
     do {
       if !audioSessionHeld {
-        try audioSessionCoordinator.acquire(.maxVolume)
+        try audioSessionCoordinator.acquire(IosAudioSessionReason.maxVolume)
         audioSessionHeld = true
       }
       completion(.success(()))
@@ -773,7 +774,7 @@ final class IosAlertAudioSessionHostApi: AlertAudioSessionHostApi {
   func endSession(completion: @escaping (Result<Void, Error>) -> Void) {
     do {
       if audioSessionHeld {
-        try audioSessionCoordinator.release(.maxVolume)
+        try audioSessionCoordinator.release(IosAudioSessionReason.maxVolume)
         audioSessionHeld = false
       }
       completion(.success(()))
