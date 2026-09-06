@@ -9,22 +9,9 @@ import UIKit
 import UniformTypeIdentifiers
 import VideoToolbox
 
-// ⭐ ========== 只定义 PigeonPlatform 需要且不与其他文件冲突的类型 ==========
+// ⭐ 只定义 PigeonPlatform 需要的、且不与其他文件冲突的类型
 
-// IosAudioSessionCoordinator 和 IosSharedAudioSessionCoordinator 使用的枚举
-// 现有代码期望的是 IosAudioSessionOwner 类型
-enum IosAudioSessionOwner {
-    case prompt
-    case maxVolume
-    case camera
-    case microphone
-}
-
-// IosAudioSessionCoordinator 的扩展（如果现有文件没有，这里提供存根）
-// 但为了避免与 IosCameraRecordingLifecycle.swift 冲突，我们只定义必要的方法
-// 实际方法签名需要匹配现有文件
-
-// ⭐ IosPromptAudioHost - 必须在 PigeonPlatform.swift 中定义，因为它在 register 中被使用
+// IosPromptAudioHost - 必须在 PigeonPlatform.swift 中定义，因为它在 register 中被使用
 class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
     private var players: [String: AVAudioPlayer] = [:]
     private var completions: [String: FlutterResult] = [:]
@@ -116,7 +103,6 @@ class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
         do {
             if !audioSessionKeys.contains(key) {
                 if audioSessionKeys.isEmpty {
-                    // ⭐ 使用 IosAudioSessionOwner.prompt
                     try audioSessionCoordinator.acquire(.prompt)
                 }
                 audioSessionKeys.insert(key)
