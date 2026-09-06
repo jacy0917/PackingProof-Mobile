@@ -67,14 +67,13 @@ final class PigeonPlatform {
       binaryMessenger: messenger,
       api: backupHost
     )
-    // ✅ 关键修改：使用 IosCameraHostApiImpl 代替 IosCameraHostApi
+    // ✅ 使用 IosCameraHostApiImpl
     let cameraHost = IosCameraHostApiImpl(
       eventApi: CameraEventApi(binaryMessenger: messenger),
       textures: registrar.textures(),
       audioSessionCoordinator: audioSessionCoordinator
     )
     self.cameraHost = cameraHost
-    // ✅ 使用 Pigeon 生成的 IosCameraHostApiSetup（已确认）
     IosCameraHostApiSetup.setUp(
       binaryMessenger: messenger,
       api: cameraHost
@@ -103,7 +102,7 @@ final class PigeonPlatform {
   /// `UISceneDidDisconnectNotification` 中销毁引擎；若相机回调仍调用
   /// `textureFrameAvailable`，会触发 use-after-free 崩溃。
   static func shutdownForTermination() {
-    // ✅ 修正：安全向下转型并调用 prepareForTermination
+    // ✅ 安全向下转型并调用 prepareForTermination
     (cameraHost as? IosCameraHostApiImpl)?.prepareForTermination()
   }
 
@@ -139,7 +138,6 @@ private final class IosPromptAudioHost: NSObject {
         try stop()
         result(nil)
       } catch {
-        // broad-catch: 原生音频会话错误统一转换为 FlutterError
         result(FlutterError(
           code: "audio_session_release_failed",
           message: error.localizedDescription,
@@ -151,7 +149,6 @@ private final class IosPromptAudioHost: NSObject {
         try dispose()
         result(nil)
       } catch {
-        // broad-catch: 原生音频会话错误统一转换为 FlutterError
         result(FlutterError(
           code: "audio_session_release_failed",
           message: error.localizedDescription,
@@ -273,7 +270,6 @@ extension IosPromptAudioHost: AVAudioPlayerDelegate {
       try releaseAudioSession(for: entry.key)
       completion(nil)
     } catch {
-      // broad-catch: 原生音频会话错误统一转换为 FlutterError
       completion(FlutterError(
         code: "audio_session_release_failed",
         message: error.localizedDescription,
