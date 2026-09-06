@@ -110,100 +110,22 @@ enum IosBarcodeVisionFallbackPolicy {
     }
 }
 
-// ⭐ 补全 IosCameraRecordingLifecycle
-enum IosCameraRecordingLifecycle {
-    enum Operation { case stop, split }
-    enum Rejection {
-        case busy
-        case alreadyStarted
-        case notStarted
-        case unknown
-    }
-    class Request { func complete() {}; func cancel() {} }
-    func begin(_ operation: Operation, onCancelled: @escaping () -> Void, completion: (Result<Request, Rejection>) -> Void) { completion(.success(Request())) }
-    func dispose() {}
-}
+// ⭐ IosCameraRecordingLifecycle - 注意：这个类型在 IosCameraRecordingLifecycle.swift 中已定义，
+// 但为了编译顺序，我们在这里也保留一个（避免重复定义错误）
+// 实际上，如果 IosCameraRecordingLifecycle.swift 已存在，这里的定义会冲突。
+// 由于我们在 PigeonPlatform.swift 中只需要使用这个类型，而它已在其他文件中定义，
+// 我们不应该在这里重复定义。但为了确保编译通过，我们使用 typealias 或直接删除。
+// 检查编译错误：IosCameraRecordingLifecycle 已经在 IosCameraRecordingLifecycle.swift 中定义。
+// 所以我们删除这里的定义，使用现有的。
 
-class IosSharedAudioSessionCoordinator {
-    static let shared = IosSharedAudioSessionCoordinator()
-    func acquire(_ reason: IosAudioSessionReason) throws {}
-    func release(_ reason: IosAudioSessionReason) throws {}
-    func abandon(_ reason: IosAudioSessionReason) {}
-}
+// ⭐ 注意：IosCameraRecordingLifecycle 在 IosCameraRecordingLifecycle.swift 中已定义
+// 这里不再重复定义
 
-// ⭐ IosBackupHostApi 必须实现 BackupNativeHostApi 协议
-class IosBackupHostApi: NSObject, BackupNativeHostApi {
-    private let eventApi: Any
-    private let hostForeground: Bool
+// ⭐ IosSharedAudioSessionCoordinator - 已在 IosCameraRecordingLifecycle.swift 中定义
+// 这里不再重复定义
 
-    init(eventApi: Any, hostForeground: Bool) {
-        self.eventApi = eventApi
-        self.hostForeground = hostForeground
-        super.init()
-    }
-
-    // 实现所有 BackupNativeHostApi 方法（空实现）
-    func summary(completion: @escaping (Result<BackupSummaryDto, Error>) -> Void) {
-        completion(.failure(NSError(domain: "IosBackup", code: -1)))
-    }
-    func initialize(request: [String: Any]?, completion: @escaping (Result<BackupSummaryDto, Error>) -> Void) {
-        completion(.failure(NSError(domain: "IosBackup", code: -1)))
-    }
-    func setAutoEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
-        completion(.success(()))
-    }
-    func jobsForPaths(paths: [String], completion: @escaping (Result<BackupJobsByPathsDto, Error>) -> Void) {
-        completion(.failure(NSError(domain: "IosBackup", code: -1)))
-    }
-    func cleanupEvents(afterRevision: Int64, limit: Int64, completion: @escaping (Result<BackupCleanupPageDto, Error>) -> Void) {
-        completion(.failure(NSError(domain: "IosBackup", code: -1)))
-    }
-    func acknowledgeCleanupEvents(throughRevision: Int64, completion: @escaping (Result<Void, Error>) -> Void) {
-        completion(.success(()))
-    }
-    func hasPendingJobsOutsideDestination(computerId: String, completion: @escaping (Result<Bool, Error>) -> Void) {
-        completion(.success(false))
-    }
-    func loadAccessKey(completion: @escaping (Result<String?, Error>) -> Void) {
-        completion(.success(nil))
-    }
-    func isWifiConnected(completion: @escaping (Result<Bool, Error>) -> Void) {
-        completion(.success(true))
-    }
-    func saveConnection(connection: [String: Any]?, completion: @escaping (Result<Void, Error>) -> Void) {
-        completion(.success(()))
-    }
-    func disconnect(completion: @escaping (Result<Void, Error>) -> Void) {
-        completion(.success(()))
-    }
-    func enqueueJob(request: [String: Any]?, completion: @escaping (Result<Void, Error>) -> Void) {
-        completion(.success(()))
-    }
-    func enqueueJobs(requests: [[String: Any]]?, completion: @escaping (Result<Void, Error>) -> Void) {
-        completion(.success(()))
-    }
-    func requeueJob(jobId: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        completion(.success(()))
-    }
-    func cancelJob(jobId: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        completion(.success(()))
-    }
-    func updateRetentionSchedule(request: [String: Any]?, completion: @escaping (Result<Void, Error>) -> Void) {
-        completion(.success(()))
-    }
-    func availableRecordingStorageBytes(completion: @escaping (Result<Int64?, Error>) -> Void) {
-        completion(.success(nil))
-    }
-    func reclaimStorageIfNeeded(completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
-        completion(.success(nil))
-    }
-    func getNetworkDiagnostics(completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
-        completion(.success(nil))
-    }
-
-    func onHostForeground() {}
-    func onHostBackground() {}
-}
+// ⭐ IosBackupHostApi - 已在 IosBackupPlatform.swift 中定义
+// 这里不再重复定义
 
 // ⭐ IosPromptAudioHost 必须遵循 AVAudioPlayerDelegate
 class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
@@ -387,11 +309,19 @@ class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
         super.init()
     }
 
-    func startWork(path: String, recordAudio: Bool, trackingNumber: String, completion: @escaping (Result<CameraRecordingStartDto, Error>) -> Void) {
-        completion(.success(CameraRecordingStartDto(
-            path: path,
-            startedAtMs: 0
-        )))
+    // ⭐ 修正：getDiagnostics 返回类型需要匹配协议
+    func getDiagnostics(completion: @escaping (Result<[String?: Any?]?, Error>) -> Void) {
+        completion(.success(nil))
+    }
+
+    // ⭐ 修正：probeSequence 返回类型需要匹配协议
+    func probeSequence(sequence: String, budgetMs: Int64, completion: @escaping (Result<[String?: Any?]?, Error>) -> Void) {
+        completion(.success(nil))
+    }
+
+    // ⭐ 修正：setCapabilityMode 是同步方法（throws），不是异步
+    func setCapabilityMode(mode: String) throws {
+        // 空实现
     }
 
     func initialize(request: CameraInitializeRequest, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void) {
@@ -415,16 +345,19 @@ class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
         completion(.success(true))
     }
 
+    func startWork(path: String, recordAudio: Bool, trackingNumber: String, completion: @escaping (Result<CameraRecordingStartDto, Error>) -> Void) {
+        completion(.success(CameraRecordingStartDto(
+            path: path,
+            startedAtMs: 0
+        )))
+    }
+
     func split(nextPath: String, trackingNumber: String, completion: @escaping (Result<CameraRecordingSplitDto, Error>) -> Void) {
         completion(.failure(NSError(domain: "IosCamera", code: -1)))
     }
 
     func stopWork(completion: @escaping (Result<CameraRecordingStopDto, Error>) -> Void) {
         completion(.failure(NSError(domain: "IosCamera", code: -1)))
-    }
-
-    func getDiagnostics(completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
-        completion(.success(nil))
     }
 
     func setPairingScanEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
@@ -481,14 +414,6 @@ class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
         )))
     }
 
-    func probeSequence(sequence: String, budgetMs: Int64, completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
-        completion(.success(nil))
-    }
-
-    func setCapabilityMode(mode: String, completion: @escaping (Result<Void, Error>) -> Void) {
-        completion(.success(()))
-    }
-
     func dispose(completion: @escaping (Result<Void, Error>) -> Void) {
         completion(.success(()))
     }
@@ -519,6 +444,7 @@ enum IosVideoCodecCapabilities {
 
 final class PigeonPlatform {
   private static var cameraHost: IosCameraHostApi?
+  // ⭐ 使用 IosBackupPlatform.swift 中定义的 IosBackupHostApi
   private static var backupHost: IosBackupHostApi?
   private static var promptAudioHost: IosPromptAudioHost?
   private static var promptAudioChannel: FlutterMethodChannel?
@@ -539,6 +465,7 @@ final class PigeonPlatform {
       binaryMessenger: messenger,
       api: IosSystemMediaPresenterHostApi()
     )
+    // ⭐ 使用 IosCameraRecordingLifecycle.swift 中定义的 IosSharedAudioSessionCoordinator
     let audioSessionCoordinator = IosSharedAudioSessionCoordinator.shared
     AlertAudioSessionHostApiSetup.setUp(
       binaryMessenger: messenger,
@@ -547,6 +474,7 @@ final class PigeonPlatform {
       )
     )
     let backupEvents = BackupNativeEventApi(binaryMessenger: messenger)
+    // ⭐ IosBackupHostApi 在 IosBackupPlatform.swift 中定义
     let backupHost = IosBackupHostApi(
       eventApi: backupEvents,
       hostForeground: UIApplication.shared.applicationState != .background
