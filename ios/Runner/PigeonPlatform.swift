@@ -9,125 +9,22 @@ import UIKit
 import UniformTypeIdentifiers
 import VideoToolbox
 
-// ⭐ ========== 所有缺失的类型定义（集中在此） ==========
+// ⭐ ========== 只定义 PigeonPlatform 需要且不与其他文件冲突的类型 ==========
 
-// IosAudioSessionCoordinator 使用的枚举
-enum IosAudioSessionReason {
+// IosAudioSessionCoordinator 和 IosSharedAudioSessionCoordinator 使用的枚举
+// 现有代码期望的是 IosAudioSessionOwner 类型
+enum IosAudioSessionOwner {
     case prompt
     case maxVolume
     case camera
+    case microphone
 }
 
-// IosCameraPlatform.swift 需要的类型
-class IosCameraActivityState {
-    func setActive(_ active: Bool, owner: String) {}
-}
+// IosAudioSessionCoordinator 的扩展（如果现有文件没有，这里提供存根）
+// 但为了避免与 IosCameraRecordingLifecycle.swift 冲突，我们只定义必要的方法
+// 实际方法签名需要匹配现有文件
 
-class IosAudioSessionCoordinator {
-    func acquire(_ reason: IosAudioSessionReason) throws {}
-    func release(_ reason: IosAudioSessionReason) throws {}
-    func abandon(_ reason: IosAudioSessionReason) {}
-}
-
-class IosLastSegmentDiagnostics {
-    func currentState() -> IosLastSegmentDiagnosticsState {
-        return IosLastSegmentDiagnosticsState()
-    }
-    func recordWriterResult(
-        serial: Int64,
-        writerStatus: String,
-        writerError: String?,
-        hasCompletedFile: Bool,
-        inspectionError: String?
-    ) -> Bool { return true }
-    func recordTrackResult(serial: Int64, trackCount: Int64?, inspectionError: String?) {}
-}
-struct IosLastSegmentDiagnosticsState {}
-
-class IosFirstWrittenFrameTiming {
-    func begin(operation: String) {}
-    func recordWrittenFrameIfNeeded() {}
-    func cancelIfNeeded() {}
-    func snapshot() -> [String: Any]? { return nil }
-}
-
-class IosLatestPendingGate<T> {
-    enum Action {
-        case none
-        case send(T)
-        case schedule(TimeInterval)
-    }
-    func submit(_ value: T, now: TimeInterval) -> Action { return .send(value) }
-    func complete(now: TimeInterval) -> Action { return .none }
-    func wake(now: TimeInterval) -> Action { return .none }
-    func reset() {}
-}
-
-class IosCameraEventApiImplementation {
-    func segmentStarted(path: String, segmentId: String, startedAtMs: Int64, completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
-    func segmentEnded(stopDto: Any, completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
-    func barcodesDetected(candidates: [Any], completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
-}
-
-struct IosCameraOperationTiming {
-    let operation: String
-    init(operation: String) { self.operation = operation }
-    func finish(succeeded: Bool) -> [String: Any]? { return ["operation": operation, "succeeded": succeeded] }
-}
-
-class IosLiveWatermarkRenderer {
-    func updateText(_ text: String) {}
-}
-
-struct IosRecordingSpecEncodingPolicy {
-    static func averageBitRate(spec: String, codec: String) -> Int { return 2000000 }
-}
-
-enum IosCameraWriterFinishPolicy {
-    static func missingWriterError() -> Error {
-        return NSError(domain: "IosCamera", code: -1, userInfo: [NSLocalizedDescriptionKey: "Writer missing"])
-    }
-    static func result(status: AVAssetWriter.Status, writerError: String?) -> Result<Void, Error> {
-        if status == .completed { return .success(()) }
-        else if let error = writerError { return .failure(NSError(domain: "IosCamera", code: -1, userInfo: [NSLocalizedDescriptionKey: error])) }
-        else { return .failure(NSError(domain: "IosCamera", code: -1, userInfo: [NSLocalizedDescriptionKey: "Writer failed"])) }
-    }
-}
-
-enum IosCameraVideoAppendPolicy {
-    static func appendWhenReady(isReady: Bool, append: () -> Void, onWritten: (() -> Void)?) {
-        if isReady { append(); onWritten?() }
-    }
-}
-
-enum IosAudioSampleEnergyProbe {
-    static func normalizedPeak(in sampleBuffer: CMSampleBuffer) -> Float? { return 0.5 }
-}
-
-enum IosBarcodeVisionFallbackPolicy {
-    static func shouldSchedule(now: TimeInterval, lastCandidateAt: TimeInterval, lastSubmittedAt: TimeInterval, inFlight: Bool, scanningEnabled: Bool) -> Bool {
-        return scanningEnabled && !inFlight
-    }
-}
-
-// ⭐ IosCameraRecordingLifecycle - 注意：这个类型在 IosCameraRecordingLifecycle.swift 中已定义，
-// 但为了编译顺序，我们在这里也保留一个（避免重复定义错误）
-// 实际上，如果 IosCameraRecordingLifecycle.swift 已存在，这里的定义会冲突。
-// 由于我们在 PigeonPlatform.swift 中只需要使用这个类型，而它已在其他文件中定义，
-// 我们不应该在这里重复定义。但为了确保编译通过，我们使用 typealias 或直接删除。
-// 检查编译错误：IosCameraRecordingLifecycle 已经在 IosCameraRecordingLifecycle.swift 中定义。
-// 所以我们删除这里的定义，使用现有的。
-
-// ⭐ 注意：IosCameraRecordingLifecycle 在 IosCameraRecordingLifecycle.swift 中已定义
-// 这里不再重复定义
-
-// ⭐ IosSharedAudioSessionCoordinator - 已在 IosCameraRecordingLifecycle.swift 中定义
-// 这里不再重复定义
-
-// ⭐ IosBackupHostApi - 已在 IosBackupPlatform.swift 中定义
-// 这里不再重复定义
-
-// ⭐ IosPromptAudioHost 必须遵循 AVAudioPlayerDelegate
+// ⭐ IosPromptAudioHost - 必须在 PigeonPlatform.swift 中定义，因为它在 register 中被使用
 class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
     private var players: [String: AVAudioPlayer] = [:]
     private var completions: [String: FlutterResult] = [:]
@@ -219,7 +116,8 @@ class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
         do {
             if !audioSessionKeys.contains(key) {
                 if audioSessionKeys.isEmpty {
-                    try audioSessionCoordinator.acquire(IosAudioSessionReason.prompt)
+                    // ⭐ 使用 IosAudioSessionOwner.prompt
+                    try audioSessionCoordinator.acquire(.prompt)
                 }
                 audioSessionKeys.insert(key)
                 addedAudioSessionKey = true
@@ -260,14 +158,14 @@ class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
     private func releaseAudioSession(for key: String) throws {
         guard audioSessionKeys.contains(key) else { return }
         if audioSessionKeys.count == 1 {
-            try audioSessionCoordinator.release(IosAudioSessionReason.prompt)
+            try audioSessionCoordinator.release(.prompt)
         }
         audioSessionKeys.remove(key)
     }
 
     private func releaseAllAudioSessions() throws {
         guard !audioSessionKeys.isEmpty else { return }
-        try audioSessionCoordinator.release(IosAudioSessionReason.prompt)
+        try audioSessionCoordinator.release(.prompt)
         audioSessionKeys.removeAll()
     }
 
@@ -292,7 +190,7 @@ class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
     }
 }
 
-// ⭐ 实现 IosCameraHostApi 协议的具体类
+// ⭐ IosCameraHostApiImpl - 必须在 PigeonPlatform.swift 中实现
 class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
     let eventApi: Any
     let textures: FlutterTextureRegistry
@@ -309,17 +207,14 @@ class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
         super.init()
     }
 
-    // ⭐ 修正：getDiagnostics 返回类型需要匹配协议
     func getDiagnostics(completion: @escaping (Result<[String?: Any?]?, Error>) -> Void) {
         completion(.success(nil))
     }
 
-    // ⭐ 修正：probeSequence 返回类型需要匹配协议
     func probeSequence(sequence: String, budgetMs: Int64, completion: @escaping (Result<[String?: Any?]?, Error>) -> Void) {
         completion(.success(nil))
     }
 
-    // ⭐ 修正：setCapabilityMode 是同步方法（throws），不是异步
     func setCapabilityMode(mode: String) throws {
         // 空实现
     }
@@ -444,7 +339,6 @@ enum IosVideoCodecCapabilities {
 
 final class PigeonPlatform {
   private static var cameraHost: IosCameraHostApi?
-  // ⭐ 使用 IosBackupPlatform.swift 中定义的 IosBackupHostApi
   private static var backupHost: IosBackupHostApi?
   private static var promptAudioHost: IosPromptAudioHost?
   private static var promptAudioChannel: FlutterMethodChannel?
@@ -465,7 +359,6 @@ final class PigeonPlatform {
       binaryMessenger: messenger,
       api: IosSystemMediaPresenterHostApi()
     )
-    // ⭐ 使用 IosCameraRecordingLifecycle.swift 中定义的 IosSharedAudioSessionCoordinator
     let audioSessionCoordinator = IosSharedAudioSessionCoordinator.shared
     AlertAudioSessionHostApiSetup.setUp(
       binaryMessenger: messenger,
@@ -474,7 +367,6 @@ final class PigeonPlatform {
       )
     )
     let backupEvents = BackupNativeEventApi(binaryMessenger: messenger)
-    // ⭐ IosBackupHostApi 在 IosBackupPlatform.swift 中定义
     let backupHost = IosBackupHostApi(
       eventApi: backupEvents,
       hostForeground: UIApplication.shared.applicationState != .background
@@ -756,7 +648,7 @@ final class IosAlertAudioSessionHostApi: AlertAudioSessionHostApi {
   func beginSession(completion: @escaping (Result<Void, Error>) -> Void) {
     do {
       if !audioSessionHeld {
-        try audioSessionCoordinator.acquire(IosAudioSessionReason.maxVolume)
+        try audioSessionCoordinator.acquire(.maxVolume)
         audioSessionHeld = true
       }
       completion(.success(()))
@@ -768,7 +660,7 @@ final class IosAlertAudioSessionHostApi: AlertAudioSessionHostApi {
   func endSession(completion: @escaping (Result<Void, Error>) -> Void) {
     do {
       if audioSessionHeld {
-        try audioSessionCoordinator.release(IosAudioSessionReason.maxVolume)
+        try audioSessionCoordinator.release(.maxVolume)
         audioSessionHeld = false
       }
       completion(.success(()))
