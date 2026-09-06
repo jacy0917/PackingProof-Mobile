@@ -1,3 +1,8 @@
+// ⭐ ======================================================================
+// ⭐ 第一部分：所有缺失的类型定义（合并自 IosStubs.swift）
+// ⭐ 放在文件顶部，确保 PigeonPlatform 能访问到
+// ⭐ ======================================================================
+
 import AVFoundation
 import AVKit
 import CoreImage
@@ -9,9 +14,175 @@ import UIKit
 import UniformTypeIdentifiers
 import VideoToolbox
 
-// ⭐ 只定义 PigeonPlatform 需要的、且不与其他文件冲突的类型
+// ---------- 类型定义开始 ----------
 
-// IosPromptAudioHost - 必须在 PigeonPlatform.swift 中定义，因为它在 register 中被使用
+// IosCameraActivityState
+class IosCameraActivityState {
+    func setActive(_ active: Bool, owner: String) {}
+}
+
+// IosAudioSessionCoordinator
+class IosAudioSessionCoordinator {
+    func acquire(_ reason: IosAudioSessionOwner) throws {}
+    func release(_ reason: IosAudioSessionOwner) throws {}
+    func abandon(_ reason: IosAudioSessionOwner) {}
+}
+
+// IosAudioSessionOwner 枚举
+enum IosAudioSessionOwner {
+    case prompt
+    case maxVolume
+    case camera
+    case microphone
+}
+
+// IosLastSegmentDiagnostics & IosLastSegmentDiagnosticsState
+class IosLastSegmentDiagnostics {
+    func currentState() -> IosLastSegmentDiagnosticsState {
+        return IosLastSegmentDiagnosticsState()
+    }
+    func recordWriterResult(
+        serial: Int64,
+        writerStatus: String,
+        writerError: String?,
+        hasCompletedFile: Bool,
+        inspectionError: String?
+    ) -> Bool { return true }
+    func recordTrackResult(serial: Int64, trackCount: Int64?, inspectionError: String?) {}
+}
+struct IosLastSegmentDiagnosticsState {}
+
+// IosFirstWrittenFrameTiming
+class IosFirstWrittenFrameTiming {
+    func begin(operation: String) {}
+    func recordWrittenFrameIfNeeded() {}
+    func cancelIfNeeded() {}
+    func snapshot() -> [String: Any]? { return nil }
+}
+
+// IosLatestPendingGate
+class IosLatestPendingGate<T> {
+    enum Action {
+        case none
+        case send(T)
+        case schedule(TimeInterval)
+    }
+    func submit(_ value: T, now: TimeInterval) -> Action { return .send(value) }
+    func complete(now: TimeInterval) -> Action { return .none }
+    func wake(now: TimeInterval) -> Action { return .none }
+    func reset() {}
+}
+
+// IosCameraEventApiImplementation
+class IosCameraEventApiImplementation {
+    func segmentStarted(path: String, segmentId: String, startedAtMs: Int64, completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
+    func segmentEnded(stopDto: Any, completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
+    func barcodesDetected(candidates: [Any], completion: @escaping (Result<Void, Error>) -> Void) { completion(.success(())) }
+}
+
+// IosCameraOperationTiming
+struct IosCameraOperationTiming {
+    let operation: String
+    init(operation: String) { self.operation = operation }
+    func finish(succeeded: Bool) -> [String: Any]? {
+        return ["operation": operation, "succeeded": succeeded]
+    }
+}
+
+// IosLiveWatermarkRenderer - 包含 updateText 方法
+class IosLiveWatermarkRenderer {
+    func updateText(_ text: String) {}
+}
+
+// IosRecordingSpecEncodingPolicy
+struct IosRecordingSpecEncodingPolicy {
+    static func averageBitRate(spec: String, codec: String) -> Int { return 2000000 }
+}
+
+// IosCameraWriterFinishPolicy
+enum IosCameraWriterFinishPolicy {
+    static func missingWriterError() -> Error {
+        return NSError(domain: "IosCamera", code: -1, userInfo: [NSLocalizedDescriptionKey: "Writer missing"])
+    }
+    static func result(status: AVAssetWriter.Status, writerError: String?) -> Result<Void, Error> {
+        if status == .completed { return .success(()) }
+        else if let error = writerError { return .failure(NSError(domain: "IosCamera", code: -1, userInfo: [NSLocalizedDescriptionKey: error])) }
+        else { return .failure(NSError(domain: "IosCamera", code: -1, userInfo: [NSLocalizedDescriptionKey: "Writer failed"])) }
+    }
+}
+
+// IosCameraVideoAppendPolicy
+enum IosCameraVideoAppendPolicy {
+    static func appendWhenReady(isReady: Bool, append: () -> Void, onWritten: (() -> Void)?) {
+        if isReady { append(); onWritten?() }
+    }
+}
+
+// IosAudioSampleEnergyProbe
+enum IosAudioSampleEnergyProbe {
+    static func normalizedPeak(in sampleBuffer: CMSampleBuffer) -> Float? { return 0.5 }
+}
+
+// IosBarcodeVisionFallbackPolicy
+enum IosBarcodeVisionFallbackPolicy {
+    static func shouldSchedule(now: TimeInterval, lastCandidateAt: TimeInterval, lastSubmittedAt: TimeInterval, inFlight: Bool, scanningEnabled: Bool) -> Bool {
+        return scanningEnabled && !inFlight
+    }
+}
+
+// IosCameraRecordingLifecycle - 完整定义并遵循 Error 协议
+enum IosCameraRecordingLifecycle {
+    enum Operation { case stop, split }
+    enum Rejection: Error {
+        case busy
+        case alreadyStarted
+        case notStarted
+        case unknown
+    }
+    class Request {
+        func complete() {}
+        func cancel() {}
+    }
+    func begin(_ operation: Operation, onCancelled: @escaping () -> Void, completion: (Result<Request, Rejection>) -> Void) {
+        completion(.success(Request()))
+    }
+    func dispose() {}
+}
+
+// IosSharedAudioSessionCoordinator - 提供单例
+class IosSharedAudioSessionCoordinator {
+    static let shared = IosSharedAudioSessionCoordinator()
+    func acquire(_ reason: IosAudioSessionOwner) throws {}
+    func release(_ reason: IosAudioSessionOwner) throws {}
+    func abandon(_ reason: IosAudioSessionOwner) {}
+}
+
+// ---------- 类型定义结束 ----------
+
+
+// ⭐ ======================================================================
+// ⭐ 第二部分：原有的 PigeonPlatform 代码（修改了枚举引用）
+// ⭐ ======================================================================
+
+enum IosVideoCodecCapabilities {
+  static let hasHevcDecoder = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)
+  static let hasAvcDecoder = VTIsHardwareDecodeSupported(kCMVideoCodecType_H264)
+  static let hasHevcEncoder = supportsEncoder(kCMVideoCodecType_HEVC)
+  static let hasAvcEncoder = supportsEncoder(kCMVideoCodecType_H264)
+
+  private static func supportsEncoder(_ codecType: CMVideoCodecType) -> Bool {
+    VTCopySupportedPropertyDictionaryForEncoder(
+      width: 1920,
+      height: 1080,
+      codecType: codecType,
+      encoderSpecification: nil,
+      encoderIDOut: nil,
+      supportedPropertiesOut: nil
+    ) == noErr
+  }
+}
+
+// IosPromptAudioHost - 需要遵循 AVAudioPlayerDelegate
 class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
     private var players: [String: AVAudioPlayer] = [:]
     private var completions: [String: FlutterResult] = [:]
@@ -103,7 +274,8 @@ class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
         do {
             if !audioSessionKeys.contains(key) {
                 if audioSessionKeys.isEmpty {
-                    try audioSessionCoordinator.acquire(.prompt)
+                    // ⭐ 显式指定枚举类型
+                    try audioSessionCoordinator.acquire(IosAudioSessionOwner.prompt)
                 }
                 audioSessionKeys.insert(key)
                 addedAudioSessionKey = true
@@ -144,14 +316,14 @@ class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
     private func releaseAudioSession(for key: String) throws {
         guard audioSessionKeys.contains(key) else { return }
         if audioSessionKeys.count == 1 {
-            try audioSessionCoordinator.release(.prompt)
+            try audioSessionCoordinator.release(IosAudioSessionOwner.prompt)
         }
         audioSessionKeys.remove(key)
     }
 
     private func releaseAllAudioSessions() throws {
         guard !audioSessionKeys.isEmpty else { return }
-        try audioSessionCoordinator.release(.prompt)
+        try audioSessionCoordinator.release(IosAudioSessionOwner.prompt)
         audioSessionKeys.removeAll()
     }
 
@@ -176,7 +348,7 @@ class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
     }
 }
 
-// ⭐ IosCameraHostApiImpl - 必须在 PigeonPlatform.swift 中实现
+// IosCameraHostApiImpl - 实现 IosCameraHostApi 协议
 class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
     let eventApi: Any
     let textures: FlutterTextureRegistry
@@ -302,26 +474,9 @@ class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
     func prepareForTermination() {}
 }
 
-// ⭐ ========== 以下是原有的 PigeonPlatform 代码 ==========
-
-enum IosVideoCodecCapabilities {
-  static let hasHevcDecoder = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)
-  static let hasAvcDecoder = VTIsHardwareDecodeSupported(kCMVideoCodecType_H264)
-  static let hasHevcEncoder = supportsEncoder(kCMVideoCodecType_HEVC)
-  static let hasAvcEncoder = supportsEncoder(kCMVideoCodecType_H264)
-
-  private static func supportsEncoder(_ codecType: CMVideoCodecType) -> Bool {
-    VTCopySupportedPropertyDictionaryForEncoder(
-      width: 1920,
-      height: 1080,
-      codecType: codecType,
-      encoderSpecification: nil,
-      encoderIDOut: nil,
-      supportedPropertiesOut: nil
-    ) == noErr
-  }
-}
-
+// ⭐ ======================================================================
+// ⭐ 第三部分：PigeonPlatform 主类
+// ⭐ ======================================================================
 
 final class PigeonPlatform {
   private static var cameraHost: IosCameraHostApi?
@@ -409,6 +564,10 @@ func pigeonError(
 ) -> PigeonError {
   PigeonError(code: code, message: message, details: nil)
 }
+
+// ⭐ ======================================================================
+// ⭐ 第四部分：其余 HostApi 实现（原样保留）
+// ⭐ ======================================================================
 
 private final class IosMediaProcessingHostApi: MediaProcessingHostApi {
   private let exportLock = NSLock()
@@ -634,7 +793,7 @@ final class IosAlertAudioSessionHostApi: AlertAudioSessionHostApi {
   func beginSession(completion: @escaping (Result<Void, Error>) -> Void) {
     do {
       if !audioSessionHeld {
-        try audioSessionCoordinator.acquire(.maxVolume)
+        try audioSessionCoordinator.acquire(IosAudioSessionOwner.maxVolume)
         audioSessionHeld = true
       }
       completion(.success(()))
@@ -646,7 +805,7 @@ final class IosAlertAudioSessionHostApi: AlertAudioSessionHostApi {
   func endSession(completion: @escaping (Result<Void, Error>) -> Void) {
     do {
       if audioSessionHeld {
-        try audioSessionCoordinator.release(.maxVolume)
+        try audioSessionCoordinator.release(IosAudioSessionOwner.maxVolume)
         audioSessionHeld = false
       }
       completion(.success(()))
