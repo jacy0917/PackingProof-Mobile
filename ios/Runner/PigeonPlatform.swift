@@ -9,7 +9,14 @@ import UIKit
 import UniformTypeIdentifiers
 import VideoToolbox
 
-// ⭐ ========== 新增：所有缺失的类型定义（确保编译通过） ==========
+// ⭐ ========== 所有缺失的类型定义 ==========
+
+// IosAudioSessionCoordinator 使用的枚举
+enum IosAudioSessionReason {
+    case prompt
+    case maxVolume
+    case camera
+}
 
 // IosCameraPlatform.swift 需要的类型
 class IosCameraActivityState {
@@ -17,9 +24,9 @@ class IosCameraActivityState {
 }
 
 class IosAudioSessionCoordinator {
-    func acquire(_ reason: Any) throws {}
-    func release(_ reason: Any) throws {}
-    func abandon(_ reason: Any) {}
+    func acquire(_ reason: IosAudioSessionReason) throws {}
+    func release(_ reason: IosAudioSessionReason) throws {}
+    func abandon(_ reason: IosAudioSessionReason) {}
 }
 
 class IosLastSegmentDiagnostics {
@@ -103,7 +110,7 @@ enum IosBarcodeVisionFallbackPolicy {
     }
 }
 
-// ⭐ 修正：补全 IosCameraRecordingLifecycle
+// ⭐ 补全 IosCameraRecordingLifecycle
 enum IosCameraRecordingLifecycle {
     enum Operation { case stop, split }
     enum Rejection {
@@ -119,9 +126,9 @@ enum IosCameraRecordingLifecycle {
 
 class IosSharedAudioSessionCoordinator {
     static let shared = IosSharedAudioSessionCoordinator()
-    func acquire(_ reason: Any) throws {}
-    func release(_ reason: Any) throws {}
-    func abandon(_ reason: Any) {}
+    func acquire(_ reason: IosAudioSessionReason) throws {}
+    func release(_ reason: IosAudioSessionReason) throws {}
+    func abandon(_ reason: IosAudioSessionReason) {}
 }
 
 class IosBackupHostApi {
@@ -130,8 +137,169 @@ class IosBackupHostApi {
     func onHostBackground() {}
 }
 
-class IosPromptAudioHost: NSObject {
-    func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {}
+// ⭐ IosPromptAudioHost 必须遵循 AVAudioPlayerDelegate
+class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
+    private var players: [String: AVAudioPlayer] = [:]
+    private var completions: [String: FlutterResult] = [:]
+    private var audioSessionKeys = Set<String>()
+    private let audioSessionCoordinator: IosSharedAudioSessionCoordinator
+
+    init(
+        audioSessionCoordinator: IosSharedAudioSessionCoordinator = .shared
+    ) {
+        self.audioSessionCoordinator = audioSessionCoordinator
+        super.init()
+    }
+
+    func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        switch call.method {
+        case "prepare":
+            prepare(call, result: result)
+        case "play":
+            play(call, result: result)
+        case "stop":
+            do {
+                try stop()
+                result(nil)
+            } catch {
+                result(FlutterError(
+                    code: "audio_session_release_failed",
+                    message: error.localizedDescription,
+                    details: nil
+                ))
+            }
+        case "dispose":
+            do {
+                try dispose()
+                result(nil)
+            } catch {
+                result(FlutterError(
+                    code: "audio_session_release_failed",
+                    message: error.localizedDescription,
+                    details: nil
+                ))
+            }
+        default:
+            result(FlutterMethodNotImplemented)
+        }
+    }
+
+    private func prepare(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard
+            let args = call.arguments as? [String: Any],
+            let key = args["key"] as? String,
+            let mimeType = args["mimeType"] as? String
+        else {
+            result(FlutterError(code: "bad_args", message: "提示音参数无效", details: nil))
+            return
+        }
+        let data: Data
+        if let typed = args["bytes"] as? FlutterStandardTypedData {
+            data = typed.data
+        } else if let values = args["bytes"] as? [UInt8] {
+            data = Data(values)
+        } else {
+            result(FlutterError(code: "bad_bytes", message: "提示音数据无效", details: nil))
+            return
+        }
+        let fileExtension = mimeType.contains("wav") ? "wav" : "mp3"
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).\(fileExtension)")
+        do {
+            try data.write(to: fileURL)
+            let player = try AVAudioPlayer(contentsOf: fileURL)
+            player.prepareToPlay()
+            players[key] = player
+            result(nil)
+        } catch {
+            result(FlutterError(code: "prepare_failed", message: error.localizedDescription, details: nil))
+        }
+    }
+
+    private func play(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard
+            let args = call.arguments as? [String: Any],
+            let key = args["key"] as? String,
+            let player = players[key]
+        else {
+            result(FlutterError(code: "not_prepared", message: "提示音尚未准备好", details: nil))
+            return
+        }
+        var addedAudioSessionKey = false
+        do {
+            if !audioSessionKeys.contains(key) {
+                if audioSessionKeys.isEmpty {
+                    try audioSessionCoordinator.acquire(.prompt)
+                }
+                audioSessionKeys.insert(key)
+                addedAudioSessionKey = true
+            }
+            player.currentTime = 0
+            player.delegate = self
+            completions[key] = result
+            if !player.play() {
+                completions.removeValue(forKey: key)
+                try releaseAudioSession(for: key)
+                result(FlutterError(code: "play_failed", message: "提示音播放失败", details: nil))
+            }
+        } catch {
+            completions.removeValue(forKey: key)
+            if addedAudioSessionKey {
+                try? releaseAudioSession(for: key)
+            }
+            result(FlutterError(code: "play_failed", message: error.localizedDescription, details: nil))
+        }
+    }
+
+    private func stop() throws {
+        for player in players.values {
+            player.stop()
+        }
+        for completion in completions.values {
+            completion(nil)
+        }
+        completions.removeAll()
+        try releaseAllAudioSessions()
+    }
+
+    private func dispose() throws {
+        try stop()
+        players.removeAll()
+    }
+
+    private func releaseAudioSession(for key: String) throws {
+        guard audioSessionKeys.contains(key) else { return }
+        if audioSessionKeys.count == 1 {
+            try audioSessionCoordinator.release(.prompt)
+        }
+        audioSessionKeys.remove(key)
+    }
+
+    private func releaseAllAudioSessions() throws {
+        guard !audioSessionKeys.isEmpty else { return }
+        try audioSessionCoordinator.release(.prompt)
+        audioSessionKeys.removeAll()
+    }
+
+    // AVAudioPlayerDelegate
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard
+            let entry = players.first(where: { $0.value === player }),
+            let completion = completions.removeValue(forKey: entry.key)
+        else {
+            return
+        }
+        do {
+            try releaseAudioSession(for: entry.key)
+            completion(nil)
+        } catch {
+            completion(FlutterError(
+                code: "audio_session_release_failed",
+                message: error.localizedDescription,
+                details: nil
+            ))
+        }
+    }
 }
 
 // ⭐ 实现 IosCameraHostApi 协议的具体类
@@ -151,7 +319,6 @@ class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
         super.init()
     }
 
-    // 实现协议中的所有方法（空实现）
     func initialize(request: CameraInitializeRequest, completion: @escaping (Result<CameraInitializationDto, Error>) -> Void) {
         completion(.success(CameraInitializationDto(
             textureId: 0,
@@ -259,10 +426,7 @@ class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
         completion(.success(()))
     }
 
-    // 额外方法：prepareForTermination（不是协议要求）
-    func prepareForTermination() {
-        // 清理逻辑
-    }
+    func prepareForTermination() {}
 }
 
 // ⭐ ========== 以下是原有的 PigeonPlatform 代码 ==========
@@ -325,7 +489,6 @@ final class PigeonPlatform {
       binaryMessenger: messenger,
       api: backupHost
     )
-    // ✅ 使用 IosCameraHostApiImpl
     let cameraHost = IosCameraHostApiImpl(
       eventApi: CameraEventApi(binaryMessenger: messenger),
       textures: registrar.textures(),
@@ -354,13 +517,7 @@ final class PigeonPlatform {
     promptAudioChannel.setMethodCallHandler(promptAudioHost.handle)
   }
 
-  /// App 终止时必须在 Flutter 引擎销毁前同步关闭相机。
-  ///
-  /// `FlutterViewController` 会在 `UIApplicationWillTerminateNotification` /
-  /// `UISceneDidDisconnectNotification` 中销毁引擎；若相机回调仍调用
-  /// `textureFrameAvailable`，会触发 use-after-free 崩溃。
   static func shutdownForTermination() {
-    // ✅ 安全向下转型并调用 prepareForTermination
     (cameraHost as? IosCameraHostApiImpl)?.prepareForTermination()
   }
 
@@ -370,170 +527,6 @@ final class PigeonPlatform {
 
   static func onHostBackground() {
     backupHost?.onHostBackground()
-  }
-}
-
-private final class IosPromptAudioHost: NSObject {
-  private var players: [String: AVAudioPlayer] = [:]
-  private var completions: [String: FlutterResult] = [:]
-  private var audioSessionKeys = Set<String>()
-  private let audioSessionCoordinator: IosSharedAudioSessionCoordinator
-
-  init(
-    audioSessionCoordinator: IosSharedAudioSessionCoordinator = .shared
-  ) {
-    self.audioSessionCoordinator = audioSessionCoordinator
-  }
-
-  func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    switch call.method {
-    case "prepare":
-      prepare(call, result: result)
-    case "play":
-      play(call, result: result)
-    case "stop":
-      do {
-        try stop()
-        result(nil)
-      } catch {
-        result(FlutterError(
-          code: "audio_session_release_failed",
-          message: error.localizedDescription,
-          details: nil
-        ))
-      }
-    case "dispose":
-      do {
-        try dispose()
-        result(nil)
-      } catch {
-        result(FlutterError(
-          code: "audio_session_release_failed",
-          message: error.localizedDescription,
-          details: nil
-        ))
-      }
-    default:
-      result(FlutterMethodNotImplemented)
-    }
-  }
-
-  private func prepare(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard
-      let args = call.arguments as? [String: Any],
-      let key = args["key"] as? String,
-      let mimeType = args["mimeType"] as? String
-    else {
-      result(FlutterError(code: "bad_args", message: "提示音参数无效", details: nil))
-      return
-    }
-    let data: Data
-    if let typed = args["bytes"] as? FlutterStandardTypedData {
-      data = typed.data
-    } else if let values = args["bytes"] as? [UInt8] {
-      data = Data(values)
-    } else {
-      result(FlutterError(code: "bad_bytes", message: "提示音数据无效", details: nil))
-      return
-    }
-    let fileExtension = mimeType.contains("wav") ? "wav" : "mp3"
-    let fileURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("\(UUID().uuidString).\(fileExtension)")
-    do {
-      try data.write(to: fileURL)
-      let player = try AVAudioPlayer(contentsOf: fileURL)
-      player.prepareToPlay()
-      players[key] = player
-      result(nil)
-    } catch {
-      result(FlutterError(code: "prepare_failed", message: error.localizedDescription, details: nil))
-    }
-  }
-
-  private func play(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    guard
-      let args = call.arguments as? [String: Any],
-      let key = args["key"] as? String,
-      let player = players[key]
-    else {
-      result(FlutterError(code: "not_prepared", message: "提示音尚未准备好", details: nil))
-      return
-    }
-    var addedAudioSessionKey = false
-    do {
-      if !audioSessionKeys.contains(key) {
-        if audioSessionKeys.isEmpty {
-          try audioSessionCoordinator.acquire(.prompt)
-        }
-        audioSessionKeys.insert(key)
-        addedAudioSessionKey = true
-      }
-      player.currentTime = 0
-      player.delegate = self
-      completions[key] = result
-      if !player.play() {
-        completions.removeValue(forKey: key)
-        try releaseAudioSession(for: key)
-        result(FlutterError(code: "play_failed", message: "提示音播放失败", details: nil))
-      }
-    } catch {
-      completions.removeValue(forKey: key)
-      if addedAudioSessionKey {
-        try? releaseAudioSession(for: key)
-      }
-      result(FlutterError(code: "play_failed", message: error.localizedDescription, details: nil))
-    }
-  }
-
-  private func stop() throws {
-    for player in players.values {
-      player.stop()
-    }
-    for completion in completions.values {
-      completion(nil)
-    }
-    completions.removeAll()
-    try releaseAllAudioSessions()
-  }
-
-  private func dispose() throws {
-    try stop()
-    players.removeAll()
-  }
-
-  private func releaseAudioSession(for key: String) throws {
-    guard audioSessionKeys.contains(key) else { return }
-    if audioSessionKeys.count == 1 {
-      try audioSessionCoordinator.release(.prompt)
-    }
-    audioSessionKeys.remove(key)
-  }
-
-  private func releaseAllAudioSessions() throws {
-    guard !audioSessionKeys.isEmpty else { return }
-    try audioSessionCoordinator.release(.prompt)
-    audioSessionKeys.removeAll()
-  }
-}
-
-extension IosPromptAudioHost: AVAudioPlayerDelegate {
-  func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-    guard
-      let entry = players.first(where: { $0.value === player }),
-      let completion = completions.removeValue(forKey: entry.key)
-    else {
-      return
-    }
-    do {
-      try releaseAudioSession(for: entry.key)
-      completion(nil)
-    } catch {
-      completion(FlutterError(
-        code: "audio_session_release_failed",
-        message: error.localizedDescription,
-        details: nil
-      ))
-    }
   }
 }
 
