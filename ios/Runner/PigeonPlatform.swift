@@ -131,8 +131,76 @@ class IosSharedAudioSessionCoordinator {
     func abandon(_ reason: IosAudioSessionReason) {}
 }
 
-class IosBackupHostApi {
-    init(eventApi: Any, hostForeground: Bool) {}
+// ⭐ IosBackupHostApi 必须实现 BackupNativeHostApi 协议
+class IosBackupHostApi: NSObject, BackupNativeHostApi {
+    private let eventApi: Any
+    private let hostForeground: Bool
+
+    init(eventApi: Any, hostForeground: Bool) {
+        self.eventApi = eventApi
+        self.hostForeground = hostForeground
+        super.init()
+    }
+
+    // 实现所有 BackupNativeHostApi 方法（空实现）
+    func summary(completion: @escaping (Result<BackupSummaryDto, Error>) -> Void) {
+        completion(.failure(NSError(domain: "IosBackup", code: -1)))
+    }
+    func initialize(request: [String: Any]?, completion: @escaping (Result<BackupSummaryDto, Error>) -> Void) {
+        completion(.failure(NSError(domain: "IosBackup", code: -1)))
+    }
+    func setAutoEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func jobsForPaths(paths: [String], completion: @escaping (Result<BackupJobsByPathsDto, Error>) -> Void) {
+        completion(.failure(NSError(domain: "IosBackup", code: -1)))
+    }
+    func cleanupEvents(afterRevision: Int64, limit: Int64, completion: @escaping (Result<BackupCleanupPageDto, Error>) -> Void) {
+        completion(.failure(NSError(domain: "IosBackup", code: -1)))
+    }
+    func acknowledgeCleanupEvents(throughRevision: Int64, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func hasPendingJobsOutsideDestination(computerId: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+        completion(.success(false))
+    }
+    func loadAccessKey(completion: @escaping (Result<String?, Error>) -> Void) {
+        completion(.success(nil))
+    }
+    func isWifiConnected(completion: @escaping (Result<Bool, Error>) -> Void) {
+        completion(.success(true))
+    }
+    func saveConnection(connection: [String: Any]?, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func disconnect(completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func enqueueJob(request: [String: Any]?, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func enqueueJobs(requests: [[String: Any]]?, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func requeueJob(jobId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func cancelJob(jobId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func updateRetentionSchedule(request: [String: Any]?, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    func availableRecordingStorageBytes(completion: @escaping (Result<Int64?, Error>) -> Void) {
+        completion(.success(nil))
+    }
+    func reclaimStorageIfNeeded(completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        completion(.success(nil))
+    }
+    func getNetworkDiagnostics(completion: @escaping (Result<[String: Any]?, Error>) -> Void) {
+        completion(.success(nil))
+    }
+
     func onHostForeground() {}
     func onHostBackground() {}
 }
@@ -319,7 +387,6 @@ class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
         super.init()
     }
 
-    // ⭐ 修正：CameraRecordingStartDto 只有 path 和 startedAtMs
     func startWork(path: String, recordAudio: Bool, trackingNumber: String, completion: @escaping (Result<CameraRecordingStartDto, Error>) -> Void) {
         completion(.success(CameraRecordingStartDto(
             path: path,
@@ -485,10 +552,9 @@ final class PigeonPlatform {
       hostForeground: UIApplication.shared.applicationState != .background
     )
     self.backupHost = backupHost
-    // ⭐ 修复类型不匹配：强制转换为 BackupNativeHostApi
     BackupNativeHostApiSetup.setUp(
       binaryMessenger: messenger,
-      api: backupHost as! BackupNativeHostApi
+      api: backupHost
     )
     let cameraHost = IosCameraHostApiImpl(
       eventApi: CameraEventApi(binaryMessenger: messenger),
