@@ -414,7 +414,9 @@ final class IosLiveWatermarkRenderer: @unchecked Sendable {
   private var planFailure: IosLiveWatermarkError?
   private var lastAppliedPlanSecond: Int64?
   private var rasterizationCount = 0
-
+  func updateText(_ text: String) {
+    // 更新水印文本的逻辑（如果需要，可以留空）
+  }
   var lastRasterPixelCount: Int {
     planLock.lock()
     defer { planLock.unlock() }
