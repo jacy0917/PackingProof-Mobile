@@ -125,8 +125,8 @@ enum IosBarcodeVisionFallbackPolicy {
     }
 }
 
-// IosCameraRecordingLifecycle - 完整定义并遵循 Error 协议
-enum IosCameraRecordingLifecycle {
+// IosCameraRecordingLifecycle - 改为 class，以便实例化
+class IosCameraRecordingLifecycle {
     enum Operation { case stop, split }
     enum Rejection: Error {
         case busy
@@ -138,6 +138,7 @@ enum IosCameraRecordingLifecycle {
         func complete() {}
         func cancel() {}
     }
+    init() {}  // 添加构造器
     func begin(_ operation: Operation, onCancelled: @escaping () -> Void, completion: (Result<Request, Rejection>) -> Void) {
         completion(.success(Request()))
     }
