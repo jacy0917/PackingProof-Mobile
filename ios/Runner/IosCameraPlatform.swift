@@ -165,8 +165,9 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         return
       }
       let request: IosCameraRecordingLifecycle.Request
+      // ⭐ 修复：显式使用 IosCameraRecordingLifecycle.Operation.stop
       switch self.recordingLifecycle.begin(
-        .stop,
+        IosCameraRecordingLifecycle.Operation.stop,
         onCancelled: { [weak self] in
           if let self = self {
             self.finishPerformanceOperation(
@@ -195,7 +196,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
           signpostName: "CameraRecordingStop",
           succeeded: false
         )
-        completion(.failure(self.recordingRequestError(rejection, for: .stop)))
+        completion(.failure(self.recordingRequestError(rejection, for: IosCameraRecordingLifecycle.Operation.stop)))
         return
       }
       self.recordingActivityState.setActive(
@@ -261,8 +262,9 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         return
       }
       let request: IosCameraRecordingLifecycle.Request
+      // ⭐ 修复：显式使用 IosCameraRecordingLifecycle.Operation.split
       switch self.recordingLifecycle.begin(
-        .split,
+        IosCameraRecordingLifecycle.Operation.split,
         onCancelled: { [weak self] in
           if let self = self {
             self.finishPerformanceOperation(
@@ -291,7 +293,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
           signpostName: "CameraRecordingSplit",
           succeeded: false
         )
-        completion(.failure(self.recordingRequestError(rejection, for: .split)))
+        completion(.failure(self.recordingRequestError(rejection, for: IosCameraRecordingLifecycle.Operation.split)))
         return
       }
       self.preservesWatermarkDuringSplit = preservesWatermark
@@ -465,7 +467,6 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     for object in metadataObjects {
       guard let codeObject = object as? AVMetadataMachineReadableCodeObject,
             let value = codeObject.stringValue, !value.isEmpty else { continue }
-      // ✅ 修正：使用正确的参数名
       candidates.append(BarcodeCandidateDto(
         value: value,
         area: 0,
@@ -590,7 +591,6 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     }
 
     let path = currentPath ?? ""
-    let segmentId = currentSegmentId
     let startedAt = currentStartedAtMs
     let serial = currentSegmentSerial
 
@@ -607,17 +607,14 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
       )
       switch result {
       case .success:
-        let hasFile = self.lastSegmentDiagnostics.recordWriterResult(
+        _ = self.lastSegmentDiagnostics.recordWriterResult(
           serial: serial,
           writerStatus: "completed",
           writerError: nil,
           hasCompletedFile: true,
           inspectionError: nil
         )
-        if hasFile {
-          self.inspectAudioTrack(path: path, serial: serial)
-        }
-        // ✅ 使用 Pigeon 生成的 CameraRecordingStopDto
+        self.inspectAudioTrack(path: path, serial: serial)
         completion(.success(CameraRecordingStopDto(
           path: path,
           startedAtMs: startedAt,
@@ -681,7 +678,8 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
 
     if let peak = IosAudioSampleEnergyProbe.normalizedPeak(in: sampleBuffer) {
       currentAudioEnergyProbeCount += 1
-      currentAudioPeak = max(currentAudioPeak, peak)
+      // ⭐ 修复：将 Float 转换为 Double
+      currentAudioPeak = max(currentAudioPeak, Double(peak))
       if peak < 0.01 {
         currentAudioLowEnergyProbeCount += 1
       }
@@ -731,7 +729,6 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
         var candidates: [BarcodeCandidateDto] = []
         for result in results {
           if let value = result.payloadStringValue, !value.isEmpty {
-            // ✅ 修正：使用正确的参数名
             candidates.append(BarcodeCandidateDto(
               value: value,
               area: 0,
@@ -813,6 +810,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     _ rejection: IosCameraRecordingLifecycle.Rejection,
     for operation: IosCameraRecordingLifecycle.Operation
   ) -> FlutterError {
+    // ⭐ 修复：添加 .unknown 分支
     switch rejection {
     case .busy:
       return pigeonError("录像操作正在进行中", code: "camera_recording_busy")
@@ -820,6 +818,8 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
       return pigeonError("录像已经开始", code: "camera_recording_already_started")
     case .notStarted:
       return pigeonError("录像尚未开始", code: "camera_recording_not_started")
+    case .unknown:
+      return pigeonError("录像状态未知", code: "camera_recording_unknown")
     }
   }
 }
