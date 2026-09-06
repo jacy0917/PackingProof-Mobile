@@ -1,6 +1,5 @@
 // ⭐ ======================================================================
-// ⭐ 第一部分：所有缺失的类型定义（合并自 IosStubs.swift）
-// ⭐ 放在文件顶部，确保 PigeonPlatform 能访问到
+// ⭐ 第一部分：所有缺失的类型定义
 // ⭐ ======================================================================
 
 import AVFoundation
@@ -28,7 +27,6 @@ class IosAudioSessionCoordinator {
     func abandon(_ reason: IosAudioSessionOwner) {}
 }
 
-// IosAudioSessionOwner 枚举
 enum IosAudioSessionOwner {
     case prompt
     case maxVolume
@@ -89,10 +87,7 @@ struct IosCameraOperationTiming {
     }
 }
 
-// IosLiveWatermarkRenderer - 包含 updateText 方法
-class IosLiveWatermarkRenderer {
-    func updateText(_ text: String) {}
-}
+// ⭐ IosLiveWatermarkRenderer 已删除，定义在 IosWatermark.swift 中
 
 // IosRecordingSpecEncodingPolicy
 struct IosRecordingSpecEncodingPolicy {
@@ -161,7 +156,7 @@ class IosSharedAudioSessionCoordinator {
 
 
 // ⭐ ======================================================================
-// ⭐ 第二部分：原有的 PigeonPlatform 代码（修改了枚举引用）
+// ⭐ 第二部分：原有的 PigeonPlatform 代码
 // ⭐ ======================================================================
 
 enum IosVideoCodecCapabilities {
@@ -182,7 +177,7 @@ enum IosVideoCodecCapabilities {
   }
 }
 
-// IosPromptAudioHost - 需要遵循 AVAudioPlayerDelegate
+// IosPromptAudioHost
 class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
     private var players: [String: AVAudioPlayer] = [:]
     private var completions: [String: FlutterResult] = [:]
@@ -274,7 +269,6 @@ class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
         do {
             if !audioSessionKeys.contains(key) {
                 if audioSessionKeys.isEmpty {
-                    // ⭐ 显式指定枚举类型
                     try audioSessionCoordinator.acquire(IosAudioSessionOwner.prompt)
                 }
                 audioSessionKeys.insert(key)
@@ -348,7 +342,7 @@ class IosPromptAudioHost: NSObject, AVAudioPlayerDelegate {
     }
 }
 
-// IosCameraHostApiImpl - 实现 IosCameraHostApi 协议
+// IosCameraHostApiImpl
 class IosCameraHostApiImpl: NSObject, IosCameraHostApi {
     let eventApi: Any
     let textures: FlutterTextureRegistry
@@ -566,7 +560,7 @@ func pigeonError(
 }
 
 // ⭐ ======================================================================
-// ⭐ 第四部分：其余 HostApi 实现（原样保留）
+// ⭐ 第四部分：其余 HostApi 实现
 // ⭐ ======================================================================
 
 private final class IosMediaProcessingHostApi: MediaProcessingHostApi {
@@ -823,9 +817,7 @@ final class IosAlertAudioSessionHostApi: AlertAudioSessionHostApi {
   }
 }
 
-/// iOS 前台订单接收：用本地 TCP 监听 5280，解析桌面端推送的
-/// `POST /api/orderinfo` JSON 数组。仅支持 App 前台运行；退到后台
-/// 后系统可能挂起监听，后续再单独评估后台方案。
+/// iOS 前台订单接收
 private final class IosOrderReceiverHostApi: OrderReceiverHostApi {
   private let eventApi: OrderReceiverEventApi
   private let queue = DispatchQueue(label: "packingproof.order.receiver")
@@ -935,8 +927,6 @@ private final class IosOrderReceiverHostApi: OrderReceiverHostApi {
       close(socketHandle)
     }
   }
-
-  // MARK: - HTTP server
 
   private var port: Int { 5280 }
 
