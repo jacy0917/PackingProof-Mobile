@@ -244,9 +244,8 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                                     request.complete()
                                     self.finishPerformanceOperation(timing, signpostID: signpostID, signpostName: "CameraRecordingSplit", succeeded: true)
                                     completion(.success(CameraRecordingStartDto(
-                                        segmentId: self.currentSegmentId,
-                                        startedAtMs: startedAt,
-                                        recordingPath: nextPath
+                                        path: nextPath,
+                                        startedAtMs: startedAt
                                     )))
                                 } catch {
                                     self.recordingActivityState.setActive(false, owner: self.recordingActivityOwner)
@@ -717,7 +716,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private func recordingRequestError(
         _ rejection: IosCameraRecordingLifecycle.Rejection,
         for operation: IosCameraRecordingLifecycle.Operation
-    ) -> FlutterError {
+    ) -> NSError {
         switch rejection {
         case .busy:
             return pigeonError("录像操作正在进行中", code: "camera_recording_busy")
@@ -731,6 +730,6 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     }
 }
 
-private func pigeonError(_ message: String, code: String = "camera_error") -> FlutterError {
-    return FlutterError(code: code, message: message, details: nil)
+private func pigeonError(_ message: String, code: String = "camera_error") -> NSError {
+    return NSError(domain: code, code: 0, userInfo: [NSLocalizedDescriptionKey: message])
 }
