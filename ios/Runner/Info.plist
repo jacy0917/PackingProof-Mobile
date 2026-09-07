@@ -14,12 +14,20 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>包裹留证</string>
+
+	<!-- 权限与局域网说明配置 -->
 	<key>NSCameraUsageDescription</key>
-	<string>用于识别快递面单并连续录制打包过程</string>
+	<string>PackingProof 需要使用摄像头来录制打包验货视频并实时叠加单号水印。</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>用于在录像中保留打包现场声音</string>
+	<string>PackingProof 需要使用麦克风来录制打包过程中的环境音。</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>用于在局域网中发现并连接保存主机，完成订单接收与录像备份</string>
+	<string>PackingProof 需要访问局域网以将录制的视频自动备份至本地服务器。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_http._tcp.</string>
+		<string>_packingproof._tcp.</string>
+	</array>
+
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
@@ -43,22 +51,6 @@
 		<dict>
 			<key>UIWindowSceneSessionRoleApplication</key>
 			<array>
-    <!-- 摄像头权限 -->
-	<key>NSCameraUsageDescription</key>
-	<string>PackingProof 需要使用摄像头来录制打包验货视频并实时叠加单号水印。</string>
-	
-	<!-- 麦克风权限 -->
-	<key>NSMicrophoneUsageDescription</key>
-	<string>PackingProof 需要使用麦克风来录制打包过程中的环境音。</string>
-	
-	<!-- 局域网设备查找权限（用于局域网自动同步） -->
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>PackingProof 需要访问局域网以将录制的视频自动备份至本地服务器。</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_http._tcp.</string>
-		<string>_packingproof._tcp.</string>
-	</array>
 				<dict>
 					<key>UISceneClassName</key>
 					<string>UIWindowScene</string>
