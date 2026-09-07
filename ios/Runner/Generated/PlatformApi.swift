@@ -122,3 +122,22 @@ private func wrapError(_ error: Error) -> [Any?] {
     "Stacktrace: \(Thread.callStackSymbols)"
   ]
 }
+public class NativeCameraApiImpl: NativeCameraApi {
+    public init() {}
+    
+    public func initializeCamera(resolution: String, enableWatermark: Bool, completion: @escaping (Result<Int64, Error>) -> Void) {
+        completion(.success(0))
+    }
+    
+    public func startSegment(orderNo: String, mode: String, timestamp: Int64, completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+    
+    public func stopSegment(completion: @escaping (Result<String, Error>) -> Void) {
+        completion(.success(""))
+    }
+    
+    public func dispose(completion: @escaping (Result<Void, Error>) -> Void) {
+        completion(.success(()))
+    }
+}
