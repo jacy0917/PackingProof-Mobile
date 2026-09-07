@@ -16,6 +16,7 @@ jobs:
       uses: subosito/flutter-action@v2
       with:
         channel: 'stable'
+        flutter-version: '3.44.0'
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
@@ -38,8 +39,7 @@ jobs:
           cd $GITHUB_WORKSPACE
           echo "=== Run flutter clean ==="
           flutter clean
-          echo "=== Remove pubspec.lock ==="
-          rm -f pubspec.lock
+          echo "=== 使用提交的 pubspec.lock（已移除 ML Kit，锁定 iOS 15.0 兼容版本），不重新解析 ==="
           echo "=== Run flutter pub get ==="
           flutter pub get
         else
@@ -52,12 +52,12 @@ jobs:
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
 
     # ================= 1. 生成 Pigeon 代码 =================
+    # 输出路径由 pigeons/platform.dart 中 @ConfigurePigeon 声明（dartOut/swiftOut/kotlinOut），
+    # 与提交的生成文件路径一致，禁止按 basename 改名覆盖，否则 Xcode 会找不到 Generated/PlatformApi.swift。
     - name: Generate Pigeon Code
       run: |
         cd $GITHUB_WORKSPACE
         mkdir -p ios/Runner/Generated
-        mkdir -p lib/generated
-        rm -f ios/Runner/Generated/*.swift
         
         PIGEON_FILES=$(find . -maxdepth 3 -type f -name "*.dart" \( -path "*/pigeons/*" -o -path "*/pigeon/*" \) 2>/dev/null)
         
@@ -70,41 +70,16 @@ jobs:
           
           for file in $PIGEON_FILES; do
             echo "=== Generating from: $file ==="
-            BASENAME=$(basename "$file" .dart)
-            SWIFT_OUT="ios/Runner/Generated/${BASENAME}.swift"
-            DART_OUT="lib/generated/${BASENAME}.dart"
-            
-            dart run pigeon \
-              --input "$file" \
-              --swift_out "$SWIFT_OUT" \
-              --dart_out "$DART_OUT" \
-              || echo "⚠️ Failed to generate from $file"
-            
-            if [ -f "$SWIFT_OUT" ]; then
-              echo "✅ Generated Swift: $SWIFT_OUT"
-            else
-              echo "❌ Failed to generate Swift: $SWIFT_OUT"
-            fi
+            dart run pigeon --input "$file" || echo "⚠️ Failed to generate from $file"
           done
         fi
         
-        echo "=== All generated Swift files ==="
-        ls -la ios/Runner/Generated/ || echo "No Swift files generated"
-        
-        cp -v ios/Runner/Generated/*.swift ios/Runner/ 2>/dev/null || true
+        echo "=== 校验生成的 Swift / Dart 文件 ==="
+        ls -la ios/Runner/Generated/ || echo "❌ 未生成 Swift 文件"
+        ls -la lib/platform/generated/ || echo "❌ 未生成 Dart 文件"
       env:
         PUB_HOSTED_URL: https://pub.flutter-io.cn
         FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
-
-    # ================= 2. 同步生成的文件 =================
-    - name: Synchronize Generated Swift Files
-      run: |
-        cd $GITHUB_WORKSPACE
-        if [ -d ios/Runner/Generated ]; then
-          cp -v ios/Runner/Generated/*.swift ios/Runner/ 2>/dev/null || true
-        fi
-        echo "=== Swift files in ios/Runner/ ==="
-        ls -la ios/Runner/*.swift || echo "No Swift files found"
 
     - name: Install iOS pods
       run: |

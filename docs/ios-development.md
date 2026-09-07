@@ -37,7 +37,9 @@ rg '^COCOAPODS:' ios/Podfile.lock
 
 如果同一台 Mac 同时安装了 Ruby gem 与 Homebrew 版本，应调整 `PATH`，避免旧版 `pod` 排在项目使用的版本之前。不要通过反复恢复 `Podfile.lock` 掩盖工具版本不一致。
 
-`Podfile` 会把所有 Pods 构建目标统一到应用最低支持的 iOS 15.5，避免第三方依赖仍声明 iOS 9.0/10.0 而触发新版 Xcode 警告。`Pods.xcodeproj` 是 CocoaPods 生成文件，不要在 Xcode 中对它执行 “Update to recommended settings”；需要调整时修改 `Podfile` 并重新执行 `pod install`。
+`Podfile` 会把所有 Pods 构建目标统一到应用最低支持的 iOS 15.0（Flutter 3.44 官方支持范围 iOS 15–26，也覆盖 iOS 15.3 真机），避免第三方依赖仍声明 iOS 9.0/10.0 而触发新版 Xcode 警告。`Pods.xcodeproj` 是 CocoaPods 生成文件，不要在 Xcode 中对它执行 “Update to recommended settings”；需要调整时修改 `Podfile` 并重新执行 `pod install`。
+
+条码扫描已迁移至 iOS 原生 Vision（`NativeBarcodeScanner`），Flutter 插件 `google_mlkit_barcode_scanning` 已从依赖中移除：该插件要求 iOS ≥ 15.5，会导致 iOS 15.0–15.4 设备无法安装运行。Android 侧仍使用 ML Kit 原生依赖（`android/app/build.gradle.kts`），不受影响。
 
 Google ML Kit 当前提供的部分静态 Mach-O 对象不包含 platform load command。Xcode 26 会提示并按 iOS 处理；在上游改用带完整平台元数据的二进制前，不要直接修改 Pods 中的预编译框架。
 

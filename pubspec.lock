@@ -359,22 +359,6 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "2.1.3"
-  google_mlkit_barcode_scanning:
-    dependency: "direct main"
-    description:
-      name: google_mlkit_barcode_scanning
-      sha256: "98800c658f10014ca42b6032b1121881ef1913f546517d2ecfcccb5a80681f70"
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "0.15.0"
-  google_mlkit_commons:
-    dependency: transitive
-    description:
-      name: google_mlkit_commons
-      sha256: c7fc384bdb66c3b83e24e3a41818e61d7a378d900f65f5e775344fbca95a0917
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "0.12.0"
   graphs:
     dependency: transitive
     description:

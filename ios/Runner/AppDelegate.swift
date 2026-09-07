@@ -10,12 +10,6 @@ import Flutter
     GeneratedPluginRegistrant.register(with: self)
     
     let controller : FlutterViewController = window?.rootViewController as! FlutterViewController
-    
-    // 1. 注册 Pigeon 原生相机接口
-    let cameraApi = NativeCameraApiImpl()
-    NativeCameraApiSetup.setUp(binaryMessenger: controller.binaryMessenger, api: cameraApi)
-    
-    // 2. 注册 MethodChannel
     let barcodeChannel = FlutterMethodChannel(name: "app.packingproof.mobile/barcode",
                                               binaryMessenger: controller.binaryMessenger)
     
