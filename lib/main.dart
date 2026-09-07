@@ -204,7 +204,7 @@ class _PackingViewState extends State<PackingView> {
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Column(
-                      crossAxisAlignment: CrossAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start, // 此处已修正为 CrossAxisAlignment.start
                       children: [
                         Row(
                           children: [
