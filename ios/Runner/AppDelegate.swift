@@ -8,20 +8,10 @@ import Flutter
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
-    
-    let controller : FlutterViewController = window?.rootViewController as! FlutterViewController
-    let barcodeChannel = FlutterMethodChannel(name: "app.packingproof.mobile/barcode",
-                                              binaryMessenger: controller.binaryMessenger)
-    
-    barcodeChannel.setMethodCallHandler({
-      (call: FlutterMethodCall, result: @escaping FlutterResult) -> Void in
-      if call.method == "useVisionScanner" {
-        result(true)
-      } else {
-        result(FlutterMethodNotImplemented)
-      }
-    })
-    
+    // 注册 Pigeon 原生能力（相机录像/备份/媒体处理等）
+    // 注意：本工程使用 UIScene 生命周期，didFinishLaunching 时 window 尚未创建，
+    // 严禁在此处访问 window?.rootViewController（会因强制转换崩溃）。
+    PigeonPlatform.register(with: self)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 }
