@@ -147,7 +147,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                 } else {
                     Self.finishDetachedPerformanceOperation(timing, signpostID: signpostID, signpostName: "CameraRecordingStop", succeeded: false)
                 }
-                completion(.failure(pigeonError("摄像头已经关闭")))
+                completion(.failure(cameraError("摄像头已经关闭")))
                 return
             }
             
@@ -159,7 +159,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                     } else {
                         Self.finishDetachedPerformanceOperation(timing, signpostID: signpostID, signpostName: "CameraRecordingStop", succeeded: false)
                     }
-                    completion(.failure(pigeonError("操作被取消")))
+                    completion(.failure(cameraError("操作被取消")))
                 },
                 completion: { [weak self] result in
                     guard let self = self else { return }
@@ -204,7 +204,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                 } else {
                     Self.finishDetachedPerformanceOperation(timing, signpostID: signpostID, signpostName: "CameraRecordingSplit", succeeded: false)
                 }
-                completion(.failure(pigeonError("摄像头已经关闭")))
+                completion(.failure(cameraError("摄像头已经关闭")))
                 return
             }
             
@@ -216,7 +216,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                     } else {
                         Self.finishDetachedPerformanceOperation(timing, signpostID: signpostID, signpostName: "CameraRecordingSplit", succeeded: false)
                     }
-                    completion(.failure(pigeonError("操作被取消")))
+                    completion(.failure(cameraError("操作被取消")))
                 },
                 completion: { [weak self] result in
                     guard let self = self else { return }
@@ -244,9 +244,8 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
                                     request.complete()
                                     self.finishPerformanceOperation(timing, signpostID: signpostID, signpostName: "CameraRecordingSplit", succeeded: true)
                                     completion(.success(CameraRecordingStartDto(
-                                        segmentId: self.currentSegmentId,
-                                        startedAtMs: startedAt,
-                                        recordingPath: nextPath
+                                        path: nextPath,
+                                        startedAtMs: startedAt
                                     )))
                                 } catch {
                                     self.recordingActivityState.setActive(false, owner: self.recordingActivityOwner)
@@ -297,7 +296,7 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     func updateWatermark(text: String, completion: @escaping (Result<Void, Error>) -> Void) {
         sessionQueue.async { [weak self] in
             guard let self = self else {
-                completion(.failure(pigeonError("摄像头已经关闭")))
+                completion(.failure(cameraError("摄像头已经关闭")))
                 return
             }
             self.currentWatermarkFailed = false
@@ -717,20 +716,20 @@ class IosCameraPlatform: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
     private func recordingRequestError(
         _ rejection: IosCameraRecordingLifecycle.Rejection,
         for operation: IosCameraRecordingLifecycle.Operation
-    ) -> FlutterError {
+    ) -> NSError {
         switch rejection {
         case .busy:
-            return pigeonError("录像操作正在进行中", code: "camera_recording_busy")
+            return cameraError("录像操作正在进行中", code: "camera_recording_busy")
         case .alreadyStarted:
-            return pigeonError("录像已经开始", code: "camera_recording_already_started")
+            return cameraError("录像已经开始", code: "camera_recording_already_started")
         case .notStarted:
-            return pigeonError("录像尚未开始", code: "camera_recording_not_started")
+            return cameraError("录像尚未开始", code: "camera_recording_not_started")
         case .unknown:
-            return pigeonError("录像状态未知", code: "camera_recording_unknown")
+            return cameraError("录像状态未知", code: "camera_recording_unknown")
         }
     }
 }
 
-private func pigeonError(_ message: String, code: String = "camera_error") -> FlutterError {
-    return FlutterError(code: code, message: message, details: nil)
+private func cameraError(_ message: String, code: String = "camera_error") -> NSError {
+    return NSError(domain: code, code: 0, userInfo: [NSLocalizedDescriptionKey: message])
 }
