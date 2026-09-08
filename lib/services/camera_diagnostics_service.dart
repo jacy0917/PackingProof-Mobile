@@ -229,7 +229,7 @@ class CameraDiagnosticsService {
 }
 
 Future<CameraDiagnosticsSnapshot?> _nativeSnapshotLoader() async {
-  final Map<String?, Object?>? values = await CameraHostApi().getDiagnostics();
+  final Map<String?, Object?>? values = await IosCameraHostApi().getDiagnostics();
   if (values == null) return null;
   return CameraDiagnosticsSnapshot.fromMap(Map<Object?, Object?>.from(values));
 }

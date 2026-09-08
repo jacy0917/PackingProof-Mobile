@@ -1,93 +1,16 @@
 import '../../services/continuous_camera_service.dart';
 import '../../models/recording_orientation.dart';
 import '../contracts/camera_platform.dart';
-// ⭐ 只导入 DTO 类（不导入 CameraHostApi）
-import '../generated/platform_api.g.dart' show
-    CameraInitializeRequest,
-    CameraInitializationDto,
-    CameraRecordingStartDto,
-    CameraRecordingSplitDto,
-    CameraRecordingStopDto,
-    CameraWatermarkDisposition,
-    CameraLensDto,
-    BarcodeCandidateDto,
-    CameraEventApi,
-    CameraSessionStartedDto,
-    CameraSegmentStartedDto,
-    CameraSegmentCompletedDto,
-    CameraSegmentFailedDto,
-    CameraSessionFailedDto;
-
-// ⭐ 完整的 CameraHostApi stub（包含所有被调用的方法）
-class CameraHostApi {
-  Future<CameraInitializationDto> initialize(CameraInitializeRequest request) {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<bool> ensurePermissions(bool recordAudio) {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<CameraRecordingStartDto> startWork(
-    String path,
-    bool recordAudio,
-    String trackingNumber,
-  ) {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<CameraRecordingSplitDto> split(
-    String nextPath,
-    String trackingNumber,
-  ) {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<CameraRecordingStopDto> stopWork() {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<Map<String?, Object?>?> getDiagnostics() {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<void> setPairingScanEnabled(bool enabled) {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<void> setWorkScanEnabled(bool enabled) {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<void> setPreviewActive(bool active) {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<bool> setTorchEnabled(bool enabled) {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<CameraInitializationDto> switchCamera() {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<List<CameraLensDto>> listCameras() {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<CameraInitializationDto> switchToCamera(String cameraId) {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<Map<String?, Object?>?> probeSequence(
-    String sequence,
-    int budgetMs,
-  ) {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<void> setCapabilityMode(String mode) {
-  throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-  Future<void> dispose() {
-    throw UnsupportedError('Stub method - should be replaced by Pigeon');
-  }
-}
+import '../generated/platform_api.g.dart';
 
 class PigeonCameraPlatform implements CameraPlatform {
-  PigeonCameraPlatform({CameraHostApi? hostApi})
-    : _hostApi = hostApi ?? CameraHostApi() {
+  PigeonCameraPlatform({IosCameraHostApi? hostApi})
+    : _hostApi = hostApi ?? IosCameraHostApi() {
     _eventSink = _CameraEventSink(this);
     CameraEventApi.setUp(_eventSink);
   }
 
-  final CameraHostApi _hostApi;
+  final IosCameraHostApi _hostApi;
   late final _CameraEventSink _eventSink;
 
   @override
@@ -237,6 +160,10 @@ class PigeonCameraPlatform implements CameraPlatform {
 
   @override
   Future<void> dispose() async {
+    // AppContainer owns this platform as a process-wide singleton. Camera
+    // services are disposed and recreated when recording settings change, so
+    // unregistering the shared event sink here would permanently disconnect
+    // barcode events until the whole Flutter engine is restarted.
     await _hostApi.dispose();
   }
 }

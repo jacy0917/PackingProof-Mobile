@@ -115,7 +115,7 @@ class PackingSessionController extends ChangeNotifier
            cameraServiceFactory ?? ContinuousCameraService.new,
        _packageInfoLoader = packageInfoLoader ?? PackageInfo.fromPlatform,
        // ignore: prefer_initializing_formals
-       _buildConfig = buildConfig,
+       _buildConfig = buildConfig
      {
     _runtimeLog =
         runtimeLog ??
