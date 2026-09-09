@@ -332,8 +332,8 @@ enum IosCameraStartRetryPolicy {
 /// 为 metadata 输出提供低频的 Vision 兜底，避免旧设备的 AVFoundation
 /// 条码回调偶发停摆时完全没有识别结果。
 enum IosBarcodeVisionFallbackPolicy {
-  static let minimumInterval: TimeInterval = 0.25
-  static let recentCandidateWindow: TimeInterval = 0.8
+  static let minimumInterval: TimeInterval = 0.12
+  static let recentCandidateWindow: TimeInterval = 0.15
 
   static func shouldSchedule(
     now: TimeInterval,
