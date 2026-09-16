@@ -2321,6 +2321,14 @@ final class IosCameraHostApiImpl:
       if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
         device.whiteBalanceMode = .continuousAutoWhiteBalance
       }
+      // 扫码距离增强：仅后置主摄，放大到 1.5x 使 20~35cm 面单识别更稳；
+      // 超广角/前置保持原倍率，设备不支持或拒绝时静默跳过。
+      if device.position == .back,
+         device.maxAvailableVideoZoomFactor
+           >= IosCameraPlatform.defaultScanZoomFactor,
+         device.videoZoomFactor < IosCameraPlatform.defaultScanZoomFactor {
+        device.videoZoomFactor = IosCameraPlatform.defaultScanZoomFactor
+      }
       device.unlockForConfiguration()
     } catch {
       // 对焦是增强项；设备拒绝配置时继续使用系统默认采集模式。
@@ -3235,6 +3243,10 @@ final class IosCameraHostApiImpl:
       $0.deviceType == .builtInWideAngleCamera
     }) ?? backDevices.first
   }
+
+  /// 扫码距离增强系数：主摄默认 1.5x 数字变焦，把 20~35cm 处面单的画面占比
+  /// 放大到等效于原来的约 13~23cm，中远距离扫码更稳；录像画幅同步轻微裁切。
+  private static let defaultScanZoomFactor: CGFloat = 1.5
 
   private static func zoomRatio(for device: AVCaptureDevice) -> Double {
     switch device.deviceType {

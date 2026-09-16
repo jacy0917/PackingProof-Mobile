@@ -46,6 +46,7 @@ import '../services/nv21_center_crop.dart';
 import '../services/recording_timeline.dart';
 import '../services/recording_database.dart';
 import '../services/session_repository.dart';
+import '../services/jd_barcode_policy.dart';
 import '../services/speech_prompt_service.dart';
 import '../services/video_watermark_service.dart';
 
@@ -58,6 +59,7 @@ part 'packing_session_pairing_coordinator.dart';
 part 'packing_session_settings_coordinator.dart';
 part 'packing_session_storage_coordinator.dart';
 part 'packing_session_watermark_coordinator.dart';
+part 'packing_session_watermark_helpers.dart';
 
 enum PackingSessionPhase {
   initializing,
@@ -200,6 +202,11 @@ class PackingSessionController extends ChangeNotifier
   UnbackedRetentionPolicy _unbackedRetention = UnbackedRetentionPolicy.days30;
   @override
   BackedRetentionPolicy _backedRetention = BackedRetentionPolicy.days7;
+  @override
+  UnbackedRetentionPolicy _returnUnbackedRetention =
+      UnbackedRetentionPolicy.days3;
+  @override
+  BackedRetentionPolicy _returnBackedRetention = BackedRetentionPolicy.days1;
   bool _appIsActive = true;
   @override
   String? _errorMessage;
@@ -311,6 +318,8 @@ class PackingSessionController extends ChangeNotifier
               autoEnabled: settings.lanBackupAutoEnabled,
               unbackedRetention: settings.unbackedRetention,
               backedRetention: settings.backedRetention,
+              returnUnbackedRetention: settings.returnUnbackedRetention,
+              returnBackedRetention: settings.returnBackedRetention,
             )
             .timeout(const Duration(seconds: 8));
       } on Object catch (error) {
@@ -346,7 +355,15 @@ class PackingSessionController extends ChangeNotifier
     final bool enabled = !_torchEnabled;
     try {
       if (_supportsNativeCamera) {
-        _torchEnabled = await _nativeCamera!.setTorchEnabled(enabled);
+        final bool ok = await _nativeCamera!.setTorchEnabled(enabled);
+        if (enabled && !ok) {
+          // 硬件拒绝点亮：_torchEnabled 本来就是 false，提示后保持关闭。
+          _showCameraNotice('闪光灯暂时不可用');
+          if (!_disposed) notifyListeners();
+          return;
+        }
+        // 原生关闭接口返回 false 是正常状态，成功后一律以请求值更新 UI。
+        _torchEnabled = enabled;
       } else {
         await _cameraController!.setFlashMode(
           enabled ? FlashMode.torch : FlashMode.off,
@@ -1382,8 +1399,13 @@ class PackingSessionController extends ChangeNotifier
     _rejectedBarcodeTimer = Timer(const Duration(seconds: 4), () {
       if (_disposed) return;
       _rejectedBarcodeMessage = null;
+      _speechService.resolveIncident('invalid-order-number');
       notifyListeners();
     });
+    _speechService.enqueue(
+      SpeechPrompt.invalidTrackingNumber,
+      incidentKey: 'invalid-order-number',
+    );
     notifyListeners();
   }
 
@@ -1645,24 +1667,6 @@ class PackingSessionController extends ChangeNotifier
     super.dispose();
   }
 }
-
-@visibleForTesting
-WatermarkProcessingStatus nativeWatermarkStatus(
-  NativeWatermarkDisposition disposition,
-) => switch (disposition) {
-  NativeWatermarkDisposition.completed => WatermarkProcessingStatus.completed,
-  NativeWatermarkDisposition.postProcessRequired =>
-    WatermarkProcessingStatus.pending,
-  NativeWatermarkDisposition.failedPartial => WatermarkProcessingStatus.failed,
-};
-
-@visibleForTesting
-bool nativeWatermarkNeedsPostProcess(NativeWatermarkDisposition disposition) =>
-    switch (disposition) {
-      NativeWatermarkDisposition.completed => false,
-      NativeWatermarkDisposition.postProcessRequired => true,
-      NativeWatermarkDisposition.failedPartial => false,
-    };
 
 /// 备份触发原因是否要求强制重启已有上传任务：只有用户手动“立即备份”需要，
 /// 启动恢复、连接恢复等场景由原生状态机裁决，避免每次启动全量重启上传。

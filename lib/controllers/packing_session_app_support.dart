@@ -84,6 +84,8 @@ mixin _PackingSessionAppSupport on ChangeNotifier {
   Map<String, Object?>? get _capabilityState;
   UnbackedRetentionPolicy get _unbackedRetention;
   BackedRetentionPolicy get _backedRetention;
+  UnbackedRetentionPolicy get _returnUnbackedRetention;
+  BackedRetentionPolicy get _returnBackedRetention;
   bool get _recordAudioEnabled;
   RecordingVideoCodec get _preferredVideoCodec;
   RecordingSpecPreset get _recordingSpec;
@@ -138,6 +140,9 @@ mixin _PackingSessionAppSupport on ChangeNotifier {
       0;
   UnbackedRetentionPolicy get unbackedRetention => _unbackedRetention;
   BackedRetentionPolicy get backedRetention => _backedRetention;
+  UnbackedRetentionPolicy get returnUnbackedRetention =>
+      _returnUnbackedRetention;
+  BackedRetentionPolicy get returnBackedRetention => _returnBackedRetention;
   bool get recordAudioEnabled => _recordAudioEnabled;
   RecordingVideoCodec get preferredVideoCodec => _preferredVideoCodec;
   RecordingSpecPreset get recordingSpec => _recordingSpec;
@@ -247,12 +252,14 @@ mixin _PackingSessionAppSupport on ChangeNotifier {
     required int page,
     required int pageSize,
     String keyword = '',
+    RecordingOperationMode? operationMode,
     DateTime? start,
     DateTime? end,
   }) => _repository.querySessions(
     page: page,
     pageSize: pageSize,
     keyword: keyword,
+    operationMode: operationMode,
     start: start,
     end: end,
   );
@@ -264,6 +271,7 @@ mixin _PackingSessionAppSupport on ChangeNotifier {
     required LocalRecordingPageDirection direction,
     required int knownTotal,
     String keyword = '',
+    RecordingOperationMode? operationMode,
     DateTime? start,
     DateTime? end,
   }) => _repository.queryAdjacentSessions(
@@ -273,6 +281,7 @@ mixin _PackingSessionAppSupport on ChangeNotifier {
     direction: direction,
     knownTotal: knownTotal,
     keyword: keyword,
+    operationMode: operationMode,
     start: start,
     end: end,
   );
@@ -288,10 +297,12 @@ mixin _PackingSessionAppSupport on ChangeNotifier {
     required int page,
     required int pageSize,
     String keyword = '',
+    RecordingOperationMode? operationMode,
   }) => _lanBackupService.fetchRemoteRecordings(
     page: page,
     pageSize: pageSize,
     keyword: keyword,
+    operationMode: operationMode,
   );
 
   Future<Map<int, ({RemoteRecordingStatus status, bool exists, String reason})>>
@@ -300,6 +311,10 @@ mixin _PackingSessionAppSupport on ChangeNotifier {
 
   Future<Uri?> resolveRemoteRecordingUri(Uri remoteUri) =>
       _lanBackupService.resolveRemoteUri(remoteUri);
+
+  /// 远程播放解析是否因电脑身份与配对记录不符而失败。
+  bool get remotePlaybackNeedsRepair =>
+      _lanBackupService.lastRemoteResolveNeedsRepair;
 
   Map<String, String> get remotePlaybackHeaders =>
       _lanBackupService.playbackHeaders;

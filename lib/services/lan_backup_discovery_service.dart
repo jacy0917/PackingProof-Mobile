@@ -72,8 +72,43 @@ abstract interface class LanBackupHostCache {
   Future<void> save(List<LanBackupDiscoveredHost> hosts);
 }
 
+/// 地址定位失败的原因。
+enum LanBackupLocateFailure {
+  /// 配置的地址始终连不上：主机确实不在线或不在同一网络。
+  unreachable,
+
+  /// 地址连通、也返回了 node-info，但随着配对一起保存的电脑标识不匹配：
+  /// 说明那台电脑已经换过身份或换过配置，旧的配对凭据作废，需要重新连接。
+  identityMismatch,
+
+  /// 地址连不上，扫描整个网段也没有找到匹配的主机。
+  notFound,
+}
+
+/// 地址定位结果：成功返回地址，失败区分原因，避免上层把"身份不匹配"
+/// 一律当成"主机离线"。
+class LanBackupLocateResult {
+  const LanBackupLocateResult.located(Uri this.baseUri)
+    : failure = null,
+      reportedNodeId = null;
+
+  const LanBackupLocateResult.failed(this.failure, {this.reportedNodeId})
+    : baseUri = null;
+
+  final Uri? baseUri;
+  final LanBackupLocateFailure? failure;
+
+  /// 配置地址实际返回的 nodeId，仅 [LanBackupLocateFailure.identityMismatch] 时有值。
+  final String? reportedNodeId;
+
+  bool get isLocated => baseUri != null;
+}
+
 abstract interface class LanBackupHostLocator {
-  Future<Uri?> locate({required Uri currentBaseUri, required String nodeId});
+  Future<LanBackupLocateResult> locate({
+    required Uri currentBaseUri,
+    required String nodeId,
+  });
 
   void dispose();
 }
@@ -96,15 +131,22 @@ class LanBackupHostLocatorService implements LanBackupHostLocator {
   final bool _ownsHttpClient;
   final LanBackupHostProbe? _probeOverride;
   final LanBackupHostDiscoveryService _discovery;
-  Future<Uri?>? _activeLocate;
+  Future<LanBackupLocateResult>? _activeLocate;
 
   @override
-  Future<Uri?> locate({required Uri currentBaseUri, required String nodeId}) {
+  Future<LanBackupLocateResult> locate({
+    required Uri currentBaseUri,
+    required String nodeId,
+  }) {
     final String expectedNodeId = nodeId.trim();
-    if (expectedNodeId.isEmpty) return Future<Uri?>.value();
-    final Future<Uri?>? active = _activeLocate;
+    if (expectedNodeId.isEmpty) {
+      return Future<LanBackupLocateResult>.value(
+        const LanBackupLocateResult.failed(LanBackupLocateFailure.notFound),
+      );
+    }
+    final Future<LanBackupLocateResult>? active = _activeLocate;
     if (active != null) return active;
-    final Future<Uri?> locating = _runLocate(
+    final Future<LanBackupLocateResult> locating = _runLocate(
       currentBaseUri: currentBaseUri,
       nodeId: expectedNodeId,
     );
@@ -114,19 +156,56 @@ class LanBackupHostLocatorService implements LanBackupHostLocator {
     });
   }
 
-  Future<Uri?> _runLocate({
+  Future<LanBackupLocateResult> _runLocate({
     required Uri currentBaseUri,
     required String nodeId,
   }) async {
-    final LanBackupDiscoveredHost? current = await _probe(currentBaseUri);
-    if (_matches(current, nodeId)) return current!.baseUri;
+    // 配置地址返回了 node-info 但标识不是目标主机时记下它：这就是
+    // "电脑换了身份"的直接证据，后面即使扫描也没找到，也要按这个原因上报。
+    String? otherIdentityNodeId;
+    final _LocateProbeResult fast = await _probe(currentBaseUri);
+    final LanBackupDiscoveredHost? fastHost = fast.host;
+    if (fastHost != null && !_sameIdentity(fastHost, nodeId)) {
+      otherIdentityNodeId = fastHost.nodeId.trim();
+    }
+    if (_matches(fastHost, nodeId)) {
+      return LanBackupLocateResult.located(fastHost!.baseUri);
+    }
+    if (fast.transportFailed) {
+      // 首轮探测只给了 1 秒内的预算（见 _probe 的 [budget]），局域网正要唤醒
+      // 电脑或缓存地址失效时很容易误判离线；这里按心跳同样的预算（3s/4s）
+      // 重试一次再决定。首轮已经拿到 node-info 的返回时不重试：地址被别的
+      // 主机占用，重试没有意义。
+      final _LocateProbeResult retried = await _probe(
+        currentBaseUri,
+        budget: _slowProbeBudget,
+      );
+      final LanBackupDiscoveredHost? retriedHost = retried.host;
+      if (retriedHost != null && !_sameIdentity(retriedHost, nodeId)) {
+        otherIdentityNodeId ??= retriedHost.nodeId.trim();
+      }
+      if (_matches(retriedHost, nodeId)) {
+        return LanBackupLocateResult.located(retriedHost!.baseUri);
+      }
+    }
 
     await _discovery.search();
     for (final LanBackupDiscoveredHost host in _discovery.snapshot.hosts) {
-      if (_matches(host, nodeId)) return host.baseUri;
+      if (_matches(host, nodeId)) {
+        return LanBackupLocateResult.located(host.baseUri);
+      }
     }
-    return null;
+    if (otherIdentityNodeId != null && otherIdentityNodeId.isNotEmpty) {
+      return LanBackupLocateResult.failed(
+        LanBackupLocateFailure.identityMismatch,
+        reportedNodeId: otherIdentityNodeId,
+      );
+    }
+    return const LanBackupLocateResult.failed(LanBackupLocateFailure.notFound);
   }
+
+  bool _sameIdentity(LanBackupDiscoveredHost host, String nodeId) =>
+      host.reachable && host.nodeId.trim() == nodeId;
 
   bool _matches(LanBackupDiscoveredHost? host, String nodeId) =>
       host != null &&
@@ -134,22 +213,48 @@ class LanBackupHostLocatorService implements LanBackupHostLocator {
       host.compatible &&
       host.nodeId.trim() == nodeId;
 
-  Future<LanBackupDiscoveredHost?> _probe(Uri uri) async {
+  /// 首轮探测预算：只覆盖本机同网段已经唤醒的主机。
+  static const _ProbeBudget _fastProbeBudget = _ProbeBudget(
+    connect: Duration(milliseconds: 700),
+    response: Duration(milliseconds: 900),
+  );
+
+  /// 重试预算：与心跳探测 `/api/node-info` 的 3s/4s 保持一致，避免同一请求
+  /// 因为两套预算给出不同结论。
+  static const _ProbeBudget _slowProbeBudget = _ProbeBudget(
+    connect: Duration(seconds: 3),
+    response: Duration(seconds: 4),
+  );
+
+  Future<_LocateProbeResult> _probe(
+    Uri uri, {
+    _ProbeBudget budget = _fastProbeBudget,
+  }) async {
     final LanBackupHostProbe? override = _probeOverride;
-    if (override != null) return override(uri);
+    if (override != null) {
+      try {
+        return _LocateProbeResult(host: await override(uri));
+      } on Object {
+        // broad-catch: 注入的探测实现（测试或替换实现）连不上时一律按传输失败
+        // 处理，让调用方用更大的预算重试；不向上抛，避免定位流程直接失败。
+        return const _LocateProbeResult(transportFailed: true);
+      }
+    }
     try {
       final HttpClientRequest request = await _httpClient
           .getUrl(uri.replace(path: '/api/node-info'))
-          .timeout(const Duration(milliseconds: 700));
+          .timeout(budget.connect);
       request.followRedirects = false;
       final HttpClientResponse response = await request.close().timeout(
-        const Duration(milliseconds: 900),
+        budget.response,
       );
       final String body = await utf8.decoder.bind(response).join();
-      if (response.statusCode != HttpStatus.ok) return null;
-      return parseLanBackupDiscoveredHost(uri, body);
+      if (response.statusCode != HttpStatus.ok) {
+        return const _LocateProbeResult();
+      }
+      return _LocateProbeResult(host: parseLanBackupDiscoveredHost(uri, body));
     } on Object {
-      return null;
+      return const _LocateProbeResult(transportFailed: true);
     }
   }
 
@@ -162,6 +267,25 @@ class LanBackupHostLocatorService implements LanBackupHostLocator {
 
 typedef LanBackupCandidateProvider = Future<List<Uri>> Function();
 typedef LanBackupHostProbe = Future<LanBackupDiscoveredHost?> Function(Uri uri);
+
+/// `/api/node-info` 探测的时间预算。
+class _ProbeBudget {
+  const _ProbeBudget({required this.connect, required this.response});
+
+  final Duration connect;
+  final Duration response;
+}
+
+/// 单次探测结果：区分「连不上」与「连上了但不是目标主机」。
+///
+/// 只有 [transportFailed] 为真时才值得用更大的预算重试；拿到 node-info 却
+/// NodeId 不匹配说明地址已被其他主机占用，重试没有意义。
+class _LocateProbeResult {
+  const _LocateProbeResult({this.host, this.transportFailed = false});
+
+  final LanBackupDiscoveredHost? host;
+  final bool transportFailed;
+}
 
 @visibleForTesting
 List<int> buildLanBackupHostScanOrder({int? localHost}) {

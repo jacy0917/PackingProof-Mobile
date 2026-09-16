@@ -3,14 +3,20 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
 import '../models/lan_backup.dart';
+import '../models/order_info.dart';
 import '../models/recording_session.dart';
+import '../models/recording_operation_mode.dart';
+import '../models/recording_orientation.dart';
 import '../services/camera_diagnostics_service.dart';
 import '../services/continuous_camera_service.dart';
 import '../services/diagnostics_log_service.dart';
+import '../services/playback_display_mode_controller.dart';
+import '../services/playback_fullscreen_policy.dart';
 import '../services/recording_path_diagnostics.dart';
 import '../services/remote_playback_compat.dart';
 import '../services/remote_playback_probe.dart';
@@ -20,6 +26,7 @@ import '../services/remote_video_clip_service.dart';
 import '../widgets/two_button_confirm_dialog.dart';
 import '../widgets/order_info_sheet.dart';
 import '../widgets/playback_error_panel.dart';
+import '../widgets/recording_info_card.dart';
 import 'video_trim_screen.dart';
 import 'remote_video_trim_screen.dart';
 
@@ -51,6 +58,37 @@ class PlaybackDisposalGuard {
   Future<void> disposeAfter(Future<void> dependentsDetached) async {
     await dependentsDetached;
     await dispose();
+  }
+}
+
+/// 视频底部渐隐遮罩，保证白色时间与进度条在任何画面上都清晰。
+///
+/// 直接作为 `Stack` 子项使用，用 `Align` 固定在底部并保持自身高度。
+class _VideoSurfaceScrim extends StatelessWidget {
+  const _VideoSurfaceScrim({this.height = 104});
+
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: IgnorePointer(
+        child: SizedBox(
+          height: height,
+          width: double.infinity,
+          child: const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: <Color>[Colors.transparent, Color(0x99000000)],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -107,6 +145,10 @@ class VideoPlaybackScreen extends StatefulWidget {
     this.remoteClipService,
     this.backedUpOffline = false,
     this.networkDiagnosticsLoader,
+    this.playbackDisplayPlatform,
+    this.sourceLabel,
+    this.backedUp = false,
+    this.onOrderInfo,
     super.key,
   });
 
@@ -120,6 +162,19 @@ class VideoPlaybackScreen extends StatefulWidget {
   final bool backedUpOffline;
   final Future<NetworkDiagnostics?> Function()? networkDiagnosticsLoader;
 
+  /// 测试可注入的系统显示设置通道；为空时直接下发 `SystemChrome`。
+  final PlaybackDisplayPlatform? playbackDisplayPlatform;
+
+  /// 录像来源展示名，如「手机」或保存主机名；为空时按播放来源推断。
+  final String? sourceLabel;
+
+  /// 该录像是否已备份到电脑。
+  final bool backedUp;
+
+  /// 打开订单信息的回调；为空时使用内置的底部弹层。
+  final Future<void> Function(BuildContext context, OrderInfo info)?
+  onOrderInfo;
+
   @override
   State<VideoPlaybackScreen> createState() => _VideoPlaybackScreenState();
 }
@@ -128,8 +183,6 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
   late VideoPlayerController _video;
   late Future<void> _initialized;
   late final PlaybackDisposalGuard _disposalGuard;
-  bool _closing = false;
-  bool _allowPop = false;
   bool _remoteCompatRetryTried = false;
   late RecordingSession _session;
   late Duration _playbackStart;
@@ -148,8 +201,13 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
   String _shareMessage = '';
   String? _playbackErrorDetail;
   String? _localVideoMime;
+  int? _fileSizeBytes;
   VideoDecodeSupport? _deviceDecodeSupport;
   bool _fallbackBusy = false;
+  late final PlaybackDisplayModeController _displayMode;
+
+  /// 全屏时 AppBar 与页面留白全部让位给视频，方向按视频自身横竖版下发。
+  bool get _fullscreen => _displayMode.isFullscreen;
 
   @override
   void initState() {
@@ -157,6 +215,9 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
     _session = widget.session;
     _playbackStart = _session.mediaStart;
     _playbackEnd = _session.playbackEnd;
+    _displayMode = PlaybackDisplayModeController(
+      platform: widget.playbackDisplayPlatform,
+    );
     _video = _createVideoController();
     _disposalGuard = PlaybackDisposalGuard(_disposePlayback);
     _initialized = _initializePlayback();
@@ -183,6 +244,7 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
       ),
     );
     unawaited(_logPlaybackEnvironment());
+    unawaited(_loadLocalFileSize());
     try {
       await _video.initialize();
       await _video.setVolume(1);
@@ -249,6 +311,16 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
     return '$error';
   }
 
+  /// 读取本机录像文件大小，供详情卡片展示；远程录像没有本地文件。
+  Future<void> _loadLocalFileSize() async {
+    if (widget.remoteUri != null) return;
+    final File file = File(_session.filePath);
+    if (!await file.exists()) return;
+    final int bytes = await file.length();
+    if (!mounted || _fileSizeBytes == bytes) return;
+    setState(() => _fileSizeBytes = bytes);
+  }
+
   Future<void> _loadLocalPlaybackContext() async {
     final File file = File(_session.filePath);
     if (!file.existsSync()) return;
@@ -306,7 +378,22 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
 
   @override
   void dispose() {
-    unawaited(_disposalGuard.dispose());
+    // 释放失败同样要记日志：这里不再有「先拦一次再补 pop」的兜底代码，
+    // 播放器异常不能连累页面退出。
+    unawaited(
+      _disposalGuard.dispose().catchError((Object error) {
+        unawaited(
+          DiagnosticsLogService().log(
+            kind: 'playback_dispose_failed',
+            extra: <String, Object?>{
+              'sessionId': _session.id,
+              'error': error.toString(),
+            },
+          ),
+        );
+      }),
+    );
+    unawaited(_displayMode.dispose());
     super.dispose();
   }
 
@@ -328,15 +415,14 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
     unawaited(_logPlaybackEnd());
   }
 
+  /// 主动关闭播放页（删除本机录像后调用）。
+  ///
+  /// 退出全屏恢复竖屏，然后直接让路由 pop；播放器释放交给 [dispose]，
+  /// 不在这里等释放完成，避免任何一步卡住就把页面锁死。
   Future<void> _closePlayback([Object? result]) async {
-    if (_closing) return;
-    setState(() => _closing = true);
-    await _disposalGuard.disposeAfter(WidgetsBinding.instance.endOfFrame);
+    await _displayMode.restore();
     if (!mounted) return;
-    setState(() => _allowPop = true);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) Navigator.of(context).pop(result);
-    });
+    Navigator.of(context).pop(result);
   }
 
   Future<void> _logPlaybackEnvironment() async {
@@ -388,6 +474,56 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
     if (mounted) {
       setState(() {});
     }
+  }
+
+  /// 进入全屏：竖版视频铺满竖屏，横版视频铺满横屏。
+  Future<void> _enterFullscreen() async {
+    if (_fullscreen) return;
+    final VideoPlayerValue value = _video.value;
+    final List<DeviceOrientation> orientations =
+        PlaybackFullscreenPolicy.orientationsFor(
+          PlaybackFullscreenPolicy.layoutFor(
+            videoAspectRatio: value.aspectRatio,
+            videoInitialized: value.isInitialized,
+            recordedOrientation: _session.recordingOrientation,
+          ),
+        );
+    await _displayMode.enter(orientations: orientations);
+    if (!mounted) return;
+    setState(() {});
+    unawaited(
+      DiagnosticsLogService().log(
+        kind: 'playback_fullscreen',
+        extra: <String, Object?>{
+          'action': 'enter',
+          'sessionId': _session.id,
+          'videoInitialized': value.isInitialized,
+          'aspectRatio': value.aspectRatio,
+          'recordedOrientation': _session.recordingOrientation.storageValue,
+          'appliedOrientations': orientations
+              .map((DeviceOrientation item) => item.name)
+              .toList(growable: false),
+          'positionMs': value.position.inMilliseconds,
+        },
+      ),
+    );
+  }
+
+  Future<void> _exitFullscreen() async {
+    if (!_fullscreen) return;
+    await _displayMode.restore();
+    if (!mounted) return;
+    setState(() {});
+    unawaited(
+      DiagnosticsLogService().log(
+        kind: 'playback_fullscreen',
+        extra: <String, Object?>{
+          'action': 'exit',
+          'sessionId': _session.id,
+          'positionMs': _video.value.position.inMilliseconds,
+        },
+      ),
+    );
   }
 
   Duration get _playbackDuration => _playbackEnd - _playbackStart;
@@ -487,10 +623,11 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
         ),
       );
       if (clip != null && mounted) {
+        final File shareFile = await _namedShareFile(clip, suffix: '剪辑');
         await SharePlus.instance.share(
           ShareParams(
             title: _session.displayCode,
-            files: <XFile>[XFile(clip.path, mimeType: 'video/mp4')],
+            files: <XFile>[XFile(shareFile.path, mimeType: 'video/mp4')],
           ),
         );
       }
@@ -599,10 +736,11 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
           },
         );
       }
+      final File shareFile = await _namedShareFile(file);
       await SharePlus.instance.share(
         ShareParams(
           title: _session.displayCode,
-          files: <XFile>[XFile(file.path, mimeType: 'video/mp4')],
+          files: <XFile>[XFile(shareFile.path, mimeType: 'video/mp4')],
         ),
       );
     } on Object catch (error) {
@@ -764,10 +902,11 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
         mediaEnd: _session.duration,
         sourceDuration: _session.duration,
       );
+      final File shareFile = await _namedShareFile(prepared);
       await SharePlus.instance.share(
         ShareParams(
           title: _session.displayCode,
-          files: <XFile>[XFile(prepared.path, mimeType: 'video/mp4')],
+          files: <XFile>[XFile(shareFile.path, mimeType: 'video/mp4')],
         ),
       );
     } on Object {
@@ -819,10 +958,11 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
     setState(() => _fallbackBusy = true);
     try {
       final File file = await service.download(remote);
+      final File shareFile = await _namedShareFile(file);
       await SharePlus.instance.share(
         ShareParams(
           title: _session.displayCode,
-          files: <XFile>[XFile(file.path, mimeType: 'video/mp4')],
+          files: <XFile>[XFile(shareFile.path, mimeType: 'video/mp4')],
         ),
       );
     } on Object catch (error) {
@@ -848,44 +988,58 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
     }
   }
 
+  Future<File> _namedShareFile(File file, {String suffix = ''}) {
+    final String stem = _shareNameStem();
+    final String name = suffix.isEmpty ? '$stem.mp4' : '${stem}_$suffix.mp4';
+    return _shareService.prepareForSharing(file, fileName: name);
+  }
+
+  String _shareNameStem() {
+    final String sourceStem = p.basenameWithoutExtension(_session.filePath);
+    final bool hasComputerNaming = RegExp(
+      r'^.+_\d{8}_\d{6}_(发货|退货)(_.+)?$',
+    ).hasMatch(sourceStem);
+    if (hasComputerNaming) return sourceStem;
+    final DateTime value = _session.startedAt;
+    final String date =
+        '${value.year.toString().padLeft(4, '0')}${value.month.toString().padLeft(2, '0')}${value.day.toString().padLeft(2, '0')}_'
+        '${value.hour.toString().padLeft(2, '0')}${value.minute.toString().padLeft(2, '0')}${value.second.toString().padLeft(2, '0')}';
+    return '${_session.displayCode}_${date}_${_session.operationMode.label}';
+  }
+
   @override
   Widget build(BuildContext context) {
-    return PopScope<Object?>(
-      canPop: _allowPop,
-      onPopInvokedWithResult: (bool didPop, Object? result) {
-        if (!didPop) unawaited(_closePlayback(result));
-      },
-      child: _buildScaffold(context),
-    );
+    // 刻意不套 PopScope：窗口态与全屏态都放行路由 pop，系统返回与 iOS 侧滑
+    // 都能直接离开播放页（全屏也不例外）。方向恢复与播放器释放在 dispose 收尾，
+    // 不再用「先拦一次再补 pop」的两段式流程——那种写法一旦没有下一帧，
+    // 页面就永远关不上。
+    return _buildScaffold(context);
   }
 
   Widget _buildScaffold(BuildContext context) {
-    if (_closing) {
-      return Scaffold(
-        appBar: AppBar(title: Text(_session.displayCode)),
-        body: const SizedBox.expand(),
-      );
-    }
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_session.displayCode),
-        actions: <Widget>[
-          if (_session.orderInfo != null)
-            IconButton(
-              key: const Key('recording-order-info'),
-              tooltip: '订单信息',
-              onPressed: () => showOrderInfoSheet(context, _session.orderInfo!),
-              icon: const Icon(Icons.receipt_long_outlined),
+      appBar: _fullscreen
+          ? null
+          : AppBar(
+              title: Text(_session.displayCode),
+              actions: <Widget>[
+                if (_session.orderInfo != null)
+                  IconButton(
+                    key: const Key('recording-order-info'),
+                    tooltip: '订单信息',
+                    onPressed: () =>
+                        showOrderInfoSheet(context, _session.orderInfo!),
+                    icon: const Icon(Icons.receipt_long_outlined),
+                  ),
+                if (widget.remoteUri == null && widget.onDelete != null)
+                  IconButton(
+                    key: const Key('delete-local-recording'),
+                    tooltip: '删除本机录像',
+                    onPressed: _sharing ? null : _deleteLocalRecording,
+                    icon: const Icon(Icons.delete_outline_rounded),
+                  ),
+              ],
             ),
-          if (widget.remoteUri == null && widget.onDelete != null)
-            IconButton(
-              key: const Key('delete-local-recording'),
-              tooltip: '删除本机录像',
-              onPressed: _sharing ? null : _deleteLocalRecording,
-              icon: const Icon(Icons.delete_outline_rounded),
-            ),
-        ],
-      ),
       body: FutureBuilder<void>(
         future: _initialized,
         builder: (BuildContext context, AsyncSnapshot<void> snapshot) {
@@ -930,144 +1084,16 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
             valueListenable: _video,
             builder:
                 (BuildContext context, VideoPlayerValue value, Widget? child) {
-                  final double maximum = _playbackDuration.inMilliseconds
-                      .toDouble();
-                  final double position = _relativePositionMilliseconds(value);
+                  if (_fullscreen) {
+                    return _buildFullscreenBody(value);
+                  }
                   return ListView(
                     padding: const EdgeInsets.fromLTRB(18, 8, 18, 30),
                     children: <Widget>[
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(18),
-                        child: AspectRatio(
-                          aspectRatio: value.aspectRatio,
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: _togglePlayback,
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: <Widget>[
-                                VideoPlayer(_video),
-                                if (!value.isPlaying &&
-                                    _scrubMilliseconds == null)
-                                  const Center(
-                                    child: IgnorePointer(
-                                      child: DecoratedBox(
-                                        decoration: BoxDecoration(
-                                          color: Color(0x66000000),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: Padding(
-                                          padding: EdgeInsets.all(14),
-                                          child: Icon(
-                                            Icons.play_arrow_rounded,
-                                            color: Colors.white,
-                                            size: 38,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                if (value.isBuffering && value.isInitialized)
-                                  const PlaybackBufferingOverlay(
-                                    key: Key('playback-buffering-indicator'),
-                                  ),
-                                Positioned(
-                                  left: 0,
-                                  right: 0,
-                                  bottom: 0,
-                                  child: IgnorePointer(
-                                    child: Container(
-                                      height: 104,
-                                      decoration: const BoxDecoration(
-                                        gradient: LinearGradient(
-                                          begin: Alignment.topCenter,
-                                          end: Alignment.bottomCenter,
-                                          colors: <Color>[
-                                            Colors.transparent,
-                                            Color(0x99000000),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                Positioned(
-                                  left: 10,
-                                  right: 10,
-                                  bottom: 4,
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: <Widget>[
-                                      Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                        ),
-                                        child: Row(
-                                          children: <Widget>[
-                                            Text(
-                                              _formatDuration(
-                                                Duration(
-                                                  milliseconds: position
-                                                      .round(),
-                                                ),
-                                              ),
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                            ),
-                                            const Spacer(),
-                                            Text(
-                                              _formatDuration(
-                                                _playbackDuration,
-                                              ),
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      SliderTheme(
-                                        data: SliderTheme.of(context).copyWith(
-                                          activeTrackColor: Colors.white,
-                                          inactiveTrackColor: const Color(
-                                            0x66FFFFFF,
-                                          ),
-                                          thumbColor: Colors.white,
-                                          overlayColor: const Color(0x33FFFFFF),
-                                          trackHeight: 3,
-                                          thumbShape:
-                                              const RoundSliderThumbShape(
-                                                enabledThumbRadius: 6,
-                                              ),
-                                        ),
-                                        child: Slider(
-                                          value: maximum > 0 ? position : 0,
-                                          max: maximum > 0 ? maximum : 1,
-                                          onChangeStart: maximum > 0
-                                              ? _startScrubbing
-                                              : null,
-                                          onChanged: maximum > 0
-                                              ? _scrubTo
-                                              : null,
-                                          onChangeEnd: maximum > 0
-                                              ? _finishScrubbing
-                                              : null,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
+                      _buildVideoSurface(value),
+                      const SizedBox(height: 14),
+                      _buildRecordingDetails(),
+                      const SizedBox(height: 18),
                       if (_sharing) ...<Widget>[
                         LinearProgressIndicator(value: _shareProgress),
                         const SizedBox(height: 8),
@@ -1103,6 +1129,287 @@ class _VideoPlaybackScreenState extends State<VideoPlaybackScreen> {
                 },
           );
         },
+      ),
+    );
+  }
+
+  /// 全屏铺满：视频按自身宽高比在黑底上铺满整屏，控件只构建一次叠在其上。
+  Widget _buildFullscreenBody(VideoPlayerValue value) {
+    return Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        const ColoredBox(color: Colors.black),
+        Center(
+          child: AspectRatio(
+            aspectRatio: value.aspectRatio,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _togglePlayback,
+              child: Stack(
+                fit: StackFit.expand,
+                children: <Widget>[
+                  VideoPlayer(_video),
+                  const _VideoSurfaceScrim(),
+                  _buildPlayOverlay(value),
+                  if (value.isBuffering && value.isInitialized)
+                    const PlaybackBufferingOverlay(
+                      key: Key('playback-buffering-indicator'),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        const _VideoSurfaceScrim(height: 132),
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: _buildPlaybackControls(value),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 录像信息：面单号、录像时间、时长与大小、来源与备份状态。
+  Widget _buildRecordingDetails() {
+    final bool remote = widget.remoteUri != null;
+    final bool backedUp = widget.backedUp || remote;
+    final String source = widget.sourceLabel?.trim().isNotEmpty == true
+        ? widget.sourceLabel!.trim()
+        : (remote ? '电脑' : '手机');
+    final List<String> summary = <String>[
+      formatRecordingDuration(_session.duration),
+      if (_fileSizeBytes != null) formatRecordingSize(_fileSizeBytes!),
+    ];
+    final List<String> tags = <String>[
+      _session.operationMode.label,
+      if (formatRecordingResolution(
+            _video.value.isInitialized ? _video.value.size : null,
+          )
+          case final String resolution when resolution.isNotEmpty)
+        resolution,
+      if (formatRecordingCodec(_session.videoCodec) case final String codec
+          when codec.isNotEmpty)
+        codec,
+    ];
+    final OrderInfo? orderInfo = _session.orderInfo;
+    return RecordingInfoCard(
+      code: _session.displayCode,
+      codeCopyable: _session.markers.isNotEmpty,
+      recordedAt: formatRecordingTime(_session.startedAt),
+      summary: summary,
+      tags: tags,
+      source: source,
+      backupLabel: backedUp ? '已备份到电脑' : '未备份，仅在本机',
+      backupHighlighted: !backedUp,
+      trailing: orderInfo == null
+          ? null
+          : _OrderInfoSummary(
+              info: orderInfo,
+              onTap: () => _openOrderInfo(orderInfo),
+            ),
+    );
+  }
+
+  Future<void> _openOrderInfo(OrderInfo info) async {
+    final Future<void> Function(BuildContext, OrderInfo)? handler =
+        widget.onOrderInfo;
+    if (handler != null) {
+      await handler(context, info);
+      return;
+    }
+    await showOrderInfoSheet(context, info);
+  }
+
+  /// 视频面：窗口态带圆角、控件内嵌；全屏态由 [_buildFullscreenBody] 自行铺满。
+  Widget _buildVideoSurface(VideoPlayerValue value) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: AspectRatio(
+        aspectRatio: value.aspectRatio,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _togglePlayback,
+          child: Stack(
+            fit: StackFit.expand,
+            children: <Widget>[
+              VideoPlayer(_video),
+              const _VideoSurfaceScrim(),
+              _buildPlayOverlay(value),
+              if (value.isBuffering && value.isInitialized)
+                const PlaybackBufferingOverlay(
+                  key: Key('playback-buffering-indicator'),
+                ),
+              Positioned(
+                left: 10,
+                right: 10,
+                bottom: 4,
+                child: _buildPlaybackControls(value, compact: true),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 暂停时居中显示播放图标。
+  Widget _buildPlayOverlay(VideoPlayerValue value) {
+    if (value.isPlaying || _scrubMilliseconds != null) {
+      return const SizedBox.shrink();
+    }
+    return const Center(
+      child: IgnorePointer(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: Color(0x66000000),
+            shape: BoxShape.circle,
+          ),
+          child: Padding(
+            padding: EdgeInsets.all(14),
+            child: Icon(
+              Icons.play_arrow_rounded,
+              color: Colors.white,
+              size: 38,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 播放控件：时间行紧贴进度条，全屏按钮在进度条右侧。
+  Widget _buildPlaybackControls(
+    VideoPlayerValue value, {
+    bool compact = false,
+  }) {
+    final double maximum = _playbackDuration.inMilliseconds.toDouble();
+    final double position = _relativePositionMilliseconds(value);
+    const TextStyle timeStyle = TextStyle(
+      color: Colors.white,
+      fontSize: 13,
+      fontWeight: FontWeight.w600,
+    );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 4),
+          child: Row(
+            children: <Widget>[
+              Text(
+                _formatDuration(Duration(milliseconds: position.round())),
+                style: timeStyle,
+              ),
+              const Spacer(),
+              Text(_formatDuration(_playbackDuration), style: timeStyle),
+            ],
+          ),
+        ),
+        Row(
+          children: <Widget>[
+            Expanded(
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  activeTrackColor: Colors.white,
+                  inactiveTrackColor: const Color(0x66FFFFFF),
+                  thumbColor: Colors.white,
+                  overlayColor: const Color(0x33FFFFFF),
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(
+                    enabledThumbRadius: 6,
+                  ),
+                ),
+                child: Slider(
+                  value: maximum > 0 ? position : 0,
+                  max: maximum > 0 ? maximum : 1,
+                  onChangeStart: maximum > 0 ? _startScrubbing : null,
+                  onChanged: maximum > 0 ? _scrubTo : null,
+                  onChangeEnd: maximum > 0 ? _finishScrubbing : null,
+                ),
+              ),
+            ),
+            IconButton(
+              key: const Key('playback-fullscreen-toggle'),
+              tooltip: _fullscreen ? '退出全屏' : '全屏',
+              onPressed: _fullscreen ? _exitFullscreen : _enterFullscreen,
+              icon: Icon(
+                _fullscreen
+                    ? Icons.fullscreen_exit_rounded
+                    : Icons.fullscreen_rounded,
+              ),
+              iconSize: 22,
+              visualDensity: VisualDensity.compact,
+              color: Colors.white,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// 订单信息摘要：展示一行关键内容，点按查看完整订单信息。
+class _OrderInfoSummary extends StatelessWidget {
+  const _OrderInfoSummary({required this.info, required this.onTap});
+
+  final OrderInfo info;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final bool warning = info.hasRefundWarning;
+    return InkWell(
+      key: const Key('playback-order-info'),
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: <Widget>[
+            Icon(
+              Icons.receipt_long_outlined,
+              size: 18,
+              color: warning ? colors.error : colors.primary,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                info.summary,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: warning ? colors.error : colors.onSurface,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  height: 1.35,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              '查看',
+              style: TextStyle(
+                color: colors.onSurfaceVariant,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            Icon(
+              Icons.chevron_right_rounded,
+              size: 18,
+              color: colors.onSurfaceVariant,
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -1,3 +1,5 @@
+import 'jd_barcode_policy.dart';
+
 class BarcodeCandidatePolicy {
   const BarcodeCandidatePolicy._();
 
@@ -28,11 +30,11 @@ class BarcodeCandidatePolicy {
 
   /// 国内快递面单常用的一维码制。顺丰等面单不保证始终由系统识别为
   /// Code 128，因此不能把码制当作承运商身份。
-  /// [修改说明] 删除了 'codabar'，防止底层调用 iOS 15.4 新增的 Codabar API 导致 iOS 15.3 崩溃
   static const Set<String> _shippingLinearFormats = <String>{
     'code128',
     'code39',
     'code93',
+    'codabar',
   };
 
   /// 二维码可能同时承载营销链接或内部路由数据；仅当内容具有明确的
@@ -62,15 +64,55 @@ class BarcodeCandidatePolicy {
   static final RegExp _internationalPostalNumber = RegExp(r'^[A-Z]{2}\d{9}CN$');
 
   static String normalize(String? value) {
-    return (value ?? '').trim().replaceAll(' ', '').toUpperCase();
+    return normalizeRaw(value);
   }
 
-  /// 手机版支持的指令码：切发货、切退货、开始工作、停止工作。
-  /// 手机版刻意不支持 CLEAR（无输入框可清）。
+  static String waybill(String code) =>
+      JdBarcodePolicy.waybill(normalizeRaw(code));
+
+  static String normalizeRaw(String? value) =>
+      (value ?? '').trim().replaceAll(' ', '').toUpperCase();
+
+  /// Both native and Flutter image paths use the same same-frame ranking.
+  static String? selectForWorkScan(
+    Iterable<({String value, double area, String? format})> candidates, {
+    required int minimumLength,
+  }) {
+    final ranked = candidates
+        .where(
+          (candidate) => isValidForWorkScan(
+            candidate.value,
+            format: candidate.format,
+            minimumLength: minimumLength,
+          ),
+        )
+        .toList();
+    // Insertion keeps the original ordering for equal areas.
+    for (int i = 1; i < ranked.length; i++) {
+      final candidate = ranked[i];
+      int j = i;
+      while (j > 0 && ranked[j - 1].area < candidate.area) {
+        ranked[j] = ranked[j - 1];
+        j--;
+      }
+      ranked[j] = candidate;
+    }
+    return JdBarcodePolicy.select(ranked.map((c) => normalizeRaw(c.value)));
+  }
+
+  /// 手机版支持的指令码。提交内容只要包含指令词，就按指令处理。
   static MobileBarcodeCommand? mobileCommandFor(String? value) {
     final String normalized = normalize(value);
     if (normalized.isEmpty) {
       return null;
+    }
+    if (normalized.contains('FLASH')) {
+      return MobileBarcodeCommand.openFlash;
+    }
+    if (normalized.contains('CLEAR') ||
+        normalized.contains('CLEAN') ||
+        normalized.contains('清除')) {
+      return MobileBarcodeCommand.clearInput;
     }
     if (normalized.contains('SHIP') ||
         normalized.contains('发货') ||
@@ -181,4 +223,11 @@ class BarcodeCandidatePolicy {
 enum WorkScanRejection { tooShort, productFormat, unsupportedFormat, invalid }
 
 /// 手机版摄像头可执行的指令码动作。
-enum MobileBarcodeCommand { switchShipping, switchReturn, startWork, stopWork }
+enum MobileBarcodeCommand {
+  clearInput,
+  openFlash,
+  switchShipping,
+  switchReturn,
+  startWork,
+  stopWork,
+}

@@ -2,7 +2,7 @@ name: packing_proof_mobile
 description: "面向小型电商商家的本地面单识别与连续录像工具。"
 publish_to: 'none'
 
-version: 0.5.25+11042
+version: 0.5.28+11046
 
 environment:
   sdk: ^3.12.1

@@ -20,6 +20,7 @@ class AppSettings {
     this.orderSpeechEnabled = true,
     this.maxVolumeEnabled = true,
     this.recordAudioEnabled = true,
+    this.manualTrackingValidationEnabled = true,
     this.nativeRecordingFallback = false,
     this.cameraCapabilityState,
     this.preferredVideoCodec = RecordingVideoCodec.hevc,
@@ -34,6 +35,8 @@ class AppSettings {
     this.lanBackupAutoEnabled = true,
     this.unbackedRetention = UnbackedRetentionPolicy.days30,
     this.backedRetention = BackedRetentionPolicy.days7,
+    this.returnUnbackedRetention = UnbackedRetentionPolicy.days3,
+    this.returnBackedRetention = BackedRetentionPolicy.days1,
     this.hiddenRemoteRecordingIds = const <int>{},
     this.storageNoticeState = const StorageNoticeState(),
     this.minimumBarcodeLength = defaultMinimumBarcodeLength,
@@ -49,6 +52,7 @@ class AppSettings {
       ..remove('orderSpeechEnabled')
       ..remove('maxVolumeEnabled')
       ..remove('nativeRecordingFallback')
+      ..remove('manualTrackingValidationEnabled')
       ..remove('cameraCapabilityState')
       ..remove('preferredVideoCodec')
       ..remove('recordingSpec')
@@ -62,6 +66,8 @@ class AppSettings {
       ..remove('lanBackupAutoEnabled')
       ..remove('unbackedRetention')
       ..remove('backedRetention');
+    extraValues.remove('returnUnbackedRetention');
+    extraValues.remove('returnBackedRetention');
     extraValues.remove('storageNoticeState');
     extraValues.remove('minimumBarcodeLength');
     extraValues.remove('historyPageSize');
@@ -86,6 +92,10 @@ class AppSettings {
           : true,
       recordAudioEnabled: json['recordAudioEnabled'] is bool
           ? json['recordAudioEnabled']! as bool
+          : true,
+      manualTrackingValidationEnabled:
+          json['manualTrackingValidationEnabled'] is bool
+          ? json['manualTrackingValidationEnabled']! as bool
           : true,
       nativeRecordingFallback: json['nativeRecordingFallback'] is bool
           ? json['nativeRecordingFallback']! as bool
@@ -127,6 +137,12 @@ class AppSettings {
         json['unbackedRetention'],
       ),
       backedRetention: backedRetentionFromStorage(json['backedRetention']),
+      returnUnbackedRetention: json.containsKey('returnUnbackedRetention')
+          ? unbackedRetentionFromStorage(json['returnUnbackedRetention'])
+          : UnbackedRetentionPolicy.days3,
+      returnBackedRetention: json.containsKey('returnBackedRetention')
+          ? backedRetentionFromStorage(json['returnBackedRetention'])
+          : BackedRetentionPolicy.days1,
       hiddenRemoteRecordingIds: hiddenRemoteRecordingIds,
       storageNoticeState: StorageNoticeState.fromJson(
         json['storageNoticeState'],
@@ -170,6 +186,7 @@ class AppSettings {
   final bool orderSpeechEnabled;
   final bool maxVolumeEnabled;
   final bool recordAudioEnabled;
+  final bool manualTrackingValidationEnabled;
   final bool nativeRecordingFallback;
   final Map<String, Object?>? cameraCapabilityState;
   final RecordingVideoCodec preferredVideoCodec;
@@ -184,6 +201,8 @@ class AppSettings {
   final bool lanBackupAutoEnabled;
   final UnbackedRetentionPolicy unbackedRetention;
   final BackedRetentionPolicy backedRetention;
+  final UnbackedRetentionPolicy returnUnbackedRetention;
+  final BackedRetentionPolicy returnBackedRetention;
   final Set<int> hiddenRemoteRecordingIds;
   final StorageNoticeState storageNoticeState;
   final int minimumBarcodeLength;
@@ -197,6 +216,7 @@ class AppSettings {
     bool? orderSpeechEnabled,
     bool? maxVolumeEnabled,
     bool? recordAudioEnabled,
+    bool? manualTrackingValidationEnabled,
     bool? nativeRecordingFallback,
     Map<String, Object?>? cameraCapabilityState,
     RecordingVideoCodec? preferredVideoCodec,
@@ -211,6 +231,8 @@ class AppSettings {
     bool? lanBackupAutoEnabled,
     UnbackedRetentionPolicy? unbackedRetention,
     BackedRetentionPolicy? backedRetention,
+    UnbackedRetentionPolicy? returnUnbackedRetention,
+    BackedRetentionPolicy? returnBackedRetention,
     Set<int>? hiddenRemoteRecordingIds,
     StorageNoticeState? storageNoticeState,
     int? minimumBarcodeLength,
@@ -223,6 +245,9 @@ class AppSettings {
       orderSpeechEnabled: orderSpeechEnabled ?? this.orderSpeechEnabled,
       maxVolumeEnabled: maxVolumeEnabled ?? this.maxVolumeEnabled,
       recordAudioEnabled: recordAudioEnabled ?? this.recordAudioEnabled,
+      manualTrackingValidationEnabled:
+          manualTrackingValidationEnabled ??
+          this.manualTrackingValidationEnabled,
       nativeRecordingFallback:
           nativeRecordingFallback ?? this.nativeRecordingFallback,
       cameraCapabilityState:
@@ -243,6 +268,10 @@ class AppSettings {
       lanBackupAutoEnabled: lanBackupAutoEnabled ?? this.lanBackupAutoEnabled,
       unbackedRetention: unbackedRetention ?? this.unbackedRetention,
       backedRetention: backedRetention ?? this.backedRetention,
+      returnUnbackedRetention:
+          returnUnbackedRetention ?? this.returnUnbackedRetention,
+      returnBackedRetention:
+          returnBackedRetention ?? this.returnBackedRetention,
       hiddenRemoteRecordingIds:
           hiddenRemoteRecordingIds ?? this.hiddenRemoteRecordingIds,
       storageNoticeState: storageNoticeState ?? this.storageNoticeState,
@@ -260,6 +289,7 @@ class AppSettings {
     'orderSpeechEnabled': orderSpeechEnabled,
     'maxVolumeEnabled': maxVolumeEnabled,
     'recordAudioEnabled': recordAudioEnabled,
+    'manualTrackingValidationEnabled': manualTrackingValidationEnabled,
     'nativeRecordingFallback': nativeRecordingFallback,
     'cameraCapabilityState': cameraCapabilityState,
     'preferredVideoCodec': preferredVideoCodec.storageValue,
@@ -274,6 +304,8 @@ class AppSettings {
     'lanBackupAutoEnabled': lanBackupAutoEnabled,
     'unbackedRetention': unbackedRetention.storageValue,
     'backedRetention': backedRetention.storageValue,
+    'returnUnbackedRetention': returnUnbackedRetention.storageValue,
+    'returnBackedRetention': returnBackedRetention.storageValue,
     'hiddenRemoteRecordingIds': hiddenRemoteRecordingIds.toList()..sort(),
     'storageNoticeState': storageNoticeState.toJson(),
     'minimumBarcodeLength': minimumBarcodeLength,

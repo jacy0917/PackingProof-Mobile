@@ -528,6 +528,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private var uploadDispatchRequested = false
   private let hostLifecycleLock = NSLock()
   private var hostForeground: Bool
+  private let beforeUploadDispatcherFinalizationForTesting: (() -> Void)?
   private let maintenanceGate = IosBackupMaintenanceGate()
   private let cleanupLock = NSLock()
   private let cleanupPolicyLock = NSLock()
@@ -538,6 +539,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private var cleanupRetryAttempt = 0
   private var cleanupRunnerToken: UInt64 = 0
   private var cleanupRunnerTask: Task<Void, Never>?
+  private var cleanupDeferredByBackground = false
   private var lastCleanupAt = Date.distantPast
   private let emitLock = NSLock()
   private var summaryEventInFlight = false
@@ -615,6 +617,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
     cleanupWorkPauseNanoseconds: UInt64? = nil,
     cleanupSliceIntervalNanoseconds: UInt64? = nil,
     hostForeground: Bool = true,
+    beforeUploadDispatcherFinalizationForTesting: (() -> Void)? = nil,
     afterCleanupRunnerDecisionForTesting: (() -> Void)? = nil,
     beforeCleanupRetrySleepForTesting: ((Int, UInt64) -> Void)? = nil,
     beforeCleanupCandidateForTesting: (([String: Any]) -> Void)? = nil,
@@ -646,6 +649,8 @@ final class IosBackupHostApi: BackupNativeHostApi {
     self.cleanupSliceIntervalNanoseconds =
       cleanupSliceIntervalNanoseconds ?? Self.cleanupSliceIntervalNanoseconds
     self.hostForeground = hostForeground
+    self.beforeUploadDispatcherFinalizationForTesting =
+      beforeUploadDispatcherFinalizationForTesting
     self.afterCleanupRunnerDecisionForTesting =
       afterCleanupRunnerDecisionForTesting
     self.beforeCleanupRetrySleepForTesting = beforeCleanupRetrySleepForTesting
@@ -691,7 +696,9 @@ final class IosBackupHostApi: BackupNativeHostApi {
     do {
       try saveRetentionDays(
         unbacked: (request["unbackedRetentionDays"] as? Int) ?? -1,
-        backed: (request["backedRetentionDays"] as? Int) ?? -1
+        backed: (request["backedRetentionDays"] as? Int) ?? -1,
+        returnUnbacked: (request["returnUnbackedRetentionDays"] as? Int) ?? 3,
+        returnBacked: (request["returnBackedRetentionDays"] as? Int) ?? 1
       )
       triggerCleanup()
       try applyAutoEnabled(request["autoEnabled"] as? Bool ?? false)
@@ -1013,7 +1020,9 @@ final class IosBackupHostApi: BackupNativeHostApi {
     do {
       try saveRetentionDays(
         unbacked: (request["unbackedRetentionDays"] as? Int) ?? -1,
-        backed: (request["backedRetentionDays"] as? Int) ?? -1
+        backed: (request["backedRetentionDays"] as? Int) ?? -1,
+        returnUnbacked: (request["returnUnbackedRetentionDays"] as? Int) ?? 3,
+        returnBacked: (request["returnBackedRetentionDays"] as? Int) ?? 1
       )
       triggerCleanup()
       completion(.success(()))
@@ -1585,14 +1594,22 @@ final class IosBackupHostApi: BackupNativeHostApi {
     return "本机"
   }
 
-  private func saveRetentionDays(unbacked: Int, backed: Int) throws {
+  private func saveRetentionDays(
+    unbacked: Int, backed: Int, returnUnbacked: Int, returnBacked: Int
+  ) throws {
     cleanupPolicyLock.lock()
     defer { cleanupPolicyLock.unlock() }
+    let previous = defaults.dictionary(forKey: keys.retention)
+    let returnChanged = (previous?["returnUnbackedRetentionDays"] as? Int ?? 3) != returnUnbacked
+      || (previous?["returnBackedRetentionDays"] as? Int ?? 1) != returnBacked
     try jobStore.get().activateCleanupPolicy(
-      unbackedRetentionDays: unbacked, backedRetentionDays: backed
+      unbackedRetentionDays: unbacked, backedRetentionDays: backed,
+      forceReset: returnChanged
     )
     defaults.set(
-      ["unbackedRetentionDays": unbacked, "backedRetentionDays": backed],
+      ["unbackedRetentionDays": unbacked, "backedRetentionDays": backed,
+       "returnUnbackedRetentionDays": returnUnbacked,
+       "returnBackedRetentionDays": returnBacked],
       forKey: keys.retention
     )
     guard unbackedRetentionDays() == unbacked, backedRetentionDays() == backed else {
@@ -1610,6 +1627,16 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private func backedRetentionDays() -> Int {
     let values = defaults.dictionary(forKey: keys.retention)
     return (values?["backedRetentionDays"] as? Int) ?? 7
+  }
+
+  private func returnUnbackedRetentionDays() -> Int {
+    let values = defaults.dictionary(forKey: keys.retention)
+    return (values?["returnUnbackedRetentionDays"] as? Int) ?? 3
+  }
+
+  private func returnBackedRetentionDays() -> Int {
+    let values = defaults.dictionary(forKey: keys.retention)
+    return (values?["returnBackedRetentionDays"] as? Int) ?? 1
   }
 
   private func jobsApplyingFailureOverrides(
@@ -1799,6 +1826,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
     hostForeground = true
     hostLifecycleLock.unlock()
     requestUploadDispatch()
+    let deferred = withCleanupLock { () -> Bool in
+      let pending = cleanupDeferredByBackground
+      cleanupDeferredByBackground = false
+      return pending
+    }
+    if deferred { triggerCleanup() }
   }
 
   func onHostBackground() {
@@ -1834,9 +1867,20 @@ final class IosBackupHostApi: BackupNativeHostApi {
     uploadsLock.unlock()
   }
 
+  private func finishUploadDispatcher() {
+    beforeUploadDispatcherFinalizationForTesting?()
+    uploadsLock.lock()
+    uploadDispatcherTask = nil
+    let shouldRestart = uploadDispatchRequested
+    uploadsLock.unlock()
+    if shouldRestart {
+      requestUploadDispatch()
+    }
+  }
+
   private func runUploadDispatcher() async {
     guard isHostForeground() else {
-      withUploadsLock { uploadDispatcherTask = nil }
+      finishUploadDispatcher()
       return
     }
     do {
@@ -1844,7 +1888,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
         try recoverCleanupIntentsSlice()
       }
       if recovery.processedAny {
-        withUploadsLock { uploadDispatcherTask = nil }
+        finishUploadDispatcher()
         if recovery.hasMore {
           triggerCleanup()
         } else {
@@ -1854,7 +1898,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
       }
     } catch {
       NSLog("PackingProof cleanup recovery failed before upload: %@", error.localizedDescription)
-      withUploadsLock { uploadDispatcherTask = nil }
+      finishUploadDispatcher()
       triggerCleanup()
       return
     }
@@ -1938,7 +1982,7 @@ final class IosBackupHostApi: BackupNativeHostApi {
       return
     }
 
-    withUploadsLock { uploadDispatcherTask = nil }
+    finishUploadDispatcher()
   }
 
   private func cancelActiveUpload(jobId: String) {
@@ -1975,6 +2019,13 @@ final class IosBackupHostApi: BackupNativeHostApi {
     let task = withUploadsLock { uploadDispatcherTask }
     await task?.value
     await drainSummaryQueue()
+  }
+
+  func finishUploadDispatcherForTesting() {
+    withUploadsLock {
+      uploadDispatcherTask = Task {}
+    }
+    finishUploadDispatcher()
   }
 
   private func upload(
@@ -2524,7 +2575,8 @@ final class IosBackupHostApi: BackupNativeHostApi {
   }
 
   private func dueAt(
-    _ job: [String: Any], unbackedDays: Int, backedDays: Int
+    _ job: [String: Any], unbackedDays: Int, backedDays: Int,
+    returnUnbackedDays: Int? = nil, returnBackedDays: Int? = nil
   ) -> Date? {
     let state = job["state"] as? String ?? ""
     let completedAt = job["backupCompletedAt"] as? String
@@ -2534,17 +2586,28 @@ final class IosBackupHostApi: BackupNativeHostApi {
     }
     let days: Int
     let base: String?
+    let isReturn = isReturnGoods(job)
     if let completedAt {
-      days = backedDays
+      days = isReturn ? (returnBackedDays ?? self.returnBackedRetentionDays()) : backedDays
       base = completedAt
     } else {
-      days = unbackedDays
+      days = isReturn ? (returnUnbackedDays ?? self.returnUnbackedRetentionDays()) : unbackedDays
       base = job["fileCreatedAt"] as? String
     }
     guard days >= 0, let base, let baseDate = Self.isoFormatter.date(from: base) else {
       return nil
     }
     return baseDate.addingTimeInterval(Double(days) * 24 * 60 * 60)
+  }
+
+  private func isReturnGoods(_ job: [String: Any]) -> Bool {
+    if let mode = job["mode"] as? String {
+      return mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "return"
+    }
+    guard let sessions = job["sessions"] as? [Any],
+          let session = sessions.first as? [String: Any],
+          let mode = session["mode"] as? String else { return false }
+    return mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "return"
   }
 
   private func isConfirmationFresh(_ lastAttestedAt: String?, now: Date) -> Bool {
@@ -2579,6 +2642,12 @@ final class IosBackupHostApi: BackupNativeHostApi {
   private func triggerCleanup() {
     guard cleanupMaintenanceNeeded() else {
       withCleanupLock { lastCleanupAt = Date() }
+      return
+    }
+    // 后台进程不做清理扫描：远端确认要联网，上传本身也只在前台跑，
+    // 后台继续轮询只会持续占用 CPU，被 iOS 以资源超限杀掉。
+    guard isHostForeground() else {
+      withCleanupLock { cleanupDeferredByBackground = true }
       return
     }
     withCleanupLock {
@@ -2624,6 +2693,11 @@ final class IosBackupHostApi: BackupNativeHostApi {
     let workPause = cleanupWorkPauseNanoseconds
     cleanupRunnerTask = Task.detached(priority: .utility) { [weak self] in
       while !Task.isCancelled {
+        guard let foreground = self?.isHostForeground() else { return }
+        guard foreground else {
+          self?.deferCleanupForBackground(token: token)
+          return
+        }
         while activityState.isActive {
           do {
             try await Task.sleep(nanoseconds: workPause)
@@ -2723,6 +2797,15 @@ final class IosBackupHostApi: BackupNativeHostApi {
     cleanupRunnerToken &+= 1
     cleanupRunnerTask = nil
     cleanupRunning = false
+  }
+
+  /// 进入后台时结束当前 runner，并记下回到前台要补跑的清理。
+  private func deferCleanupForBackground(token: UInt64) {
+    withCleanupLock {
+      guard cleanupRunnerToken == token, cleanupRunnerTask != nil else { return }
+      cleanupDeferredByBackground = true
+      finalizeCleanupRunnerUnlocked(token: token)
+    }
   }
 
   private func finishCleanupRunner(token: UInt64) {

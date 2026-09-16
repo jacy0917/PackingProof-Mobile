@@ -181,12 +181,15 @@ class RecordingsScreen extends StatefulWidget {
     this.onRetryCapabilityProbe,
     this.unbackedRetention = UnbackedRetentionPolicy.days30,
     this.backedRetention = BackedRetentionPolicy.days7,
+    this.returnUnbackedRetention = UnbackedRetentionPolicy.days3,
+    this.returnBackedRetention = BackedRetentionPolicy.days1,
     this.onBackupRetentionChanged,
     this.onLoadRemoteRecordings,
     this.onLoadLocalRecordings,
     this.onLoadAdjacentLocalRecordings,
     this.onLoadRemoteRecordingStatuses,
     this.onResolveRemoteUri,
+    this.remoteConnectionNeedsRepair,
     this.hiddenRemoteRecordingIds = const <int>{},
     this.onHideRemoteRecordings,
     this.remotePlaybackHeaders = const <String, String>{},
@@ -259,21 +262,27 @@ class RecordingsScreen extends StatefulWidget {
   final VoidCallback? onRetryCapabilityProbe;
   final UnbackedRetentionPolicy unbackedRetention;
   final BackedRetentionPolicy backedRetention;
+  final UnbackedRetentionPolicy returnUnbackedRetention;
+  final BackedRetentionPolicy returnBackedRetention;
   final Future<void> Function({
     required UnbackedRetentionPolicy unbacked,
     required BackedRetentionPolicy backed,
+    required UnbackedRetentionPolicy returnUnbacked,
+    required BackedRetentionPolicy returnBacked,
   })?
   onBackupRetentionChanged;
   final Future<RemoteRecordingPage> Function({
     required int page,
     required int pageSize,
     String keyword,
+    RecordingOperationMode? operationMode,
   })?
   onLoadRemoteRecordings;
   final Future<LocalRecordingPage> Function({
     required int page,
     required int pageSize,
     String keyword,
+    RecordingOperationMode? operationMode,
     DateTime? start,
     DateTime? end,
   })?
@@ -285,6 +294,7 @@ class RecordingsScreen extends StatefulWidget {
     required LocalRecordingPageDirection direction,
     required int knownTotal,
     String keyword,
+    RecordingOperationMode? operationMode,
     DateTime? start,
     DateTime? end,
   })?
@@ -295,6 +305,9 @@ class RecordingsScreen extends StatefulWidget {
   Function(Iterable<int> ids)?
   onLoadRemoteRecordingStatuses;
   final Future<Uri?> Function(Uri remoteUri)? onResolveRemoteUri;
+
+  /// 解析失败后询问：是否属于"电脑配对已失效"，用于给出重新连接的提示。
+  final bool Function()? remoteConnectionNeedsRepair;
   final Set<int> hiddenRemoteRecordingIds;
   final Future<void> Function(Set<int> ids)? onHideRemoteRecordings;
   final Map<String, String> remotePlaybackHeaders;
@@ -346,6 +359,8 @@ class _RecordingsScreenState extends State<RecordingsScreen>
   late List<RecordingSession> _sessions;
   late UnbackedRetentionPolicy _unbackedRetention;
   late BackedRetentionPolicy _backedRetention;
+  late UnbackedRetentionPolicy _returnUnbackedRetention;
+  late BackedRetentionPolicy _returnBackedRetention;
   late Set<int> _hiddenRemoteIds;
   Timer? _remoteSearchTimer;
   final TextEditingController _searchController = TextEditingController();
@@ -354,12 +369,21 @@ class _RecordingsScreenState extends State<RecordingsScreen>
       <String, Future<String?>>{};
   @override
   String _query = '';
-  RecordingSourceFilter _sourceFilter = RecordingSourceFilter.all;
+  @override
+  RecordingOperationMode? _operationFilter;
+
+  RecordingSourceFilter _sourceFilter = const RecordingSourceFilter.all();
   RecordingHistoryDatePreset _datePreset = RecordingHistoryDatePreset.all;
   DateTimeRange? _customDateRange;
 
   List<RecordingSession> get _filteredSessions =>
-      filterRecordingSessionsByQuery(_sessions, _query);
+      filterRecordingSessionsByQuery(_sessions, _query)
+          .where(
+            (session) =>
+                _operationFilter == null ||
+                session.operationMode == _operationFilter,
+          )
+          .toList();
 
   bool get _hasOtherDeviceRecordings => _visibleItems.any(
     (RecordingHistoryItem item) =>
@@ -408,6 +432,8 @@ class _RecordingsScreenState extends State<RecordingsScreen>
     _initializeBackupCoordinator();
     _unbackedRetention = widget.unbackedRetention;
     _backedRetention = widget.backedRetention;
+    _returnUnbackedRetention = widget.returnUnbackedRetention;
+    _returnBackedRetention = widget.returnBackedRetention;
     _hiddenRemoteIds = Set<int>.of(widget.hiddenRemoteRecordingIds);
     _applyExternalSearch(widget.externalSearchQuery);
     _attachBackupSnapshotListener();
@@ -468,6 +494,8 @@ class _RecordingsScreenState extends State<RecordingsScreen>
     _historyPageSize = widget.historyPageSize;
     _unbackedRetention = widget.unbackedRetention;
     _backedRetention = widget.backedRetention;
+    _returnUnbackedRetention = widget.returnUnbackedRetention;
+    _returnBackedRetention = widget.returnBackedRetention;
     if (!identical(
       oldWidget.hiddenRemoteRecordingIds,
       widget.hiddenRemoteRecordingIds,
@@ -533,6 +561,7 @@ class _RecordingsScreenState extends State<RecordingsScreen>
         localRecordingPaths: _localRecordingPaths,
         sourceFilter: _sourceFilter,
         dateWindow: _activeDateWindow,
+        operationMode: _operationFilter,
         isRemoteFromThisDevice: _isRemoteFromThisDevice,
         isLocalBackedUp: (RecordingSession local) =>
             _backupJobsByPath[lanBackupFileIdentity(local.filePath)]?.any(
@@ -689,6 +718,8 @@ class _RecordingsScreenState extends State<RecordingsScreen>
     await widget.onBackupRetentionChanged?.call(
       unbacked: value,
       backed: _backedRetention,
+      returnUnbacked: _returnUnbackedRetention,
+      returnBacked: _returnBackedRetention,
     );
   }
 
@@ -709,6 +740,30 @@ class _RecordingsScreenState extends State<RecordingsScreen>
     await widget.onBackupRetentionChanged?.call(
       unbacked: _unbackedRetention,
       backed: value,
+      returnUnbacked: _returnUnbackedRetention,
+      returnBacked: _returnBackedRetention,
+    );
+  }
+
+  Future<void> _setReturnUnbackedRetention(
+    UnbackedRetentionPolicy value,
+  ) async {
+    setState(() => _returnUnbackedRetention = value);
+    await widget.onBackupRetentionChanged?.call(
+      unbacked: _unbackedRetention,
+      backed: _backedRetention,
+      returnUnbacked: value,
+      returnBacked: _returnBackedRetention,
+    );
+  }
+
+  Future<void> _setReturnBackedRetention(BackedRetentionPolicy value) async {
+    setState(() => _returnBackedRetention = value);
+    await widget.onBackupRetentionChanged?.call(
+      unbacked: _unbackedRetention,
+      backed: _backedRetention,
+      returnUnbacked: _returnUnbackedRetention,
+      returnBacked: value,
     );
   }
 
@@ -751,41 +806,93 @@ class _RecordingsScreenState extends State<RecordingsScreen>
     _onSearchChanged(value);
   }
 
+  /// 来源筛选项与当前显示名，筛选按钮与筛选面板共用。
+  RecordingSourceFilterPresentation get _sourceFilterPresentation =>
+      recordingSourceFilterPresentation(
+        remoteRecordings: _remoteRecordings,
+        current: _sourceFilter,
+        pairedComputerName: _backupSnapshot.endpoint?.computerName ?? '',
+      );
+
   Future<void> _showSourceFilter() async {
     FocusManager.instance.primaryFocus?.unfocus();
     await Future<void>.delayed(const Duration(milliseconds: 120));
     if (!mounted) return;
-    final RecordingSourceFilter? value =
-        await showModalBottomSheet<RecordingSourceFilter>(
-          context: context,
-          showDragHandle: true,
-          builder: (BuildContext context) => SafeArea(
+    var source = _sourceFilter;
+    var mode = _operationFilter;
+    // 来源按实际来源设备列出：主机（电脑本机）之外，各从机单独一项，
+    // 否则"电脑录像"会把所有从机的录像混在一起，无法按机器筛选。
+    final List<RecordingSourceOption> options =
+        _sourceFilterPresentation.options;
+    final applied = await showModalBottomSheet<bool>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              children: RecordingSourceFilter.values
-                  .map(
-                    (filter) => ListTile(
-                      leading: Icon(
-                        filter == _sourceFilter
-                            ? Icons.check_circle_rounded
-                            : Icons.circle_outlined,
-                        color: filter == _sourceFilter
-                            ? Theme.of(context).colorScheme.primary
-                            : null,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text('录像筛选', style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 16),
+                const Text('来源'),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final RecordingSourceOption option in options)
+                      ChoiceChip(
+                        label: Text(option.label),
+                        selected: source == option.filter,
+                        onSelected: (_) => update(() => source = option.filter),
                       ),
-                      title: Text(recordingHistorySourceFilterLabel(filter)),
-                      onTap: () => Navigator.of(context).pop(filter),
-                    ),
-                  )
-                  .toList(growable: false),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                const Text('业务类型'),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final value in <RecordingOperationMode?>[
+                      null,
+                      ...RecordingOperationMode.values,
+                    ])
+                      ChoiceChip(
+                        label: Text(value?.label ?? '全部类型'),
+                        selected: mode == value,
+                        onSelected: (_) => update(() => mode = value),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('应用筛选'),
+                ),
+              ],
             ),
           ),
-        );
-    if (value != null && mounted) {
-      setState(() {
-        _sourceFilter = value;
-        _historyPage = 0;
-      });
+        ),
+      ),
+    );
+    if (applied != true || !mounted) return;
+    final modeChanged = mode != _operationFilter;
+    setState(() {
+      _sourceFilter = source;
+      _operationFilter = mode;
+      _historyPage = 0;
+    });
+    if (modeChanged) {
+      _remoteRequestGeneration++;
+      _loadingRemote = false;
+      _remotePages.clear();
+      _remoteRecordings.clear();
+      _remoteTotal = 0;
+      _remoteDeviceTotal = 0;
+      _remoteFilterError = null;
+      _reloadLocalAfterFilterChange();
+      unawaited(_loadRemote(reset: true, pageNumber: 1, prefetchNext: true));
     }
   }
 
@@ -988,7 +1095,7 @@ class _RecordingsScreenState extends State<RecordingsScreen>
           pageSize: _historyPageSize,
           firstLoadedPage:
               _localPages.isNotEmpty &&
-                  (_sourceFilter == RecordingSourceFilter.local ||
+                  (_sourceFilter.kind == RecordingSourceFilterKind.local ||
                       _remoteRecordings.isEmpty)
               ? (_localPages.keys.reduce((int a, int b) => a < b ? a : b) - 1)
               : 0,
@@ -1018,7 +1125,7 @@ class _RecordingsScreenState extends State<RecordingsScreen>
               : const Text('设置'),
           actions: <Widget>[
             if (_managing)
-              TextButton(
+              OutlinedButton(
                 key: const Key('finish-managing-appbar-button'),
                 onPressed: _toggleManaging,
                 child: const Text('完成'),
@@ -1027,141 +1134,16 @@ class _RecordingsScreenState extends State<RecordingsScreen>
         ),
         body: ListView(
           controller: _scrollController,
-          padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
+          padding: EdgeInsets.fromLTRB(
+            18,
+            8,
+            18,
+            28 + MediaQuery.paddingOf(context).bottom,
+          ),
           children: <Widget>[
-            if (!historyMode) ...<Widget>[
-              _SettingsCard(
-                key: const Key('work-settings-card'),
-                children: <Widget>[
-                  _WorkModeSettings(
-                    workMode: _workMode,
-                    onChanged: _setWorkMode,
-                  ),
-                  if (widget.onMinimumBarcodeLengthChanged != null) ...<Widget>[
-                    Divider(
-                      height: 1,
-                      thickness: 1,
-                      color: colors.outlineVariant,
-                    ),
-                    _MinimumBarcodeLengthSettings(
-                      value: _minimumBarcodeLength,
-                      onChanged: _setMinimumBarcodeLength,
-                    ),
-                  ],
-                ],
-              ),
-              if (widget.showCameraCapabilityCard &&
-                  widget.capabilities?.supports(
-                        PlatformCapability.cameraCapabilityNegotiation,
-                      ) !=
-                      false &&
-                  widget.capabilityMode != null) ...<Widget>[
-                const SizedBox(height: 12),
-                _SettingsCard(
-                  key: const Key('camera-capability-settings-card'),
-                  children: <Widget>[
-                    _CameraCapabilitySettings(
-                      mode: widget.capabilityMode!,
-                      statusText: widget.capabilityStatusText ?? '',
-                      onRetry: widget.onRetryCapabilityProbe,
-                    ),
-                  ],
-                ),
-              ],
-              const SizedBox(height: 12),
-              _SettingsCard(
-                key: const Key('recording-settings-card'),
-                children: <Widget>[
-                  _RetentionSettings(
-                    unbackedRetention: _unbackedRetention,
-                    backedRetention: _backedRetention,
-                    onUnbackedRetentionChanged: _setUnbackedRetention,
-                    onBackedRetentionChanged: _setBackedRetention,
-                  ),
-                  Divider(
-                    height: 1,
-                    thickness: 1,
-                    color: colors.outlineVariant,
-                  ),
-                  _VideoCodecSettings(
-                    codec: _preferredVideoCodec,
-                    hevcEnabled:
-                        _deviceDecodeSupport?.supportsHevcRecording ?? false,
-                    hevcWarning: _deviceDecodeSupport == null
-                        ? null
-                        : (!_deviceDecodeSupport!.supportsHevcRecording
-                              ? '当前设备不支持完整的 H.265 录制与播放能力，已使用 H.264'
-                              : null),
-                    onChanged: _setPreferredVideoCodec,
-                  ),
-                  Divider(
-                    height: 1,
-                    thickness: 1,
-                    color: colors.outlineVariant,
-                  ),
-                  _RecordingSpecSettings(
-                    spec: _recordingSpec,
-                    availableSpecs: widget.availableRecordingSpecs,
-                    showUhd4kOption: widget.showUhd4kOption,
-                    onChanged: _setRecordingSpec,
-                  ),
-                  Divider(
-                    height: 1,
-                    thickness: 1,
-                    color: colors.outlineVariant,
-                  ),
-                  _RecordingOrientationSettings(
-                    orientation: _recordingOrientation,
-                    onChanged: (value) {
-                      unawaited(_setRecordingOrientation(value));
-                    },
-                  ),
-                  Divider(
-                    height: 1,
-                    thickness: 1,
-                    color: colors.outlineVariant,
-                  ),
-                  _RecordAudioSettings(
-                    enabled: _recordAudioEnabled,
-                    onChanged: _setRecordAudioEnabled,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              _SettingsCard(
-                key: const Key('voice-settings-card'),
-                children: <Widget>[
-                  _SpeechPromptSettings(
-                    enabled: _speechEnabled,
-                    onChanged: _setSpeechEnabled,
-                    onPreview: widget.onSpeechPreview,
-                  ),
-                  if (_maxVolumeSupported) ...<Widget>[
-                    Divider(
-                      height: 1,
-                      thickness: 1,
-                      color: colors.outlineVariant,
-                    ),
-                    _MaxVolumeSettings(
-                      enabled: _maxVolumeEnabled,
-                      onChanged: _setMaxVolumeEnabled,
-                    ),
-                  ],
-                ],
-              ),
-              if (_orderReceiverSupported) ...<Widget>[
-                const SizedBox(height: 12),
-                _OrderReceiverSettings(
-                  snapshot: widget.orderReceiverSnapshot,
-                  onRetry: widget.onRetryOrderReceiver,
-                  speechEnabled: _orderSpeechEnabled,
-                  speechMasterEnabled: _speechEnabled,
-                  onSpeechChanged: _setOrderSpeechEnabled,
-                ),
-              ],
-              const SizedBox(height: 12),
-              const AboutSettings(),
-            ] else ...<Widget>[
+            if (!historyMode)
+              ...buildRecordingsSettingsChildren(context)
+            else ...<Widget>[
               if (!_managing) ...<Widget>[
                 _HistorySummary(
                   total:
@@ -1309,9 +1291,16 @@ class _RecordingsScreenState extends State<RecordingsScreen>
                             size: 18,
                           ),
                           label: Text(
-                            recordingHistorySourceFilterLabel(_sourceFilter),
+                            [
+                              _sourceFilterPresentation.label,
+                              if (_operationFilter != null)
+                                _operationFilter!.label,
+                            ].join(' · '),
                           ),
-                          selected: _sourceFilter != RecordingSourceFilter.all,
+                          selected:
+                              _sourceFilter.kind !=
+                                  RecordingSourceFilterKind.all ||
+                              _operationFilter != null,
                           showCheckmark: false,
                           onSelected: (_) => _showSourceFilter(),
                         ),
@@ -1456,8 +1445,19 @@ class _RecordingsScreenState extends State<RecordingsScreen>
                               : await resolver(item.remote!.playUri);
                           if (!context.mounted) return;
                           if (currentRemoteUri == null) {
+                            // 电脑换了身份或重装过时，旧配对凭据已经作废，
+                            // 这时提示"离线"会让人反复重试；要直接让他重新连接。
+                            final bool needsRepair =
+                                widget.remoteConnectionNeedsRepair?.call() ??
+                                false;
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('保存主机暂时离线，请稍后重试')),
+                              SnackBar(
+                                content: Text(
+                                  needsRepair
+                                      ? '这台电脑的配对已失效，请在电脑备份里重新连接'
+                                      : '暂时连不上电脑，请确认电脑端程序仍在运行后重试',
+                                ),
+                              ),
                             );
                             return;
                           }
@@ -1496,6 +1496,13 @@ class _RecordingsScreenState extends State<RecordingsScreen>
                                       : null,
                                   remoteHeaders: widget.remotePlaybackHeaders,
                                   backedUpOffline: completedBackupJob != null,
+                                  sourceLabel: _recordingSourceLabel(item),
+                                  backedUp:
+                                      (remoteAvailable &&
+                                          _isRemoteFromThisDevice(
+                                            item.remote!,
+                                          )) ||
+                                      completedBackupJob != null,
                                   remoteClipService: localAvailable
                                       ? null
                                       : item.remote == null
@@ -1527,15 +1534,16 @@ class _RecordingsScreenState extends State<RecordingsScreen>
                     ),
                   );
                 }),
+              if (_remoteFilterError != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(_remoteFilterError!),
+                ),
               if (pagination.pageCount > 1)
                 _HistoryPagination(
                   currentPage: pagination.page,
                   pageCount: pagination.pageCount,
                   loading: _loadingRemote || _loadingLocal,
-                  offline:
-                      _backupSnapshot.connected &&
-                      _backupSnapshot.connectionStatus !=
-                          LanConnectionStatus.connected,
                   canLoadMore: pagination.page + 1 < pagination.pageCount,
                   onPrevious: pagination.page == 0
                       ? null
@@ -1582,17 +1590,10 @@ class _RecordingsScreenState extends State<RecordingsScreen>
                               ),
                             ),
                           const Spacer(),
-                          FilledButton.tonalIcon(
+                          OutlinedButton(
                             key: const Key('finish-managing-button'),
                             onPressed: _toggleManaging,
-                            // 全局 FilledButton 主题把最小宽度设为通栏
-                            // Size.fromHeight(58)，在 Row 的无界宽度约束下会把
-                            // 按钮撑成无限宽导致布局异常，这里显式收回宽度。
-                            style: FilledButton.styleFrom(
-                              minimumSize: const Size(64, 58),
-                            ),
-                            icon: const Icon(Icons.check_rounded, size: 18),
-                            label: const Text('完成'),
+                            child: const Text('完成'),
                           ),
                         ],
                       ),

@@ -7,7 +7,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../widgets/floating_dock.dart';
 import '../app/app_build_config.dart';
+import '../app/app_update_links.dart';
 import '../app/packing_proof_theme.dart';
 import '../controllers/packing_session_controller.dart';
 import '../models/barcode_marker.dart';
@@ -27,6 +29,8 @@ import '../services/session_repository.dart';
 import '../services/speech_prompt_service.dart';
 import '../services/watermark_geometry.dart';
 import '../widgets/order_info_sheet.dart';
+import '../widgets/tracking_number_keypad.dart';
+import '../widgets/two_button_confirm_dialog.dart';
 import 'recordings_screen.dart';
 
 @visibleForTesting
@@ -82,7 +86,8 @@ bool shouldBlockTabSwitch({
 bool shouldHideMainBottomNavigation({
   required bool pairingScanActive,
   required bool working,
-}) => pairingScanActive || working;
+  bool historyManaging = false,
+}) => pairingScanActive || working || historyManaging;
 
 @visibleForTesting
 Future<void> showComputerPairingFailureDialog(
@@ -112,28 +117,17 @@ Future<bool> showComputerReplacementDialog(
   return await showDialog<bool>(
         context: context,
         barrierDismissible: false,
-        builder: (BuildContext dialogContext) => AlertDialog(
-          title: const Text('更换备份电脑？'),
-          content: Text(
-            '当前：${prompt.currentComputer}\n新的电脑：${prompt.newComputer}\n\n更换后，后续录像将备份到新的电脑',
-          ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const Text('继续绑定'),
-            ),
-          ],
+        builder: (BuildContext dialogContext) => TwoButtonConfirmDialog(
+          title: '更换备份电脑？',
+          message:
+              '当前：${prompt.currentComputer}\n新的电脑：${prompt.newComputer}\n\n更换后，后续录像将备份到新的电脑',
+          confirmLabel: '继续绑定',
         ),
       ) ??
       false;
 }
 
-const String mobileAppDownloadUrl =
-    'https://gitee.com/PackingProof/PackingProof-Mobile/releases/latest';
+const String mobileAppDownloadUrl = packingProofAndroidReleasesUrl;
 
 @visibleForTesting
 Future<void> showMobileAppUpdateNotice(
@@ -159,13 +153,10 @@ Future<void> showMobileAppUpdateNotice(
           Text(
             notice.message.isEmpty
                 ? '当前 APP 版本过低，需要更新\n'
-                      '电脑端要求使用 ${notice.minimumVersion} 或更高版本\n'
-                      '暂不更新时仍可继续识别面单和录像'
+                      '电脑端要求使用 ${notice.minimumVersion} 或更高版本'
                 : notice.updateRequired
-                ? '${notice.message}\n最低兼容版本：${notice.minimumVersion}\n'
-                      '暂不更新时仍可继续识别面单和录像'
-                : '${notice.message}\n最新版本：${notice.latestVersion}\n'
-                      '暂不更新时仍可继续识别面单和录像',
+                ? '${notice.message}\n最低兼容版本：${notice.minimumVersion}'
+                : '${notice.message}\n最新版本：${notice.latestVersion}',
           ),
         ],
       ),
@@ -177,14 +168,12 @@ Future<void> showMobileAppUpdateNotice(
         TextButton(
           onPressed: () {
             messenger.hideCurrentMaterialBanner();
-            final Uri uri = Uri.parse(mobileAppDownloadUrl);
             unawaited(
-              (openUrl ??
-                      (Uri value) => launchUrl(
-                        value,
-                        mode: LaunchMode.externalApplication,
-                      ))
-                  .call(uri),
+              _showMobileUpdateInstructions(
+                context,
+                Uri.parse(packingProofAppUpdateUrl()),
+                openUrl,
+              ),
             );
           },
           child: const Text('打开下载页面'),
@@ -193,6 +182,367 @@ Future<void> showMobileAppUpdateNotice(
     ),
   );
   return controller.closed.then<void>((_) {});
+}
+
+Future<void> _showMobileUpdateInstructions(
+  BuildContext context,
+  Uri uri,
+  Future<bool> Function(Uri uri)? openUrl,
+) async {
+  final bool ios = defaultTargetPlatform == TargetPlatform.iOS;
+  final bool? confirmed = await showDialog<bool>(
+    context: context,
+    builder: (BuildContext dialogContext) => TwoButtonConfirmDialog(
+      title: '更新说明',
+      message: ios
+          ? '即将打开 TestFlight。请在 TestFlight 中完成更新；如果尚未安装 TestFlight，请先按系统提示安装'
+          : '即将打开 Gitee 下载页面。下载 APK 后，如果文件被自动追加了其他后缀，请删除多余后缀并恢复为 .apk，再覆盖安装。请勿卸载应用，以免影响本机录像和设置',
+      confirmLabel: '继续',
+    ),
+  );
+  if (confirmed != true) return;
+  await (openUrl ??
+          (Uri value) => launchUrl(value, mode: LaunchMode.externalApplication))
+      .call(uri);
+}
+
+/// 手动补录单号的输入面板。
+///
+/// 用底部面板而不是对话框：应用内键盘要占满整屏宽度才放得下 QWERTY 键位。
+@visibleForTesting
+Future<void> showManualTrackingSheet(
+  BuildContext context, {
+  required Future<bool> Function(String rawCode, {required bool validate})
+  onSubmit,
+  bool initialValidate = true,
+  Future<void> Function(bool enabled)? onValidateChanged,
+}) => showModalBottomSheet<void>(
+  context: context,
+  isScrollControlled: true,
+  useSafeArea: true,
+  showDragHandle: true,
+  builder: (BuildContext sheetContext) => _ManualTrackingSheet(
+    onSubmit: onSubmit,
+    initialValidate: initialValidate,
+    onValidateChanged: onValidateChanged,
+  ),
+);
+
+class _ManualTrackingSheet extends StatefulWidget {
+  const _ManualTrackingSheet({
+    required this.onSubmit,
+    required this.initialValidate,
+    this.onValidateChanged,
+  });
+
+  final Future<bool> Function(String rawCode, {required bool validate})
+  onSubmit;
+  final bool initialValidate;
+  final Future<void> Function(bool enabled)? onValidateChanged;
+
+  @override
+  State<_ManualTrackingSheet> createState() => _ManualTrackingSheetState();
+}
+
+class _ManualTrackingSheetState extends State<_ManualTrackingSheet> {
+  final TextEditingController _input = TextEditingController();
+  final FocusNode _inputFocus = FocusNode();
+  late bool _validate;
+  bool _submitting = false;
+  String? _errorMessage;
+  Timer? _keyboardProbe;
+  bool _systemKeyboardProbed = false;
+  bool _hasInput = false;
+
+  /// 应用内键盘的显示意图：null 表示交给自动判断，非空表示用户手动指定过。
+  bool? _keypadOverride;
+
+  /// 请求显示系统键盘后给它一点时间弹出来。
+  static const Duration _systemKeyboardProbeDelay = Duration(milliseconds: 450);
+
+  @override
+  void initState() {
+    super.initState();
+    _validate = widget.initialValidate;
+    // 清除按钮要随“有没有内容”出现和消失。
+    _input.addListener(_handleInputChanged);
+    // 主页扫码枪焦点会主动隐藏键盘；面板打开后才恢复软键盘输入。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _showKeyboard();
+    });
+  }
+
+  void _handleInputChanged() {
+    final bool hasText = _input.text.isNotEmpty;
+    if (hasText == _hasInput) return;
+    setState(() => _hasInput = hasText);
+  }
+
+  void _showKeyboard() {
+    _inputFocus.requestFocus();
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.show'));
+    // 接了扫码枪或外接键盘时系统会抑制软键盘，这里不去猜有没有外设，
+    // 只看请求之后键盘到底有没有顶起来，没有才交给应用内键盘。
+    _keyboardProbe?.cancel();
+    _keyboardProbe = Timer(_systemKeyboardProbeDelay, () {
+      if (!mounted || _systemKeyboardProbed) return;
+      setState(() => _systemKeyboardProbed = true);
+    });
+  }
+
+  bool get _keypadVisible =>
+      _keypadOverride ??
+      (_systemKeyboardProbed && MediaQuery.viewInsetsOf(context).bottom <= 0);
+
+  /// 输入框上的键盘按钮：手动收起后还能再叫回来，两套键盘始终只留一套。
+  void _toggleKeypad() {
+    final bool show = !_keypadVisible;
+    setState(() => _keypadOverride = show);
+    _inputFocus.requestFocus();
+    unawaited(
+      SystemChannels.textInput.invokeMethod<void>(
+        show ? 'TextInput.hide' : 'TextInput.show',
+      ),
+    );
+  }
+
+  Future<void> _pasteFromClipboard() async {
+    final ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
+    final String value = data?.text?.trim() ?? '';
+    if (!mounted) return;
+    if (value.isEmpty) {
+      setState(() => _errorMessage = '剪贴板里没有可用文本');
+      return;
+    }
+    setState(() => _errorMessage = null);
+    _input.value = TextEditingValue(
+      text: value,
+      selection: TextSelection.collapsed(offset: value.length),
+    );
+  }
+
+  void _insertText(String text) {
+    final TextEditingValue value = _input.value;
+    final TextSelection selection = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    final String updated = value.text.replaceRange(
+      selection.start,
+      selection.end,
+      text,
+    );
+    _input.value = TextEditingValue(
+      text: updated,
+      selection: TextSelection.collapsed(offset: selection.start + text.length),
+    );
+  }
+
+  void _backspace() {
+    final TextEditingValue value = _input.value;
+    if (value.text.isEmpty) return;
+    final TextSelection selection = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    if (selection.start != selection.end) {
+      _insertText('');
+      return;
+    }
+    if (selection.start == 0) return;
+    _input.value = TextEditingValue(
+      text: value.text.replaceRange(selection.start - 1, selection.start, ''),
+      selection: TextSelection.collapsed(offset: selection.start - 1),
+    );
+  }
+
+  void _clearInput() {
+    _input.value = TextEditingValue.empty;
+  }
+
+  @override
+  void dispose() {
+    _keyboardProbe?.cancel();
+    _input.removeListener(_handleInputChanged);
+    _inputFocus.dispose();
+    _input.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit([String? submittedValue]) async {
+    if (_submitting) return;
+    if (submittedValue != null && submittedValue != _input.text) {
+      _input.text = submittedValue;
+    }
+    setState(() {
+      _submitting = true;
+      _errorMessage = null;
+    });
+    final bool ok = await widget.onSubmit(_input.text, validate: _validate);
+    if (!mounted) return;
+    if (ok) {
+      Navigator.pop(context);
+      return;
+    }
+    setState(() {
+      _submitting = false;
+      _errorMessage = _input.text.trim().isEmpty
+          ? '请输入单号'
+          : _validate
+          ? '单号格式或长度不符合要求'
+          : '当前无法提交，请稍后重试';
+    });
+    _inputFocus.requestFocus();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return Padding(
+      // 系统键盘弹出时把面板顶上去，别盖住输入框。
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: SingleChildScrollView(
+        child: Padding(
+          // 全面屏机型底部要留出手势区之外的余量，键盘不贴着屏幕下沿。
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              const Text(
+                '输入单号',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 2),
+              const Text(
+                '支持扫码枪输入',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 12),
+              Focus(
+                onKeyEvent: (FocusNode node, KeyEvent event) {
+                  if (event is KeyDownEvent &&
+                      (event.logicalKey == LogicalKeyboardKey.enter ||
+                          event.logicalKey == LogicalKeyboardKey.numpadEnter)) {
+                    unawaited(_submit());
+                    return KeyEventResult.handled;
+                  }
+                  return KeyEventResult.ignored;
+                },
+                // 与历史页搜索框保持一致：同样的外观、粘贴按钮和清除按钮。
+                child: SearchBar(
+                  key: const Key('manual-tracking-input'),
+                  controller: _input,
+                  focusNode: _inputFocus,
+                  autoFocus: true,
+                  hintText: '输入或粘贴单号',
+                  leading: const Icon(Icons.local_shipping_rounded),
+                  onSubmitted: (String value) => unawaited(_submit(value)),
+                  trailing: <Widget>[
+                    IconButton(
+                      key: const Key('manual-tracking-keyboard-button'),
+                      tooltip: _keypadVisible ? '收起键盘' : '呼出键盘',
+                      onPressed: _toggleKeypad,
+                      icon: Icon(
+                        _keypadVisible
+                            ? Icons.keyboard_hide_rounded
+                            : Icons.keyboard_rounded,
+                      ),
+                    ),
+                    IconButton(
+                      key: const Key('manual-tracking-paste-button'),
+                      tooltip: '粘贴单号',
+                      onPressed: _pasteFromClipboard,
+                      icon: const Icon(Icons.content_paste_rounded),
+                    ),
+                    if (_hasInput)
+                      IconButton(
+                        key: const Key('manual-tracking-clear-button'),
+                        tooltip: '清除输入',
+                        onPressed: _clearInput,
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                  ],
+                ),
+              ),
+              if (_errorMessage != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    _errorMessage!,
+                    style: TextStyle(color: colors.error),
+                  ),
+                ),
+              CheckboxListTile(
+                value: _validate,
+                contentPadding: EdgeInsets.zero,
+                title: const Text('校验单号'),
+                onChanged: _submitting
+                    ? null
+                    : (bool? value) {
+                        final bool enabled = value ?? true;
+                        setState(() => _validate = enabled);
+                        final Future<void> Function(bool enabled)? callback =
+                            widget.onValidateChanged;
+                        if (callback != null) unawaited(callback(enabled));
+                      },
+              ),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                        padding: EdgeInsets.zero,
+                        textStyle: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      onPressed: _submitting
+                          ? null
+                          : () => Navigator.pop(context),
+                      child: const Text('取消'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                        padding: EdgeInsets.zero,
+                        textStyle: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      onPressed: _submitting ? null : _submit,
+                      child: const Text('提交'),
+                    ),
+                  ),
+                ],
+              ),
+              if (_keypadVisible)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: TrackingNumberKeypad(
+                    hint: '外接设备占用了系统键盘，可用下方键盘输入',
+                    onInsert: _insertText,
+                    onBackspace: _backspace,
+                    onClear: _clearInput,
+                    onSubmit: _submitting ? null : () => unawaited(_submit()),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class PackingHomeScreen extends StatefulWidget {
@@ -225,6 +575,10 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
   bool _capabilityNoticeDialogShown = false;
   int _transientReturnTab = 1;
   DateTime? _exitArmedAt;
+  String _scanInput = '';
+  String _lastCameraCandidateCode = '';
+  final FocusNode _scanInputFocus = FocusNode();
+  bool _scanSubmitting = false;
 
   @override
   void initState() {
@@ -239,6 +593,9 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
       cache: LanBackupHostFileCache(),
     );
     unawaited(_controller.initialize());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _focusScanInputSilently();
+    });
   }
 
   @override
@@ -261,11 +618,50 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
     _controller.removeListener(_handleControllerChanged);
     _controller.dispose();
     _backupHostDiscovery.dispose();
+    _scanInputFocus.dispose();
     super.dispose();
   }
 
+  /// 丢弃外接键盘／扫码枪敲了一半的缓冲。
+  /// 焦点离开过扫码框之后，这截内容不能再和下一次输入拼在一起。
+  void _clearScanInput() {
+    if (!mounted || _scanInput.isEmpty) return;
+    setState(() => _scanInput = '');
+  }
+
+  void _focusScanInputSilently() {
+    if (!mounted || _selectedTab != 1) return;
+    _clearScanInput();
+    _scanInputFocus.requestFocus();
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+  }
+
+  Future<void> _submitScanInput() async {
+    if (_scanSubmitting) return;
+    final String value = _scanInput;
+    if (value.trim().isEmpty) return;
+    setState(() {
+      _scanSubmitting = true;
+      _scanInput = '';
+    });
+    await _controller.submitExternalTrackingNumber(value, validate: true);
+    if (!mounted) return;
+    setState(() => _scanSubmitting = false);
+    _focusScanInputSilently();
+  }
+
   void _handleControllerChanged() {
-    if (!mounted || _capabilityNoticeDialogShown) return;
+    if (!mounted) return;
+    final String cameraCandidate = _controller.candidateCode;
+    if (cameraCandidate != _lastCameraCandidateCode) {
+      final bool hadCameraCandidate = _lastCameraCandidateCode.isNotEmpty;
+      _lastCameraCandidateCode = cameraCandidate;
+      if ((cameraCandidate.isNotEmpty || hadCameraCandidate) &&
+          _scanInput.isNotEmpty) {
+        setState(() => _scanInput = '');
+      }
+    }
+    if (_capabilityNoticeDialogShown) return;
     final String? notice = _controller.takeCapabilityNoticeForDisplay();
     if (notice == null || _controller.phase != PackingSessionPhase.ready) {
       return;
@@ -290,6 +686,18 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
     );
   }
 
+  Future<void> _showManualTrackingSheet() async {
+    // 外接键盘敲了一半又改用弹窗时，残留的缓冲会和之后的扫码内容拼在一起。
+    _clearScanInput();
+    await showManualTrackingSheet(
+      context,
+      onSubmit: _controller.submitExternalTrackingNumber,
+      initialValidate: _controller.manualTrackingValidationEnabled,
+      onValidateChanged: _controller.setManualTrackingValidationEnabled,
+    );
+    _focusScanInputSilently();
+  }
+
   Future<void> _toggleWork() async {
     _resetExitIntent();
     if (_controller.isWorking) {
@@ -312,6 +720,9 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
     }
     _resetExitIntent();
     setState(() => _selectedTab = value);
+    if (value == 1) {
+      _focusScanInputSilently();
+    }
     unawaited(_controller.setPreviewActive(value == 1));
     if (value == 0) unawaited(_controller.refreshSessions());
   }
@@ -543,60 +954,118 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
             if (!didPop) _handleSystemBack();
           },
           child: Scaffold(
-            body: IndexedStack(
-              index: _selectedTab,
+            extendBody: true,
+            body: Stack(
               children: <Widget>[
-                _buildRecordingsScreen(RecordingsScreenMode.history),
-                PackingHomeView(
-                  cameraController: _controller.cameraController,
-                  nativeTextureId: _controller.nativeTextureId,
-                  nativePreviewSize: _controller.nativePreviewSize,
-                  phase: _controller.phase,
-                  elapsed: _controller.elapsed,
-                  elapsedListenable: _controller.elapsedListenable,
-                  lastMarker: _controller.lastMarker,
-                  candidateCode: _controller.candidateCode,
-                  currentCode: _controller.currentCode,
-                  orderInfo: _controller.activeOrderInfo,
-                  workMode: _controller.workMode,
-                  operationMode: _controller.operationMode,
-                  recordingOrientation: _controller.recordingOrientation,
-                  nativeLiveWatermark: _controller.capabilities.supports(
-                    PlatformCapability.liveRecordingWatermark,
-                  ),
-                  capabilityMode: _controller.capabilityMode,
-                  capabilityProbeMessage: _controller.capabilityProbeMessage,
-                  canFinishCurrentOrder: _controller.canFinishCurrentOrder,
-                  errorMessage: _controller.errorMessage,
-                  scanWarningMessage: _controller.scanWarningMessage,
-                  cameraNotice: _controller.cameraNotice,
-                  rejectedBarcodeMessage: _controller.rejectedBarcodeMessage,
-                  pairingScanActive: _controller.pairingScanActive,
-                  pairingMessage: _controller.pairingMessage,
-                  historyScanActive: _controller.historyScanActive,
-                  flashAvailable: _controller.flashAvailable,
-                  torchEnabled: _controller.torchEnabled,
-                  cameraSwitchAvailable: _controller.cameraSwitchAvailable,
-                  frontCameraActive: _controller.frontCameraActive,
-                  backCameraLenses: _controller.backCameraLenses,
-                  activeCameraId: _controller.activeCameraId,
-                  onCameraSelected: _controller.switchToCamera,
-                  onPairingCancel: _cancelComputerPairingAndReturn,
-                  onHistoryScanCancel: _cancelHistoryScanAndReturn,
-                  onTorchPressed: _controller.toggleTorch,
-                  onCameraSwitchPressed: _controller.switchCamera,
-                  onOperationModeChanged: _controller.setOperationMode,
-                  onFinishOrder: _controller.finishCurrentOrder,
-                  onPrimaryPressed: _toggleWork,
-                  onRetryPressed: _controller.retryInitialize,
+                IndexedStack(
+                  index: _selectedTab,
+                  children: <Widget>[
+                    _buildRecordingsScreen(RecordingsScreenMode.history),
+                    PackingHomeView(
+                      cameraController: _controller.cameraController,
+                      nativeTextureId: _controller.nativeTextureId,
+                      nativePreviewSize: _controller.nativePreviewSize,
+                      phase: _controller.phase,
+                      elapsed: _controller.elapsed,
+                      elapsedListenable: _controller.elapsedListenable,
+                      lastMarker: _controller.lastMarker,
+                      candidateCode: _controller.candidateCode.isNotEmpty
+                          ? _controller.candidateCode
+                          : _scanInput,
+                      currentCode: _controller.currentCode,
+                      orderInfo: _controller.activeOrderInfo,
+                      workMode: _controller.workMode,
+                      operationMode: _controller.operationMode,
+                      recordingOrientation: _controller.recordingOrientation,
+                      nativeLiveWatermark: _controller.capabilities.supports(
+                        PlatformCapability.liveRecordingWatermark,
+                      ),
+                      capabilityMode: _controller.capabilityMode,
+                      capabilityProbeMessage:
+                          _controller.capabilityProbeMessage,
+                      canFinishCurrentOrder: _controller.canFinishCurrentOrder,
+                      errorMessage: _controller.errorMessage,
+                      scanWarningMessage: _controller.scanWarningMessage,
+                      cameraNotice: _controller.cameraNotice,
+                      rejectedBarcodeMessage:
+                          _controller.rejectedBarcodeMessage,
+                      pairingScanActive: _controller.pairingScanActive,
+                      pairingMessage: _controller.pairingMessage,
+                      historyScanActive: _controller.historyScanActive,
+                      flashAvailable: _controller.flashAvailable,
+                      torchEnabled: _controller.torchEnabled,
+                      cameraSwitchAvailable: _controller.cameraSwitchAvailable,
+                      frontCameraActive: _controller.frontCameraActive,
+                      backCameraLenses: _controller.backCameraLenses,
+                      activeCameraId: _controller.activeCameraId,
+                      onCameraSelected: _controller.switchToCamera,
+                      onPairingCancel: _cancelComputerPairingAndReturn,
+                      onHistoryScanCancel: _cancelHistoryScanAndReturn,
+                      onTorchPressed: () => _controller.toggleTorch(),
+                      onCameraSwitchPressed: _controller.switchCamera,
+                      onOperationModeChanged: _controller.setOperationMode,
+                      onFinishOrder: _controller.finishCurrentOrder,
+                      onPrimaryPressed: _toggleWork,
+                      onManualTrackingPressed: _showManualTrackingSheet,
+                      onRetryPressed: _controller.retryInitialize,
+                    ),
+                    _buildRecordingsScreen(RecordingsScreenMode.settings),
+                  ],
                 ),
-                _buildRecordingsScreen(RecordingsScreenMode.settings),
+                if (_selectedTab == 1)
+                  Positioned(
+                    left: 8,
+                    right: 8,
+                    bottom: 2,
+                    child: Focus(
+                      focusNode: _scanInputFocus,
+                      autofocus: true,
+                      onKeyEvent: (FocusNode node, KeyEvent event) {
+                        if (event is! KeyDownEvent) {
+                          return KeyEventResult.ignored;
+                        }
+                        if (event.logicalKey == LogicalKeyboardKey.enter ||
+                            event.logicalKey ==
+                                LogicalKeyboardKey.numpadEnter) {
+                          unawaited(_submitScanInput());
+                          return KeyEventResult.handled;
+                        }
+                        if (event.logicalKey == LogicalKeyboardKey.backspace) {
+                          if (_scanInput.isNotEmpty) {
+                            setState(() {
+                              _scanInput = _scanInput.substring(
+                                0,
+                                _scanInput.length - 1,
+                              );
+                            });
+                          }
+                          return KeyEventResult.handled;
+                        }
+                        final String character = event.character ?? '';
+                        if (character.isEmpty ||
+                            event.logicalKey == LogicalKeyboardKey.shiftLeft ||
+                            event.logicalKey == LogicalKeyboardKey.shiftRight ||
+                            event.logicalKey ==
+                                LogicalKeyboardKey.controlLeft ||
+                            event.logicalKey ==
+                                LogicalKeyboardKey.controlRight ||
+                            event.logicalKey == LogicalKeyboardKey.altLeft ||
+                            event.logicalKey == LogicalKeyboardKey.altRight) {
+                          return KeyEventResult.ignored;
+                        }
+                        setState(() => _scanInput += character);
+                        return KeyEventResult.handled;
+                      },
+                      child: const SizedBox(width: 1, height: 1),
+                    ),
+                  ),
               ],
             ),
             bottomNavigationBar:
                 shouldHideMainBottomNavigation(
                   pairingScanActive: _controller.pairingScanActive,
                   working: _controller.isWorking,
+                  historyManaging: _selectedTab == 0 && _historyManaging,
                 )
                 ? null
                 : _PackingBottomNavigation(
@@ -656,6 +1125,8 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
       historyPageSize: _controller.historyPageSize,
       unbackedRetention: _controller.unbackedRetention,
       backedRetention: _controller.backedRetention,
+      returnUnbackedRetention: _controller.returnUnbackedRetention,
+      returnBackedRetention: _controller.returnBackedRetention,
       backupSnapshot: _controller.backupSnapshot,
       backupListenable: _controller,
       backupSnapshotProvider: () => _controller.backupSnapshot,
@@ -696,6 +1167,7 @@ class _PackingHomeScreenState extends State<PackingHomeScreen>
       onLoadLocalRecordings: _controller.loadLocalRecordings,
       onLoadRemoteRecordingStatuses: _controller.fetchRemoteRecordingStatuses,
       onResolveRemoteUri: _controller.resolveRemoteRecordingUri,
+      remoteConnectionNeedsRepair: () => _controller.remotePlaybackNeedsRepair,
       remotePlaybackHeaders: _controller.remotePlaybackHeaders,
       remoteClipServiceFactory: _controller.createRemoteVideoClipService,
       onNetworkDiagnostics: _controller.fetchNetworkDiagnostics,
@@ -729,41 +1201,29 @@ class _PackingBottomNavigation extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ColorScheme colors = Theme.of(context).colorScheme;
-    return NavigationBar(
-      key: const Key('main-bottom-navigation'),
-      selectedIndex: selectedIndex,
-      onDestinationSelected: onSelected,
-      height: 72,
-      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-      destinations: <NavigationDestination>[
-        const NavigationDestination(
-          icon: Icon(Icons.history_rounded),
-          selectedIcon: Icon(Icons.history_rounded),
-          label: '历史',
-        ),
-        NavigationDestination(
-          icon: CircleAvatar(
-            radius: 22,
-            backgroundColor: colors.secondaryContainer,
-            child: Icon(
-              Icons.videocam_rounded,
-              color: colors.onSecondaryContainer,
-            ),
+    return FloatingDock(
+      child: DockNavigationBar(
+        key: const Key('main-bottom-navigation'),
+        selectedIndex: selectedIndex,
+        onSelected: onSelected,
+        destinations: const <DockDestination>[
+          DockDestination(
+            icon: Icons.history_rounded,
+            selectedIcon: Icons.history_rounded,
+            label: '历史',
           ),
-          selectedIcon: CircleAvatar(
-            radius: 22,
-            backgroundColor: colors.primary,
-            child: Icon(Icons.videocam_rounded, color: colors.onPrimary),
+          DockDestination(
+            icon: Icons.videocam_outlined,
+            selectedIcon: Icons.videocam_rounded,
+            label: '录制',
           ),
-          label: '录制',
-        ),
-        const NavigationDestination(
-          icon: Icon(Icons.settings_outlined),
-          selectedIcon: Icon(Icons.settings_rounded),
-          label: '设置',
-        ),
-      ],
+          DockDestination(
+            icon: Icons.settings_outlined,
+            selectedIcon: Icons.settings_rounded,
+            label: '设置',
+          ),
+        ],
+      ),
     );
   }
 }
@@ -774,6 +1234,7 @@ class PackingHomeView extends StatelessWidget {
     required this.elapsed,
     required this.onPrimaryPressed,
     required this.onRetryPressed,
+    this.onManualTrackingPressed,
     this.cameraController,
     this.nativeTextureId,
     this.nativePreviewSize,
@@ -852,6 +1313,7 @@ class PackingHomeView extends StatelessWidget {
   final VoidCallback? onFinishOrder;
   final VoidCallback onPrimaryPressed;
   final VoidCallback onRetryPressed;
+  final VoidCallback? onManualTrackingPressed;
   final Widget? previewOverride;
   final DateTime? watermarkTimestamp;
   final ValueListenable<Duration>? elapsedListenable;
@@ -873,60 +1335,71 @@ class PackingHomeView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: LayoutBuilder(
-          builder: (BuildContext context, BoxConstraints constraints) {
-            final double bottomInset = MediaQuery.paddingOf(context).bottom;
-            final double bottomGap = _isWorking
-                ? PackingHomeView.workingBottomGap
-                : 0;
-            final double minimumPanelHeight = _isWorking
-                ? (constraints.maxHeight * 0.14).clamp(112.0, 122.0)
-                : (constraints.maxHeight * 0.18).clamp(136.0, 156.0);
-            final double previewAspectRatio = _portraitPreviewAspectRatio;
-            final double cameraHeight =
-                (constraints.maxWidth / previewAspectRatio).clamp(
-                  0.0,
-                  constraints.maxHeight,
-                );
-            final double panelTop =
-                constraints.maxHeight -
-                bottomInset -
-                bottomGap -
-                minimumPanelHeight;
-            final double panelHeight = minimumPanelHeight;
-            final double cameraPanelOverlap = (cameraHeight - panelTop).clamp(
-              0.0,
-              cameraHeight,
-            );
-            return Stack(
-              fit: StackFit.expand,
-              children: <Widget>[
-                Positioned(
-                  key: const Key('camera-preview-viewport'),
-                  left: 0,
-                  right: 0,
-                  top: 0,
-                  height: cameraHeight,
-                  child: _CameraArea(this, bottomOcclusion: cameraPanelOverlap),
-                ),
-                Align(
-                  alignment: Alignment.bottomCenter,
-                  child: Padding(
-                    padding: EdgeInsets.only(bottom: bottomInset + bottomGap),
-                    child: _ControlPanel(view: this, height: panelHeight),
+    // 忽略键盘与底部弹板带来的 viewInsets：预览视口只跟屏幕宽度有关。
+    // 不这么做时，手动输入面板一弹出，Scaffold 先按键盘缩短可用高度，预览
+    // 跟着整体缩一圈，拍摄画面会重排重采样（旗舰机上也能看出掉帧）。
+    // 手动输入面板是 Navigator 的模态路由，仍拿得到真实 viewInsets，
+    // 依旧会正确抬到键盘之上。
+    return MediaQuery.removeViewInsets(
+      context: context,
+      removeBottom: true,
+      child: Scaffold(
+        body: SafeArea(
+          bottom: false,
+          child: LayoutBuilder(
+            builder: (BuildContext context, BoxConstraints constraints) {
+              final double bottomInset = MediaQuery.paddingOf(context).bottom;
+              final double bottomGap = _isWorking
+                  ? PackingHomeView.workingBottomGap
+                  : 0;
+              final double minimumPanelHeight = _isWorking
+                  ? (constraints.maxHeight * 0.14).clamp(112.0, 122.0)
+                  : (constraints.maxHeight * 0.18).clamp(136.0, 156.0);
+              final double previewAspectRatio = _portraitPreviewAspectRatio;
+              // 预览高度只由宽度和画面比例决定，不再按当前可用高度截断：
+              // 软键盘顶起来时 Android 会直接缩短窗口（adjustResize），
+              // 一旦按可用高度 clamp，取景就会跟着缩一圈。
+              final double cameraHeight =
+                  constraints.maxWidth / previewAspectRatio;
+              final double panelTop =
+                  constraints.maxHeight -
+                  bottomInset -
+                  bottomGap -
+                  minimumPanelHeight;
+              final double panelHeight = minimumPanelHeight;
+              final double cameraPanelOverlap = (cameraHeight - panelTop).clamp(
+                0.0,
+                cameraHeight,
+              );
+              return Stack(
+                fit: StackFit.expand,
+                children: <Widget>[
+                  Positioned(
+                    key: const Key('camera-preview-viewport'),
+                    left: 0,
+                    right: 0,
+                    top: 0,
+                    height: cameraHeight,
+                    child: _CameraArea(
+                      this,
+                      bottomOcclusion: cameraPanelOverlap,
+                    ),
                   ),
-                ),
-              ],
-            );
-          },
+                  Align(
+                    alignment: Alignment.bottomCenter,
+                    child: Padding(
+                      padding: EdgeInsets.only(bottom: bottomInset + bottomGap),
+                      child: _ControlPanel(view: this, height: panelHeight),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
   }
-
   double get _portraitPreviewAspectRatio {
     final Size? sourceSize =
         nativePreviewSize ??
@@ -1070,60 +1543,51 @@ class _CameraArea extends StatelessWidget {
               top: 72,
               child: _AlternatingBanner(),
             ),
-          if (view.scanWarningMessage != null)
-            Positioned(
-              left: 18,
-              right: 18,
-              bottom: lowerOverlayInset + 54,
-              child: _ScanWarningToast(message: view.scanWarningMessage!),
-            )
-          else if (view.cameraNotice != null)
-            Positioned(
-              left: 18,
-              right: 18,
-              bottom: lowerOverlayInset + 54,
-              child: _CameraNoticeBanner(message: view.cameraNotice!),
-            )
-          else if (view.lastMarker != null)
-            Positioned(
-              left: 20,
-              right: 20,
-              bottom: lowerOverlayInset + 54,
-              child: _RecognitionToast(marker: view.lastMarker!),
-            )
-          else if (view.candidateCode.isNotEmpty)
-            Positioned(
-              left: 20,
-              right: 20,
-              bottom: lowerOverlayInset + 54,
-              child: Text(
-                '正在确认 · ${view.candidateCode}',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                  shadows: <Shadow>[
-                    Shadow(color: Color(0x88000000), blurRadius: 8),
-                  ],
-                ),
-              ),
-            ),
-          if (view.rejectedBarcodeMessage != null)
-            Positioned(
-              left: 18,
-              right: 18,
-              bottom: lowerOverlayInset + 118,
-              child: Align(
-                alignment: Alignment.bottomRight,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 340),
-                  child: _ScanWarningToast(
-                    key: const Key('rejected-barcode-toast'),
-                    message: view.rejectedBarcodeMessage!,
+          Positioned(
+            left: 18,
+            right: 18,
+            bottom: lowerOverlayInset + 48,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                if (view.scanWarningMessage != null)
+                  _ScanWarningToast(message: view.scanWarningMessage!)
+                else if (view.cameraNotice != null)
+                  _CameraNoticeBanner(message: view.cameraNotice!)
+                else if (view.lastMarker != null)
+                  _RecognitionToast(marker: view.lastMarker!),
+                if (view.rejectedBarcodeMessage != null) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 340),
+                      child: _ScanWarningToast(
+                        key: const Key('rejected-barcode-toast'),
+                        message: view.rejectedBarcodeMessage!,
+                      ),
+                    ),
                   ),
-                ),
-              ),
+                ],
+                if (view.candidateCode.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      '正在确认 · ${view.candidateCode}',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        shadows: <Shadow>[
+                          Shadow(color: Color(0x88000000), blurRadius: 8),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
             ),
+          ),
           if (view.pairingScanActive || view.pairingMessage != null)
             Positioned(
               left: 20,
@@ -1150,21 +1614,17 @@ class _CameraArea extends StatelessWidget {
             Positioned(
               right: 18,
               top: 20,
-              child: Material(
-                color: const Color(0x99000000),
-                shape: const CircleBorder(),
-                child: IconButton(
-                  key: const Key('torch-button'),
-                  tooltip: view.torchEnabled ? '关闭闪光灯' : '打开闪光灯',
-                  onPressed: view.onTorchPressed,
-                  color: view.torchEnabled
-                      ? const Color(0xFFFFD54F)
-                      : Colors.white,
-                  icon: Icon(
-                    view.torchEnabled
-                        ? Icons.flash_on_rounded
-                        : Icons.flash_off_rounded,
-                  ),
+              child: _CameraControlButton(
+                buttonKey: const Key('torch-button'),
+                tooltip: view.torchEnabled ? '关闭闪光灯' : '打开闪光灯',
+                onPressed: view.onTorchPressed,
+                color: view.torchEnabled
+                    ? const Color(0xFFFFD54F)
+                    : Colors.white,
+                icon: Icon(
+                  view.torchEnabled
+                      ? Icons.flash_on_rounded
+                      : Icons.flash_off_rounded,
                 ),
               ),
             ),
@@ -1176,19 +1636,45 @@ class _CameraArea extends StatelessWidget {
             Positioned(
               left: 18,
               top: 20,
-              child: Material(
-                color: const Color(0x99000000),
-                shape: const CircleBorder(),
-                child: IconButton(
-                  key: const Key('switch-camera-button'),
-                  tooltip: view.frontCameraActive ? '切换到后置摄像头' : '切换到前置摄像头',
-                  onPressed: view.onCameraSwitchPressed,
-                  color: Colors.white,
-                  icon: const Icon(Icons.cameraswitch_rounded),
-                ),
+              child: _CameraControlButton(
+                buttonKey: const Key('switch-camera-button'),
+                tooltip: view.frontCameraActive ? '切换到后置摄像头' : '切换到前置摄像头',
+                onPressed: view.onCameraSwitchPressed,
+                icon: const Icon(Icons.cameraswitch_rounded),
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _CameraControlButton extends StatelessWidget {
+  const _CameraControlButton({
+    required this.buttonKey,
+    required this.tooltip,
+    required this.onPressed,
+    required this.icon,
+    this.color = Colors.white,
+  });
+
+  final Key buttonKey;
+  final String tooltip;
+  final VoidCallback? onPressed;
+  final Widget icon;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: const Color(0x99000000),
+      shape: const CircleBorder(),
+      child: IconButton(
+        key: buttonKey,
+        tooltip: tooltip,
+        onPressed: onPressed,
+        color: color,
+        icon: icon,
       ),
     );
   }
@@ -1916,92 +2402,128 @@ class _ControlPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool isError = view.phase == PackingSessionPhase.error;
-    final ColorScheme colors = Theme.of(context).colorScheme;
-    final Color secondaryText = colors.brightness == Brightness.dark
-        ? colors.onSurfaceVariant
-        : const Color(0xFF767D7A);
-    return PhysicalShape(
+    return Container(
       key: const Key('recording-control-panel'),
-      clipper: const _ShallowUpwardArcClipper(),
-      color: colors.surface.withValues(alpha: 0.66),
-      shadowColor: const Color(0x44000000),
-      elevation: 10,
-      clipBehavior: Clip.antiAlias,
+      color: Colors.transparent,
       child: SizedBox(
         height: height,
         child: Padding(
           padding: EdgeInsets.fromLTRB(
             24,
-            view._isWorking ? 10 : 17,
+            view._isWorking ? 6 : 17,
             24,
-            view._isWorking ? 6 : 8,
+            view._isWorking ? 4 : 8,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.center,
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
               if (view._isWorking) ...<Widget>[
-                Text(
-                  view.currentCode.isEmpty ? '等待面单' : view.currentCode,
-                  key: const Key('current-shipping-code'),
-                  maxLines: 1,
-                  textAlign: TextAlign.center,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: colors.onSurface,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w800,
-                    height: 1.2,
-                  ),
-                ),
-                const SizedBox(height: 1),
-                GestureDetector(
-                  key: const Key('active-order-summary'),
-                  onTap: view.orderInfo == null
-                      ? null
-                      : () => showOrderInfoSheet(context, view.orderInfo!),
-                  child: Text(
-                    view.orderInfo?.summary ?? _recordingHint(view),
-                    maxLines: 1,
-                    textAlign: TextAlign.center,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: view.orderInfo?.hasRefundWarning == true
-                          ? colors.error
-                          : secondaryText,
-                      fontSize: 12,
-                      height: 1.25,
-                      fontWeight: view.orderInfo == null
-                          ? FontWeight.normal
-                          : FontWeight.w700,
-                    ),
+                _ControlStatusPill(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      Text(
+                        view.currentCode.isEmpty ? '等待面单' : view.currentCode,
+                        key: const Key('current-shipping-code'),
+                        maxLines: 1,
+                        textAlign: TextAlign.center,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          height: 1.2,
+                        ),
+                      ),
+                      const SizedBox(height: 1),
+                      GestureDetector(
+                        key: const Key('active-order-summary'),
+                        onTap: view.orderInfo == null
+                            ? null
+                            : () =>
+                                  showOrderInfoSheet(context, view.orderInfo!),
+                        child: Text(
+                          view.orderInfo?.summary ?? _recordingHint(view),
+                          maxLines: 1,
+                          textAlign: TextAlign.center,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: view.orderInfo?.hasRefundWarning == true
+                                ? const Color(0xFFFF8A80)
+                                : Colors.white70,
+                            fontSize: 12,
+                            height: 1.25,
+                            fontWeight: view.orderInfo == null
+                                ? FontWeight.normal
+                                : FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 3),
               ] else ...<Widget>[
-                Text(
-                  view.historyScanActive
-                      ? '扫描条码以搜索历史记录'
-                      : view.pairingScanActive
-                      ? '正在连接电脑'
-                      : isError
-                      ? (view.errorMessage ?? '请重新检查摄像头权限')
-                      : '对准面单条码',
-                  maxLines: 1,
-                  textAlign: TextAlign.center,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: secondaryText,
-                    fontSize: 14,
-                    height: 1.3,
+                _ControlStatusPill(
+                  child: Text(
+                    view.historyScanActive
+                        ? '扫描条码以搜索历史记录'
+                        : view.pairingScanActive
+                        ? '正在连接电脑'
+                        : isError
+                        ? (view.errorMessage ?? '请重新检查摄像头权限')
+                        // 这条提示只在未开始工作时出现，先说清要先点开始工作。
+                        : '点击开始工作后，对准条码',
+                    maxLines: 1,
+                    textAlign: TextAlign.center,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      height: 1.3,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 6),
               ],
-              _PrimaryWorkButton(view: view, isError: isError),
+              Row(
+                children: <Widget>[
+                  const SizedBox(width: 56, height: 48),
+                  Expanded(
+                    child: _PrimaryWorkButton(view: view, isError: isError),
+                  ),
+                  const SizedBox(width: 8),
+                  _CameraControlButton(
+                    buttonKey: const Key('manual-tracking-button'),
+                    tooltip: '输入单号',
+                    onPressed: view.onManualTrackingPressed,
+                    icon: const Icon(Icons.keyboard_alt_outlined),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ControlStatusPill extends StatelessWidget {
+  const _ControlStatusPill({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      key: const Key('control-status-pill'),
+      color: const Color(0xE6000000),
+      shape: const StadiumBorder(),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+        child: child,
       ),
     );
   }
@@ -2036,22 +2558,6 @@ class _AlternatingBanner extends StatelessWidget {
       ),
     );
   }
-}
-
-class _ShallowUpwardArcClipper extends CustomClipper<Path> {
-  const _ShallowUpwardArcClipper();
-
-  @override
-  Path getClip(Size size) => Path()
-    ..moveTo(0, 12)
-    ..cubicTo(size.width * 0.24, 12, size.width * 0.34, 0, size.width * 0.5, 0)
-    ..cubicTo(size.width * 0.66, 0, size.width * 0.76, 12, size.width, 12)
-    ..lineTo(size.width, size.height)
-    ..lineTo(0, size.height)
-    ..close();
-
-  @override
-  bool shouldReclip(_ShallowUpwardArcClipper oldClipper) => false;
 }
 
 class _PrimaryWorkButton extends StatefulWidget {

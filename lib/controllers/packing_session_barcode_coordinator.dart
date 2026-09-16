@@ -325,6 +325,19 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
         return;
       case BarcodeWorkAction.ignore:
         _candidateCode = '';
+        if (_workMode == WorkMode.sameCodeStop &&
+            _timeline.currentCode.isNotEmpty &&
+            !JdBarcodePolicy.sameRecordingCode(_timeline.currentCode, code)) {
+          _showCameraNotice('单号不一致：$code');
+          final String incidentKey = 'recording-order-mismatch:$code';
+          _speechService.enqueue(
+            SpeechPrompt.trackingNumberMismatch,
+            incidentKey: incidentKey,
+          );
+          Timer(const Duration(seconds: 3), () {
+            _speechService.resolveIncident(incidentKey);
+          });
+        }
         notifyListeners();
         return;
       case BarcodeWorkAction.stopVideo:

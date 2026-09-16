@@ -9,6 +9,7 @@ import 'package:crypto/crypto.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../models/lan_backup.dart';
+import '../models/recording_operation_mode.dart';
 import '../models/recording_session.dart';
 import '../models/backup_retention_policy.dart';
 import '../platform/adapters/pigeon_backup_platform.dart';
@@ -160,6 +161,9 @@ abstract interface class LanBackupSink implements Listenable {
     required bool autoEnabled,
     required UnbackedRetentionPolicy unbackedRetention,
     required BackedRetentionPolicy backedRetention,
+    UnbackedRetentionPolicy returnUnbackedRetention =
+        UnbackedRetentionPolicy.days3,
+    BackedRetentionPolicy returnBackedRetention = BackedRetentionPolicy.days1,
   });
   Future<void> pair(
     String qrValue, {
@@ -176,6 +180,8 @@ abstract interface class LanBackupSink implements Listenable {
   Future<void> setRetentionPolicies({
     required UnbackedRetentionPolicy unbacked,
     required BackedRetentionPolicy backed,
+    UnbackedRetentionPolicy returnUnbacked = UnbackedRetentionPolicy.days3,
+    BackedRetentionPolicy returnBacked = BackedRetentionPolicy.days1,
   });
   Future<void> enqueueFinalizedFile(
     String filePath,
@@ -204,10 +210,14 @@ abstract interface class LanBackupSink implements Listenable {
     required int page,
     required int pageSize,
     String keyword = '',
+    RecordingOperationMode? operationMode,
   });
   Future<Map<int, ({RemoteRecordingStatus status, bool exists, String reason})>>
   fetchRemoteRecordingStatuses(Iterable<int> ids);
   Future<Uri?> resolveRemoteUri(Uri remoteUri);
+
+  /// 最近一次远程播放解析是否因为电脑身份与配对记录不符而失败。
+  bool get lastRemoteResolveNeedsRepair;
   Map<String, String> get playbackHeaders;
   RemoteVideoClipSink? createRemoteVideoClipService(Uri remoteUri);
   Future<void> dispose();
@@ -258,6 +268,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   DateTime? _lastHeartbeatStallLoggedAt;
   DateTime? _lastHeartbeatSkipLoggedAt;
   DateTime? _lastHeartbeatErrorLoggedAt;
+  String? _lastResolveFailureReason;
   Future<void>? _refreshFuture;
   bool _refreshAgain = false;
   bool _nativeHandlerAttached = false;
@@ -307,6 +318,9 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     required bool autoEnabled,
     required UnbackedRetentionPolicy unbackedRetention,
     required BackedRetentionPolicy backedRetention,
+    UnbackedRetentionPolicy returnUnbackedRetention =
+        UnbackedRetentionPolicy.days3,
+    BackedRetentionPolicy returnBackedRetention = BackedRetentionPolicy.days1,
   }) async {
     _attachNativeHandler();
     _snapshot = _snapshot.copyWith(autoEnabled: autoEnabled);
@@ -334,6 +348,8 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
             'autoEnabled': autoEnabled,
             'unbackedRetentionDays': unbackedRetention.days,
             'backedRetentionDays': backedRetention.days,
+            'returnUnbackedRetentionDays': returnUnbackedRetention.days,
+            'returnBackedRetentionDays': returnBackedRetention.days,
           });
       _accessKey = await _platform.loadAccessKey() ?? '';
       _applyNativeSummary(summary);
@@ -910,10 +926,14 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   Future<void> setRetentionPolicies({
     required UnbackedRetentionPolicy unbacked,
     required BackedRetentionPolicy backed,
+    UnbackedRetentionPolicy returnUnbacked = UnbackedRetentionPolicy.days3,
+    BackedRetentionPolicy returnBacked = BackedRetentionPolicy.days1,
   }) async {
     await _platform.updateRetentionSchedule(<String, Object?>{
       'unbackedRetentionDays': unbacked.days,
       'backedRetentionDays': backed.days,
+      'returnUnbackedRetentionDays': returnUnbacked.days,
+      'returnBackedRetentionDays': returnBacked.days,
     });
     await refresh();
   }
@@ -1260,35 +1280,80 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
   }
 
   Future<Uri?> _runAddressRecovery() async {
+    final DateTime startedAt = DateTime.now();
     LanBackupEndpoint? endpoint = _snapshot.endpoint;
     if (endpoint == null ||
         endpoint.computerId.trim().isEmpty ||
         _accessKey.isEmpty) {
+      _lastResolveFailureReason = endpoint == null
+          ? 'no_endpoint'
+          : endpoint.computerId.trim().isEmpty
+          ? 'no_computer_id'
+          : 'no_access_key';
+      _logRemoteResolveFailed(
+        reason: _lastResolveFailureReason!,
+        startedAt: startedAt,
+      );
       return null;
     }
-    final Uri? located = await _hostLocator.locate(
+    final LanBackupLocateResult located = await _hostLocator.locate(
       currentBaseUri: endpoint.baseUri,
       nodeId: endpoint.computerId,
     );
-    if (located == null) return null;
+    if (!located.isLocated) {
+      // 这条以前完全静默：远程播放解析失败在导出日志里查不到任何痕迹。
+      if (located.failure == LanBackupLocateFailure.identityMismatch) {
+        // 地址通、node-info 也回来了，只是标识对不上：那台电脑已换身份或换过
+        // 配置，旧配对凭据作废。要明确提示重新连接，不能只说"离线"。
+        _lastResolveFailureReason = _resolveFailureIdentityMismatch;
+        _snapshot = _snapshot.copyWith(
+          connectionStatus: LanConnectionStatus.rePair,
+        );
+        _log('remote_playback_identity_mismatch', <String, Object?>{
+          'endpoint': endpoint.baseUri.toString(),
+          'expectedNodeId': endpoint.computerId,
+          'reportedNodeId': located.reportedNodeId,
+        });
+        notifyListeners();
+        return null;
+      }
+      final String failureReason = located.failure?.name ?? 'unknown';
+      _lastResolveFailureReason = failureReason;
+      _logRemoteResolveFailed(
+        reason: failureReason,
+        startedAt: startedAt,
+        endpoint: endpoint,
+      );
+      return null;
+    }
+    final Uri locatedBaseUri = located.baseUri!;
 
     final LanBackupEndpoint? current = _snapshot.endpoint;
     if (current == null || current.computerId != endpoint.computerId) {
+      _lastResolveFailureReason = 'endpoint_changed';
+      _logRemoteResolveFailed(
+        reason: 'endpoint_changed',
+        startedAt: startedAt,
+        endpoint: endpoint,
+      );
       return null;
     }
-    if (_normalizedHostUri(current.baseUri) == _normalizedHostUri(located)) {
+    if (_normalizedHostUri(current.baseUri) ==
+        _normalizedHostUri(locatedBaseUri)) {
+      _lastResolveFailureReason = null;
+      _logRemoteResolveOk(startedAt: startedAt, addressChanged: false);
       return current.baseUri;
     }
 
     final LanBackupEndpoint updated = LanBackupEndpoint(
-      baseUri: located,
+      baseUri: locatedBaseUri,
       accessKey: '',
       computerId: current.computerId,
       computerName: current.computerName,
       lastConnectedAt: DateTime.now(),
     );
     await _platform.saveConnection(<String, Object?>{
-      'baseUrl': located.toString(),
+      'baseUrl': locatedBaseUri.toString(),
       'accessKey': _accessKey,
       'computerId': updated.computerId,
       'computerName': updated.computerName,
@@ -1302,10 +1367,50 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     );
     _log('backup_host_address_updated', <String, Object?>{
       'computerId': updated.computerId,
-      'address': located.authority,
+      'address': locatedBaseUri.authority,
     });
     notifyListeners();
-    return located;
+    _lastResolveFailureReason = null;
+    _logRemoteResolveOk(startedAt: startedAt, addressChanged: true);
+    return locatedBaseUri;
+  }
+
+  /// 远程播放解析失败的原因，供界面区分"连不上电脑"与"配对已失效"。
+  ///
+  /// 取值与 `remote_playback_resolve_failed` 日志的 reason 一致；解析成功或
+  /// 尚未解析时为 null。
+  String? get lastRemoteResolveFailureReason => _lastResolveFailureReason;
+
+  /// 电脑身份与配对记录不匹配，需要用户重新连接。
+  @override
+  bool get lastRemoteResolveNeedsRepair =>
+      _lastResolveFailureReason == _resolveFailureIdentityMismatch;
+
+  static const String _resolveFailureIdentityMismatch = 'identity_mismatch';
+
+  void _logRemoteResolveOk({
+    required DateTime startedAt,
+    required bool addressChanged,
+  }) {
+    _log('remote_playback_resolve_ok', <String, Object?>{
+      'addressChanged': addressChanged,
+      'totalMs': DateTime.now().difference(startedAt).inMilliseconds,
+    });
+  }
+
+  void _logRemoteResolveFailed({
+    required String reason,
+    required DateTime startedAt,
+    LanBackupEndpoint? endpoint,
+  }) {
+    _log('remote_playback_resolve_failed', <String, Object?>{
+      'reason': reason,
+      'endpoint': endpoint?.baseUri.toString(),
+      'nodeId': endpoint?.computerId,
+      'hasAccessKey': _accessKey.isNotEmpty,
+      'connectionStatus': _snapshot.connectionStatus.name,
+      'totalMs': DateTime.now().difference(startedAt).inMilliseconds,
+    });
   }
 
   Future<bool> _recoverChangedEndpoint(Uri failedBaseUri) async {
@@ -1330,6 +1435,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
     required int page,
     required int pageSize,
     String keyword = '',
+    RecordingOperationMode? operationMode,
   }) async {
     for (int attempt = 0; attempt < 2; attempt++) {
       final LanBackupEndpoint? endpoint = _snapshot.endpoint;
@@ -1341,6 +1447,7 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         page: page,
         pageSize: pageSize,
         keyword: keyword,
+        operationMode: operationMode,
       );
       try {
         final HttpClientRequest request = await _httpClient
@@ -1374,6 +1481,10 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
         final Map<String, Object?> payload = Map<String, Object?>.from(
           jsonDecode(body) as Map<Object?, Object?>,
         );
+        if (operationMode != null &&
+            payload['mode'] != operationMode.storageValue) {
+          throw UnsupportedError('电脑版本暂不支持发货／退货筛选，请更新电脑端');
+        }
         final List<RemoteRecording> recordings =
             ((payload['data'] as List<Object?>?) ?? const <Object?>[])
                 .map(
@@ -1394,6 +1505,8 @@ class LanBackupService extends ChangeNotifier implements LanBackupSink {
           total: (payload['total'] as num?)?.toInt() ?? recordings.length,
           deviceTotal: (payload['deviceTotal'] as num?)?.toInt() ?? 0,
         );
+      } on UnsupportedError {
+        rethrow;
       } on Object {
         if (attempt == 0 && await _recoverChangedEndpoint(endpoint.baseUri)) {
           continue;
@@ -2127,6 +2240,7 @@ Uri buildRemoteRecordingsUri(
   required int page,
   required int pageSize,
   String keyword = '',
+  RecordingOperationMode? operationMode,
 }) {
   return baseUri.replace(
     path: '/api/mobile-backup/videos',
@@ -2134,6 +2248,7 @@ Uri buildRemoteRecordingsUri(
       'page': '$page',
       'size': '$pageSize',
       if (keyword.trim().isNotEmpty) 'keyword': keyword.trim(),
+      if (operationMode != null) 'mode': operationMode.storageValue,
     },
   );
 }

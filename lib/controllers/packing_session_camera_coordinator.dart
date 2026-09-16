@@ -93,7 +93,11 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
       _maxVolumeEnabled = settings.maxVolumeEnabled;
       _unbackedRetention = settings.unbackedRetention;
       _backedRetention = settings.backedRetention;
+      _returnUnbackedRetention = settings.returnUnbackedRetention;
+      _returnBackedRetention = settings.returnBackedRetention;
       _recordAudioEnabled = settings.recordAudioEnabled;
+      _manualTrackingValidationEnabled =
+          settings.manualTrackingValidationEnabled;
       _nativeRecordingFallback = settings.nativeRecordingFallback;
       _capabilityState = settings.cameraCapabilityState;
       _preferredVideoCodec = settings.preferredVideoCodec;
@@ -381,13 +385,11 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
   }
 
   Future<void> _resolveCameraCapability() async {
-    if (_disposed ||
-        !_supportsNativeCamera ||
-        !_supportsCameraCapabilityNegotiation ||
-        _nativeCamera == null) {
+    if (_disposed || !_supportsNativeCamera || _nativeCamera == null) {
       return;
     }
     final Map<String, Object?> identity = await _currentCameraIdentity();
+    if (!_supportsCameraCapabilityNegotiation) return;
     if (identity.isEmpty) return;
     final Map<String, Object?>? cached = _capabilityState;
     final Map<String, Object?>? cachedIdentity = _identityMap(
@@ -458,8 +460,10 @@ mixin _PackingSessionCameraCoordinator on _PackingSessionSettingsCoordinator {
     final int videoWidth = (cameraState['videoWidth'] as num?)?.toInt() ?? 0;
     final int videoHeight = (cameraState['videoHeight'] as num?)?.toInt() ?? 0;
     final bool activeUhd =
-        videoWidth == RecordingSpecPreset.uhd4k30.videoWidth &&
-        videoHeight == RecordingSpecPreset.uhd4k30.videoHeight;
+        (videoWidth == RecordingSpecPreset.uhd4k30.videoWidth &&
+            videoHeight == RecordingSpecPreset.uhd4k30.videoHeight) ||
+        (videoWidth == RecordingSpecPreset.uhd4k30.videoHeight &&
+            videoHeight == RecordingSpecPreset.uhd4k30.videoWidth);
     final bool fallbackFromUhd =
         _recordingSpec == RecordingSpecPreset.uhd4k30 &&
         (!available.contains(RecordingSpecPreset.uhd4k30) || !activeUhd);

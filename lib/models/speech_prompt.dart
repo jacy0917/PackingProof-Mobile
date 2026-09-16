@@ -40,6 +40,18 @@ enum SpeechPrompt {
     priority: SpeechPromptPriority.warning,
     cue: SpeechPromptCue.warning,
   ),
+  invalidTrackingNumber(
+    text: '非法单号，已拦截',
+    assetName: 'invalid_tracking_number.mp3',
+    priority: SpeechPromptPriority.warning,
+    cue: SpeechPromptCue.warning,
+  ),
+  trackingNumberMismatch(
+    text: '单号不一致，不会停止录制',
+    assetName: 'tracking_number_mismatch.mp3',
+    priority: SpeechPromptPriority.warning,
+    cue: SpeechPromptCue.warning,
+  ),
   cameraNotReady(
     text: '摄像头未就绪',
     assetName: 'camera_not_ready.mp3',
