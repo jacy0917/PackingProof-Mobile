@@ -1070,6 +1070,8 @@ final class IosCameraHostApiImpl:
           operation: "start",
           timing: timing
         )
+        // 录像画幅保持原始比例：writer 已接管帧写入，切回 1.0x。
+        self.applyScanZoomFactor(false)
         let startedAt = self.currentStartedAtMs
         self.eventApi.segmentStarted(
           event: CameraSegmentStartedDto(
@@ -1319,6 +1321,8 @@ final class IosCameraHostApiImpl:
         guard let self else {
           return
         }
+        // 录像已结束，恢复扫码模式的 1.5x 放大。
+        self.applyScanZoomFactor(true)
         self.recordingActivityState.setActive(
           false, owner: self.recordingActivityOwner
         )
@@ -2332,6 +2336,25 @@ final class IosCameraHostApiImpl:
       device.unlockForConfiguration()
     } catch {
       // 对焦是增强项；设备拒绝配置时继续使用系统默认采集模式。
+    }
+  }
+
+  /// 按模式切换主摄数字变焦：扫码等待时 1.5x 放大便于中远距离识别，
+  /// 录像时回到 1.0x 保持原始画幅（AVAssetWriter 与预览共用同一帧）。
+  private func applyScanZoomFactor(_ scanMode: Bool) {
+    let target: CGFloat =
+        scanMode ? IosCameraPlatform.defaultScanZoomFactor : 1.0
+    guard let device = videoDeviceInput?.device,
+          device.position == .back,
+          device.maxAvailableVideoZoomFactor >= target else {
+      return
+    }
+    do {
+      try device.lockForConfiguration()
+      device.videoZoomFactor = target
+      device.unlockForConfiguration()
+    } catch {
+      // zoom 是增强项；设备拒绝配置时继续使用系统默认采集模式。
     }
   }
 

@@ -428,10 +428,16 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
   bool _isCurrentSegmentCode(String code) =>
       _timeline.currentCode.trim().toUpperCase() == code.trim().toUpperCase();
 
-  /// 手机版指令码执行：切发货/切退货/停止录制。
-  /// 刻意不支持 START（扫码即自动开始）与 CLEAR（无输入框可清）。
+  /// 手机版指令码执行：清除输入、开闪光灯、切发货/切退货、开始/停止工作。
   Future<void> _handleMobileBarcodeCommand(MobileBarcodeCommand command) async {
     switch (command) {
+      case MobileBarcodeCommand.clearInput:
+        _candidateCode = '';
+        _showCameraNotice('扫码框已清除');
+        break;
+      case MobileBarcodeCommand.openFlash:
+        await toggleTorch();
+        break;
       case MobileBarcodeCommand.switchShipping:
         if (_operationMode != RecordingOperationMode.shipping) {
           _operationMode = RecordingOperationMode.shipping;
@@ -461,5 +467,60 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
         }
         break;
     }
+  }
+
+  /// 提交外部单号（手动输入或扫码枪），复用工作中的确认流程
+  Future<bool> submitExternalTrackingNumber(
+    String rawCode, {
+    required bool validate,
+  }) async {
+    if (_handlingBarcode ||
+        isBusy ||
+        _pairingScanActive ||
+        _historyScanActive) {
+      return false;
+    }
+    final String code = validate
+        ? BarcodeCandidatePolicy.normalize(rawCode)
+        : rawCode.trim();
+    if (code.isEmpty) return false;
+
+    // 手动输入和扫码枪也支持与摄像头相同的包含式指令码。
+    final MobileBarcodeCommand? command =
+        BarcodeCandidatePolicy.mobileCommandFor(code);
+    if (command != null) {
+      _handlingBarcode = true;
+      try {
+        await _handleMobileBarcodeCommand(command);
+      } finally {
+        _handlingBarcode = false;
+      }
+      return true;
+    }
+
+    if (validate) {
+      final DateTime now = DateTime.now();
+      final RejectedBarcodeDecision? rejected = RejectedBarcodePolicy.decide(
+        candidates: <RejectedBarcodeCandidate>[
+          RejectedBarcodeCandidate(value: code, area: 1, format: 'code128'),
+        ],
+        minimumLength: _minimumBarcodeLength,
+        now: now,
+        lastCode: _lastRejectedBarcodeCode,
+        lastShownAt: _lastRejectedBarcodeAt,
+        // 摄像头提示需要节流，提交结果不能因重复回车被节流而放行。
+        throttle: false,
+      );
+      if (rejected != null) {
+        _showRejectedBarcodeNotice(rejected, now);
+        return false;
+      }
+    }
+    if (!isWorking) {
+      await startWork();
+      if (!isWorking) return false;
+    }
+    await _handleConfirmedBarcode(code, DateTime.now());
+    return true;
   }
 }
