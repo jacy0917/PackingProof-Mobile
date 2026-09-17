@@ -2329,9 +2329,9 @@ final class IosCameraHostApiImpl:
       // 超广角/前置保持原倍率，设备不支持或拒绝时静默跳过。
       if device.position == .back,
          device.maxAvailableVideoZoomFactor
-           >= IosCameraPlatform.defaultScanZoomFactor,
-         device.videoZoomFactor < IosCameraPlatform.defaultScanZoomFactor {
-        device.videoZoomFactor = IosCameraPlatform.defaultScanZoomFactor
+           >= Self.defaultScanZoomFactor,
+         device.videoZoomFactor < Self.defaultScanZoomFactor {
+        device.videoZoomFactor = Self.defaultScanZoomFactor
       }
       device.unlockForConfiguration()
     } catch {
@@ -2343,7 +2343,7 @@ final class IosCameraHostApiImpl:
   /// 录像时回到 1.0x 保持原始画幅（AVAssetWriter 与预览共用同一帧）。
   private func applyScanZoomFactor(_ scanMode: Bool) {
     let target: CGFloat =
-        scanMode ? IosCameraPlatform.defaultScanZoomFactor : 1.0
+        scanMode ? Self.defaultScanZoomFactor : 1.0
     guard let device = videoDeviceInput?.device,
           device.position == .back,
           device.maxAvailableVideoZoomFactor >= target else {
@@ -3268,7 +3268,8 @@ final class IosCameraHostApiImpl:
   }
 
   /// 扫码距离增强系数：主摄默认 1.5x 数字变焦，把 20~35cm 处面单的画面占比
-  /// 放大到等效于原来的约 13~23cm，中远距离扫码更稳；录像画幅同步轻微裁切。
+  /// 放大到等效于原来的约 13~23cm，中远距离扫码更稳；录像期间自动切回 1.0x，
+  /// 视频保持原始画幅不裁切。
   private static let defaultScanZoomFactor: CGFloat = 1.5
 
   private static func zoomRatio(for device: AVCaptureDevice) -> Double {
