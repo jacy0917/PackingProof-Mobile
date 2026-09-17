@@ -44,6 +44,7 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
     required void Function(BarcodeMarker marker) onSegmentStarted,
   });
   Future<void> startWork();
+  Future<void> toggleTorch();
 
   final BarcodeStabilityTracker _stabilityTracker = BarcodeStabilityTracker();
   final BarcodeRecognizedBeepPolicy _recognizedBeepPolicy =
