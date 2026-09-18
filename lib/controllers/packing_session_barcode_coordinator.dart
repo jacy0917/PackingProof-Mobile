@@ -50,8 +50,9 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
   static const Duration minimumSameCodeStopDelay = Duration(seconds: 10);
 
   /// 同码停止的距离阈值（条码面积，归一化画面占比 × 1,000,000）：
-  /// 约等于镜头 15~25cm 处扫到的面单面积，低于此值视为远景，不触发停止。
-  static const int minimumSameCodeStopArea = 100000;
+  /// 约等于镜头 15~30cm 处扫到的常见面单面积（含 76×130mm 小面单），
+  /// 低于此值视为远景，不触发停止。阈值放宽以覆盖常见小面单。
+  static const int minimumSameCodeStopArea = 50000;
 
   final BarcodeStabilityTracker _stabilityTracker = BarcodeStabilityTracker();
   final BarcodeRecognizedBeepPolicy _recognizedBeepPolicy =
