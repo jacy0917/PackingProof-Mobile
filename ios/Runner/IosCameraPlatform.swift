@@ -332,7 +332,7 @@ enum IosCameraStartRetryPolicy {
 /// 为 metadata 输出提供低频的 Vision 兜底，避免旧设备的 AVFoundation
 /// 条码回调偶发停摆时完全没有识别结果。
 enum IosBarcodeVisionFallbackPolicy {
-  static let minimumInterval: TimeInterval = 0.12
+  static let minimumInterval: TimeInterval = 0.08
   static let recentCandidateWindow: TimeInterval = 0.15
 
   static func shouldSchedule(
@@ -3216,6 +3216,8 @@ final class IosCameraHostApiImpl:
     .pdf417,
     .aztec,
     .upce,
+    .itf14,
+    .interleaved2of5,
   ]
 
   private static let visionSymbologies: [VNBarcodeSymbology] = [
@@ -3229,6 +3231,9 @@ final class IosCameraHostApiImpl:
     .pdf417,
     .aztec,
     .upce,
+    .itf14,
+    .interleaved2of5,
+    .codabar,
   ]
 
   private static let backDevices: [AVCaptureDevice] = {

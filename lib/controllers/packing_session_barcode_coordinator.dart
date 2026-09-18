@@ -199,7 +199,6 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
     final BarcodeObservation observation = _stabilityTracker.observe(
       validCode,
       now,
-      allowLockedReconfirmation: isRecording,
     );
     if (observation.confirmedCode.isNotEmpty) {
       _candidateCode = '';
