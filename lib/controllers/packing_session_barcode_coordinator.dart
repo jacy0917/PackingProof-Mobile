@@ -199,6 +199,7 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
     final BarcodeObservation observation = _stabilityTracker.observe(
       validCode,
       now,
+      allowLockedReconfirmation: isRecording,
     );
     if (observation.confirmedCode.isNotEmpty) {
       _candidateCode = '';
@@ -359,6 +360,7 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
         notifyListeners();
         return;
       case BarcodeWorkAction.stopVideo:
+        _showCameraNotice('已停止录像，可扫描下一张');
         _handlingBarcode = true;
         try {
           await _saveCurrentVideoAndWait();
