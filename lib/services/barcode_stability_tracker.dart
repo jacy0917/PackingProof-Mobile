@@ -63,27 +63,27 @@ class BarcodeStabilityTracker {
     if (!JdBarcodePolicy.sameRecordingCode(_candidateCode, normalized) ||
         _candidateFirstSeen == null ||
         now.difference(_candidateFirstSeen!) > confirmationWindow) {
+      // 新码或过期码：首次出现即确认，立即进入录制；
+      // 确认后写入锁定集，防止同一码连续触发。
       _candidateCode = normalized;
       _candidateFirstSeen = now;
       _candidateObservations = 1;
-      return BarcodeObservation(candidateCode: normalized);
+      final String specific = JdBarcodePolicy.preferSpecific(
+        _candidateCode,
+        normalized,
+      );
+      _lockedCodes.add(specific);
+      if (_candidateCode != specific) _lockedCodes.add(_candidateCode);
+      final String waybill = JdBarcodePolicy.waybill(specific);
+      if (waybill != specific) _lockedCodes.add(waybill);
+      _missingLockedSince.clear();
+      _clearCandidate();
+      return BarcodeObservation(confirmedCode: specific);
     }
 
+    // 同码仍在确认窗口内的重复命中：返回候选，不重复确认。
     _candidateObservations++;
-    // 首次出现即确认，无需等待第二次命中。
-    if (_candidateObservations < 1) {
-      return BarcodeObservation(candidateCode: normalized);
-    }
-
-    final String candidateAlias = _candidateCode;
-    normalized = JdBarcodePolicy.preferSpecific(candidateAlias, normalized);
-    _lockedCodes.add(normalized);
-    if (candidateAlias != normalized) _lockedCodes.add(candidateAlias);
-    final String waybill = JdBarcodePolicy.waybill(normalized);
-    if (waybill != normalized) _lockedCodes.add(waybill);
-    _missingLockedSince.clear();
-    _clearCandidate();
-    return BarcodeObservation(confirmedCode: normalized);
+    return BarcodeObservation(candidateCode: normalized);
   }
 
   void _rearmLockedCode(String normalized, DateTime now) {

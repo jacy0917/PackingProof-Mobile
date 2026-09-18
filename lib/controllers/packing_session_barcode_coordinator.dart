@@ -283,7 +283,18 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
         final Future<OrderInfo?> orderLookup = _orderInfoReceiver.lookup(code);
         await _startRecording(code);
         final int t2 = DateTime.now().millisecondsSinceEpoch;
-        final OrderInfo? orderInfo = await orderLookup;
+        OrderInfo? orderInfo;
+        try {
+          orderInfo = await orderLookup;
+        } on Object catch (lookupError) {
+          // 订单查询失败不中断已开始的录制：使用单号占位信息继续。
+          unawaited(
+            _runtimeLog.log(
+              kind: 'barcode_order_lookup_failed',
+              extra: <String, Object?>{'error': '$lookupError'},
+            ),
+          );
+        }
         final int t3 = DateTime.now().millisecondsSinceEpoch;
         if (orderInfo != null) {
           _setActiveOrderInfo(orderInfo, announce: false);
