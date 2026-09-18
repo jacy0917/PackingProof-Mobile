@@ -277,19 +277,25 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
         final int t0 = DateTime.now().millisecondsSinceEpoch;
         final bool duplicate = await _hasRecentTrackingNumber(code);
         final int t1 = DateTime.now().millisecondsSinceEpoch;
-        final OrderInfo? orderInfo = await _orderInfoReceiver.lookup(code);
-        final int t2 = DateTime.now().millisecondsSinceEpoch;
-        _setActiveOrderInfo(orderInfo, announce: false);
+        // 先用单号占位，让 UI 立即显示；订单查询与启动录制并行，
+        // 避免等待配对电脑的网络响应才开始录像。
+        _setActiveOrderInfo(OrderInfo(trackingNumber: code), announce: false);
+        final Future<OrderInfo?> orderLookup = _orderInfoReceiver.lookup(code);
         await _startRecording(code);
+        final int t2 = DateTime.now().millisecondsSinceEpoch;
+        final OrderInfo? orderInfo = await orderLookup;
         final int t3 = DateTime.now().millisecondsSinceEpoch;
+        if (orderInfo != null) {
+          _setActiveOrderInfo(orderInfo, announce: false);
+        }
         unawaited(
           _runtimeLog.log(
             kind: 'barcode_stage_timing',
             extra: <String, Object?>{
               'code': code,
               'duplicateMs': t1 - t0,
-              'lookupMs': t2 - t1,
-              'startRecordingMs': t3 - t2,
+              'startRecordingMs': t2 - t1,
+              'lookupAfterRecordMs': t3 - t2,
             },
           ),
         );

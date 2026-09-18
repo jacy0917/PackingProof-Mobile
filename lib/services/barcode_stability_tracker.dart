@@ -9,7 +9,8 @@ class BarcodeObservation {
 }
 
 class BarcodeStabilityTracker {
-  /// 与电脑端默认一致：同码在 2 秒确认窗口内出现两次即确认。
+  /// 扫码即确认：同码首次出现即确认，减少从对准到启动录制的延迟。
+  /// 确认窗口仍保留，用于候选过期与新码替换。
   static const Duration confirmationWindow = Duration(milliseconds: 2000);
 
   /// 与电脑端默认一致：确认后的同码离开画面满 3 秒才允许重新触发。
@@ -69,7 +70,8 @@ class BarcodeStabilityTracker {
     }
 
     _candidateObservations++;
-    if (_candidateObservations < 2) {
+    // 首次出现即确认，无需等待第二次命中。
+    if (_candidateObservations < 1) {
       return BarcodeObservation(candidateCode: normalized);
     }
 
