@@ -46,6 +46,13 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
   Future<void> startWork();
   Future<void> toggleTorch();
 
+  /// 同码二次扫描停止录像的保护延迟：录像开始后至少 10 秒内不生效。
+  static const Duration minimumSameCodeStopDelay = Duration(seconds: 10);
+
+  /// 同码停止的距离阈值（条码面积，归一化画面占比 × 1,000,000）：
+  /// 约等于镜头 15~25cm 处扫到的面单面积，低于此值视为远景，不触发停止。
+  static const int minimumSameCodeStopArea = 100000;
+
   final BarcodeStabilityTracker _stabilityTracker = BarcodeStabilityTracker();
   final BarcodeRecognizedBeepPolicy _recognizedBeepPolicy =
       BarcodeRecognizedBeepPolicy();
@@ -199,6 +206,7 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
     final BarcodeObservation observation = _stabilityTracker.observe(
       validCode,
       now,
+      allowLockedReconfirmation: isRecording,
     );
     if (observation.confirmedCode.isNotEmpty) {
       _candidateCode = '';
@@ -224,7 +232,13 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
           ),
         );
       }
-      _runInBackground(_handleConfirmedBarcode(observation.confirmedCode, now));
+      _runInBackground(
+        _handleConfirmedBarcode(
+          observation.confirmedCode,
+          now,
+          scannedArea: largestArea,
+        ),
+      );
     } else if (observation.candidateCode != _candidateCode) {
       _candidateCode = observation.candidateCode;
       notifyListeners();
@@ -238,7 +252,11 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
     _processNativeBarcodeFrame(candidates);
   }
 
-  Future<void> _handleConfirmedBarcode(String code, DateTime now) async {
+  Future<void> _handleConfirmedBarcode(
+    String code,
+    DateTime now, {
+    int? scannedArea,
+  }) async {
     if (_handlingBarcode || !isWorking || isBusy) {
       return;
     }
@@ -327,6 +345,24 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
           SpeechPrompt.recordingFailed,
           incidentKey: SpeechPrompt.recordingFailed.name,
         );
+      } finally {
+        _handlingBarcode = false;
+      }
+      return;
+    }
+    // 连续扫码模式增强：录像满 10 秒后，在近距（15~25cm，按条码面积判定）
+    // 再次扫到当前面单，立即停止录像；下一个条码再开启新录像。
+    if (_workMode == WorkMode.continuousScan &&
+        _timeline.currentCode.isNotEmpty &&
+        JdBarcodePolicy.sameRecordingCode(_timeline.currentCode, code) &&
+        _timeline.segmentStartedAt != null &&
+        now.difference(_timeline.segmentStartedAt!) >= minimumSameCodeStopDelay &&
+        scannedArea != null &&
+        scannedArea >= minimumSameCodeStopArea) {
+      _showCameraNotice('已停止录像，可扫描下一个面单');
+      _handlingBarcode = true;
+      try {
+        await _saveCurrentVideoAndWait();
       } finally {
         _handlingBarcode = false;
       }

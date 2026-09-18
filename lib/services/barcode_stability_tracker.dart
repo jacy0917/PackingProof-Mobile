@@ -22,7 +22,13 @@ class BarcodeStabilityTracker {
   DateTime? _candidateFirstSeen;
   int _candidateObservations = 0;
 
-  BarcodeObservation observe(String? code, DateTime now) {
+  /// [allowLockedReconfirmation] 为 true 时（录像中扫描），已锁定的码再次
+  /// 出现会重新返回确认，供"同码二次扫描停止录像"使用；否则保持忽略。
+  BarcodeObservation observe(
+    String? code,
+    DateTime now, {
+    bool allowLockedReconfirmation = false,
+  }) {
     String normalized = BarcodeCandidatePolicy.normalize(code);
 
     _rearmLockedCode(normalized, now);
@@ -56,6 +62,10 @@ class BarcodeStabilityTracker {
       _missingLockedSince.remove(normalized);
       if (JdBarcodePolicy.sameRecordingCode(_candidateCode, normalized)) {
         _clearCandidate();
+      }
+      if (allowLockedReconfirmation) {
+        // 录像中同码重扫：重新触发，让协调器决定是否停止当前录像。
+        return BarcodeObservation(confirmedCode: normalized);
       }
       return const BarcodeObservation();
     }
