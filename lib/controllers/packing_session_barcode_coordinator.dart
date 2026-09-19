@@ -50,6 +50,9 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
   final BarcodeRecognizedBeepPolicy _recognizedBeepPolicy =
       BarcodeRecognizedBeepPolicy();
   String _candidateCode = '';
+
+  /// 最近一次确认开始录像的时间，用于同码停录保护期。
+  DateTime? _recordingConfirmedAt;
   String? _alternatingLastCompletedCode;
   DateTime? _alternatingNoCodeSince;
   String _lastRejectedBarcodeCode = '';
@@ -196,9 +199,13 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
       _logRejectedBarcode(rejected);
       _showRejectedBarcodeNotice(rejected, now);
     }
+    final bool allowRescan = isRecording &&
+        _recordingConfirmedAt != null &&
+        now.difference(_recordingConfirmedAt!) > const Duration(seconds: 3);
     final BarcodeObservation observation = _stabilityTracker.observe(
       validCode,
       now,
+      allowLockedReconfirmation: allowRescan,
     );
     if (observation.confirmedCode.isNotEmpty) {
       _candidateCode = '';
@@ -282,6 +289,7 @@ mixin _PackingSessionBarcodeCoordinator on _PackingSessionWatermarkCoordinator {
         _setActiveOrderInfo(OrderInfo(trackingNumber: code), announce: false);
         final Future<OrderInfo?> orderLookup = _orderInfoReceiver.lookup(code);
         await _startRecording(code);
+        _recordingConfirmedAt = now;
         final int t2 = DateTime.now().millisecondsSinceEpoch;
         OrderInfo? orderInfo;
         try {
