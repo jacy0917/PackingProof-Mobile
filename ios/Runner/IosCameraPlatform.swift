@@ -3232,7 +3232,6 @@ final class IosCameraHostApiImpl:
     .aztec,
     .upce,
     .itf14,
-    .interleaved2of5,
     .codabar,
   ]
 
